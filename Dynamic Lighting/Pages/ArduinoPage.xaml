@@ -1,0 +1,25 @@
+<Page
+    x:Class="Dynamic_Lighting.Pages.ArduinoPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:Dynamic_Lighting.Pages"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Background="Transparent">
+
+    <Grid Padding="40">
+        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="20">
+            <TextBlock Text="Arduino (LampArray)" FontSize="24" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+            
+            <Grid x:Name="ArduinoColorPickerHost" />
+            
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="10">
+                <Button x:Name="ApplyArduinoColorButton" Content="Apply Color" Click="ApplyArduinoColorButton_Click" Style="{StaticResource AccentButtonStyle}"/>
+                <ToggleButton x:Name="LivePreviewArduinoToggle" Content="Live Preview" Click="LivePreviewArduinoToggle_Click" />
+            </StackPanel>
+            
+            <TextBlock x:Name="ArduinoStatusText" Text="Status: Waiting..." HorizontalAlignment="Center" Foreground="Gray" TextWrapping="Wrap" MaxWidth="300" TextAlignment="Center"/>
+        </StackPanel>
+    </Grid>
+</Page>

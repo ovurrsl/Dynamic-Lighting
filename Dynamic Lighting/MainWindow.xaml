@@ -1,4 +1,3 @@
-<?xml version="1.0" encoding="utf-8"?>
 <Window
     x:Class="Dynamic_Lighting.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -14,6 +13,24 @@
     </Window.SystemBackdrop>
 
     <Grid>
+        <!-- Main Application Navigation -->
+        <NavigationView x:Name="NavView" SelectionChanged="NavView_SelectionChanged" IsBackButtonVisible="Collapsed" PaneDisplayMode="Left" Visibility="Collapsed">
+            <NavigationView.MenuItems>
+                <NavigationViewItem Tag="Home" Content="Ana Sayfa (Sync)" Icon="Home" />
+                <NavigationViewItem Tag="Arduino" Content="Arduino (LampArray)" />
+                <NavigationViewItem Tag="Asus" Content="ASUS Aura (Motherboard)" />
+                <NavigationViewItem Tag="Corsair" Content="Corsair iCUE Link" />
+            </NavigationView.MenuItems>
 
+            <Frame x:Name="ContentFrame" />
+        </NavigationView>
+
+        <!-- Loading Overlay during startup hardware connect -->
+        <Grid x:Name="LoadingOverlay" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="20">
+                <ProgressRing x:Name="ConnectingProgressRing" IsActive="True" Width="60" Height="60" />
+                <TextBlock Text="Donanımlara bağlanılıyor..." Style="{ThemeResource BodyTextBlockStyle}" HorizontalAlignment="Center" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>

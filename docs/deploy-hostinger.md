@@ -50,9 +50,21 @@ npm run keygen
 
 ## Veritabanı
 
-Hostinger'ın MySQL'ini oluştur, bilgilerini `DB_*` değişkenlerine yaz. Şema
-ilk açılışta otomatik kuruluyor (`CREATE TABLE IF NOT EXISTS`), ayrı bir
-migration adımı yok.
+Hostinger'ın MySQL'ini oluştur, bilgilerini `DB_*` değişkenlerine yaz. Sonra
+şemayı **bir kez** kur:
+
+```bash
+npm run migrate
+```
+
+Bu, `CREATE TABLE IF NOT EXISTS` çalıştırıyor, yani tekrar çalıştırmak zararsız.
+Şema değişince tekrar çalıştır.
+
+**Neden boot'ta değil:** şema kurulumu eskiden açılışta çalışıyordu. Ölçtüm — bu,
+her soğuk başlatmanın MySQL sürücüsünü yüklemesi (**78 ms**) ve hiçbir şey
+sunmadan önce üç veritabanı gidiş-dönüşü harcaması demekti; veritabanına hiç
+dokunmayan bir istek için bile. Süreci boşta durduran bir hostta bu bedel sürekli
+ödeniyordu. Şimdi soğuk başlatma veritabanına hiç bağlanmıyor.
 
 İlk lisansı elle ekle:
 
@@ -63,6 +75,39 @@ VALUES ('AF-XXXX-XXXX-XXXX', 'pro', 3, 'active', '["ambilight","hdr","presets"]'
 
 Ödeme sağlayıcısı (Lemon Squeezy / Paddle) bağlandığında bu satırı webhook
 oluşturacak.
+
+## Soğuk başlatma: neden yığın bu
+
+Hostinger süreci boşta durdurup sonraki istekte yeniden başlattığı için
+**kullanıcının hissettiği tek gecikme soğuk başlatma.** Saniyede istek sayısı bu
+üründe hiç bağlayıcı değil (günde birkaç lisans yenilemesi). O yüzden yığın
+saniyede istek için değil, açılış süresi için seçildi. Bu makinede ölçülen
+değerler:
+
+| Yığın | Soğuk başlatma |
+|---|---|
+| Çıplak `node:http` (taban) | ~75 ms |
+| **Hono + elle doğrulama/hız sınırı** (seçilen) | **~105 ms** |
+| Hono + Zod doğrulayıcı | ~180 ms |
+| Fastify + AJV + rate-limit (ilk sürüm) | ~265 ms |
+
+Somut kararlar, hepsi ölçüme dayalı:
+
+- **Hono, Fastify yerine.** Sadece import'u 19 ms'e karşı 107 ms.
+- **Doğrulama elle yazıldı, Zod/AJV yok.** Zod tek başına ~75 ms ekliyordu ve
+  doğrulayıcı süreçteki en pahalı şey olacaktı. Üç küçük istek gövdesi için bu
+  takas savunulabilir; `server/src/lib/validate.js` büyümeye başlarsa takas
+  bozulur ve Zod'a geçmek gerekir (dosyada yazıyor).
+- **pino yerine ~30 satırlık JSON logger.** pino, Fastify'ın import maliyetinin
+  parçasıydı.
+- **Şema kurulumu boot'tan çıktı** (yukarıda).
+- **`node:module` derleme önbelleği açık.** Fastify'da 35 ms değerindeydi; Hono'da
+  marjinal ama bedava.
+- **`mysql2` tembel yükleniyor** — `/healthz`, `/v1/version` ve statik dosyalar
+  sürücüye hiç dokunmuyor.
+
+Yan fayda: `node_modules` 30 MB / 3260 dosyadan **8.8 MB / 934 dosyaya** indi, bu
+da her dağıtımdaki `npm ci` süresini kısaltıyor.
 
 ## Bilmen gereken üç Hostinger davranışı
 

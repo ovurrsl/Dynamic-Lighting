@@ -1,35 +1,35 @@
-export default async function healthRoutes (fastify) {
+export default function healthRoutes (app, services) {
   /**
    * Liveness. Deliberately does NOT touch the database.
    *
-   * Hostinger stops the process when it is idle and restarts it on the next
-   * request, so this endpoint doubles as the cheapest possible warm-up ping. If
-   * it needed a database round-trip, waking the app would cost a connection
+   * The host stops the process when idle and restarts it on the next request, so
+   * this doubles as the cheapest possible warm-up ping. If it needed a database
+   * round-trip, waking the app would import the driver and pay a connection
    * handshake every time.
    */
-  fastify.get('/healthz', async () => ({ status: 'ok' }))
+  app.get('/healthz', (context) => context.json({ status: 'ok' }))
 
   /** Readiness. This one does check the database, so keep it off any hot path. */
-  fastify.get('/readyz', async (request, reply) => {
+  app.get('/readyz', async (context) => {
     try {
-      await fastify.storage.ping()
-      return { status: 'ok', storage: fastify.storage.driver }
+      await services.storage.ping()
+      return context.json({ status: 'ok', storage: services.storage.driver })
     } catch (error) {
-      request.log.error({ err: error }, 'storage ping failed')
-      return reply.code(503).send({ status: 'degraded', storage: fastify.storage.driver })
+      services.log.error({ err: error.message }, 'storage ping failed')
+      return context.json({ status: 'degraded', storage: services.storage.driver }, 503)
     }
   })
 
-  fastify.get('/v1/version', async () => ({
+  app.get('/v1/version', (context) => context.json({
     name: 'ambiflux-server',
-    version: fastify.appVersion,
+    version: services.appVersion,
     // The client needs this to verify licence tokens offline. Publishing it is
-    // the point: it is a public key, and shipping it over the API means the
-    // engine can be built without a key baked in at compile time.
-    licencePublicKey: fastify.licenceKeys.publicKeyBase64,
+    // the point: it is a public key, and serving it means the engine and the
+    // extension can be built without a key baked in at compile time.
+    licencePublicKey: services.licenceKeys.publicKeyBase64,
     licence: {
-      ttlSeconds: fastify.config.licence.ttlSeconds,
-      graceSeconds: fastify.config.licence.graceSeconds
+      ttlSeconds: services.config.licence.ttlSeconds,
+      graceSeconds: services.config.licence.graceSeconds
     }
   }))
 }

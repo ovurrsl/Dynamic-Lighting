@@ -3,9 +3,11 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import Fastify from 'fastify'
+import { Hono } from 'hono'
 
+import { createLogger } from './lib/log.js'
 import { generateKeyPair, loadPrivateKey, loadPublicKey, publicKeyFromPrivate } from './lib/licence.js'
+import { clientKey, createRateLimiter } from './lib/ratelimit.js'
 import healthRoutes from './routes/health.js'
 import licenceRoutes from './routes/licence.js'
 import presetRoutes from './routes/presets.js'
@@ -25,12 +27,11 @@ async function readAppVersion () {
 /**
  * Resolves the signing keypair.
  *
- * In development a missing key produces an ephemeral one with a loud warning
- * rather than a crash, so `npm run dev` works out of the box. Every token
- * issued before a restart becomes unverifiable after it, which is exactly the
- * behaviour you want from a throwaway key — it cannot be mistaken for a real one.
- *
- * config.js makes this impossible in production.
+ * A missing key in development produces an ephemeral one with a loud warning
+ * rather than a crash, so `npm run dev` works out of the box. Tokens issued
+ * before a restart stop verifying after it, which is exactly what you want from
+ * a throwaway key: it cannot be mistaken for a real one. config.js makes this
+ * impossible in production.
  */
 function resolveLicenceKeys (config, log) {
   if (config.licence.signingKey) {
@@ -44,7 +45,7 @@ function resolveLicenceKeys (config, log) {
     }
   }
 
-  log.warn('LICENCE_SIGNING_KEY is not set - generating an ephemeral keypair. Tokens will stop verifying when this process restarts. Run `npm run keygen` for a persistent key.')
+  log.warn('LICENCE_SIGNING_KEY is not set - generating an ephemeral keypair. Tokens stop verifying when this process restarts. Run `npm run keygen` for a persistent key.')
   const generated = generateKeyPair()
   return {
     privateKey: loadPrivateKey(generated.privateKey),
@@ -55,90 +56,86 @@ function resolveLicenceKeys (config, log) {
 }
 
 /**
- * Builds the server without listening, so tests can drive it through
- * `app.inject()` with no ports involved.
+ * Builds the app without listening. Hono's `app.request()` drives it in tests
+ * with no ports and no server involved.
  */
-export async function buildApp ({ config, storage }) {
-  const fastify = Fastify({
-    logger: {
-      level: config.logLevel,
-      // Hostinger captures stdout; pretty-printing would only make those logs
-      // harder to grep.
-      ...(config.isProduction ? {} : { transport: undefined })
-    },
-    trustProxy: config.trustProxy,
-    // Licence payloads and presets are small. A tight cap is free protection.
-    bodyLimit: 256 * 1024,
-    ajv: {
-      customOptions: {
-        // Fastify defaults to removeAdditional:true, which silently strips
-        // unknown fields and makes `additionalProperties: false` a no-op. For a
-        // licensing API it is better to reject: a client sending a field we do
-        // not understand has a bug, and quietly dropping it hides that bug on
-        // both sides.
-        removeAdditional: false,
-        // Report every problem at once so a client author sees the whole list
-        // instead of fixing one field per round-trip.
-        allErrors: true
-      }
-    }
-  })
+export async function buildApp ({ config, storage, log = createLogger({ level: config.logLevel }) }) {
+  const app = new Hono()
 
-  fastify.decorate('config', config)
-  fastify.decorate('storage', storage)
-  fastify.decorate('appVersion', await readAppVersion())
-  fastify.decorate('licenceKeys', resolveLicenceKeys(config, fastify.log))
-
-  await fastify.register(import('@fastify/cors'), {
-    // An empty allow-list means same-origin only, which is correct when the
-    // hosted page and the API are one deployment.
-    origin: config.corsOrigins.length > 0 ? config.corsOrigins : false,
-    methods: ['GET', 'PUT', 'POST', 'DELETE', 'OPTIONS']
-  })
-
-  await fastify.register(import('@fastify/rate-limit'), {
-    max: config.rateLimit.max,
-    timeWindow: config.rateLimit.windowMs,
-    // Activation and refresh are the endpoints worth brute-forcing, since a
-    // valid licence key is the only secret involved.
-    allowList: (request) => request.url === '/healthz'
-  })
-
-  fastify.setErrorHandler((error, request, reply) => {
-    const status = error.statusCode ?? 500
-    if (status >= 500) {
-      request.log.error({ err: error }, 'request failed')
-      return reply.code(status).send({ error: 'internal_error' })
-    }
-    // Fastify's schema validation errors are safe to surface and are the
-    // fastest way for a client author to see what they got wrong.
-    return reply.code(status).send({
-      error: error.code === 'FST_ERR_VALIDATION' ? 'validation_failed' : 'request_failed',
-      message: error.message
+  /**
+   * Shared state hangs off one object rather than per-request context writes, so
+   * handlers read it directly without Hono's generic plumbing.
+   */
+  const services = {
+    config,
+    storage,
+    log,
+    appVersion: await readAppVersion(),
+    licenceKeys: resolveLicenceKeys(config, log),
+    limiter: createRateLimiter({
+      max: config.rateLimit.max,
+      windowMs: config.rateLimit.windowMs
     })
-  })
-
-  await fastify.register(healthRoutes)
-  await fastify.register(licenceRoutes)
-  await fastify.register(presetRoutes)
-  await fastify.register(updateRoutes)
-
-  // The frontend is served by the same process as the API: one build, one
-  // start command, one thing for Hostinger to deploy. Whichever UI kit gets
-  // chosen only has to emit static files into this directory.
-  const webRoot = resolve(process.cwd(), config.webDir)
-  if (existsSync(webRoot)) {
-    await fastify.register(import('@fastify/static'), { root: webRoot })
-    fastify.setNotFoundHandler((request, reply) => {
-      if (request.url.startsWith('/v1/')) {
-        return reply.code(404).send({ error: 'not_found' })
-      }
-      return reply.sendFile('index.html')
-    })
-    fastify.log.info({ webRoot }, 'serving frontend')
-  } else {
-    fastify.log.warn({ webRoot }, 'no frontend build found - serving API only')
   }
 
-  return fastify
+  app.onError((error, context) => {
+    log.error({ err: error.message, path: context.req.path }, 'request failed')
+    return context.json({ error: 'internal_error' }, 500)
+  })
+
+  // CORS. An empty allow-list means same-origin only, which is correct when the
+  // page and the API are one deployment.
+  if (config.corsOrigins.length > 0) {
+    app.use('/v1/*', async (context, next) => {
+      const origin = context.req.header('origin')
+      if (origin && config.corsOrigins.includes(origin)) {
+        context.header('access-control-allow-origin', origin)
+        context.header('vary', 'origin')
+        context.header('access-control-allow-headers', 'authorization,content-type')
+        context.header('access-control-allow-methods', 'GET,PUT,POST,DELETE,OPTIONS')
+      }
+      if (context.req.method === 'OPTIONS') return context.body(null, 204)
+      await next()
+    })
+  }
+
+  // Rate limiting covers /v1/* only. /healthz is deliberately exempt: it is the
+  // cheapest way to wake this app on a host that sleeps it, and throttling the
+  // wake-up ping would be self-defeating.
+  app.use('/v1/*', async (context, next) => {
+    const result = services.limiter.hit(clientKey(context, config.trustProxy))
+    if (!result.allowed) {
+      context.header('retry-after', String(result.retryAfterSeconds))
+      return context.json({ error: 'rate_limited' }, 429)
+    }
+    await next()
+  })
+
+  healthRoutes(app, services)
+  licenceRoutes(app, services)
+  presetRoutes(app, services)
+  updateRoutes(app, services)
+
+  // The frontend is served by the same process as the API: one build, one start
+  // command, one thing to deploy. Whichever UI kit is used only has to emit
+  // static files into this directory.
+  const webRoot = resolve(process.cwd(), config.webDir)
+  if (existsSync(webRoot)) {
+    const { serveStatic } = await import('@hono/node-server/serve-static')
+    const relativeRoot = config.webDir.replace(/^\.?\//, '')
+    app.use('/*', serveStatic({ root: relativeRoot }))
+    // SPA fallback, but never for the API: an unknown /v1 path is a client bug
+    // and should say so rather than returning HTML.
+    app.notFound((context) =>
+      (context.req.path.startsWith('/v1/')
+        ? context.json({ error: 'not_found' }, 404)
+        : serveStatic({ root: relativeRoot, path: 'index.html' })(context, async () => {})))
+    log.info({ webRoot }, 'serving frontend')
+  } else {
+    app.notFound((context) => context.json({ error: 'not_found' }, 404))
+    log.warn({ webRoot }, 'no frontend build found - serving API only')
+  }
+
+  app.services = services
+  return app
 }

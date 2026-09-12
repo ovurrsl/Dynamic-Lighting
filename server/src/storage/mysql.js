@@ -82,7 +82,15 @@ export function createMysqlStorage (options) {
   return {
     driver: 'mysql',
 
-    async init () {
+    /**
+     * Creates the schema. Run from `npm run migrate`, NOT at boot.
+     *
+     * This used to run on startup, which meant every cold start imported the
+     * driver (~78 ms measured) and spent three round-trips on DDL before
+     * serving anything — including requests that never touch the database. On a
+     * host that stops the process when idle, that cost was paid constantly.
+     */
+    async migrate () {
       const db = await getPool()
       for (const statement of SCHEMA) {
         await db.query(statement)

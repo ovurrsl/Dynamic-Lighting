@@ -35,7 +35,7 @@ export function createMemoryStorage ({ licences = [] } = {}) {
   return {
     driver: 'memory',
 
-    async init () {},
+    async migrate () {},
     async close () {},
     async ping () { return true },
 

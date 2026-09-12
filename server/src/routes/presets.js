@@ -1,111 +1,98 @@
 import { verifyToken } from '../lib/licence.js'
+import { readJsonBody } from '../lib/validate.js'
 
-const PRESET_ID_PATTERN = '^[A-Za-z0-9_-]{1,64}$'
+const PRESET_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 
 /**
  * A preset is a monitor profile plus the look: LED layout, sampling bands,
- * smoothing constants, power budget. The server stores it opaquely on purpose —
- * the engine and the firmware own its meaning, and versioning it here would
- * mean redeploying the server every time a tuning knob is added.
+ * smoothing constants, power budget. The server stores the payload opaquely on
+ * purpose — the engine and the firmware own its meaning, and validating it here
+ * would mean redeploying the server every time a tuning knob is added.
  */
-const presetPayloadSchema = {
-  type: 'object',
-  additionalProperties: true,
-  properties: {
-    schemaVersion: { type: 'integer', minimum: 1 }
-  }
+const PUT_SPEC = {
+  name: { type: 'string', required: true, min: 1, max: 128 },
+  payload: { type: 'object', required: true }
 }
 
-const putSchema = {
-  params: {
-    type: 'object',
-    required: ['id'],
-    properties: { id: { type: 'string', pattern: PRESET_ID_PATTERN } }
-  },
-  body: {
-    type: 'object',
-    required: ['name', 'payload'],
-    additionalProperties: false,
-    properties: {
-      name: { type: 'string', minLength: 1, maxLength: 128 },
-      payload: presetPayloadSchema
-    }
-  }
-}
+const asIso = (value) => (value instanceof Date ? value.toISOString() : value)
 
-const idOnlySchema = {
-  params: {
-    type: 'object',
-    required: ['id'],
-    properties: { id: { type: 'string', pattern: PRESET_ID_PATTERN } }
-  }
-}
-
-export default async function presetRoutes (fastify) {
+export default function presetRoutes (app, services) {
   /**
    * The licence token IS the credential — there is no separate session system.
    * It is already signed, already scoped to one licence, and the client already
    * holds it, so adding passwords on top would buy nothing.
    *
-   * An expired token is accepted here. The alternative is a customer whose
-   * presets vanish because our host was asleep when their refresh was due,
-   * which is the same fail-closed trap the engine avoids.
+   * An expired token is accepted. The alternative is a customer whose presets
+   * vanish because our host was asleep when their refresh was due, which is the
+   * same fail-closed trap the engine avoids.
    */
-  fastify.addHook('preHandler', async (request, reply) => {
-    const header = request.headers.authorization ?? ''
+  app.use('/v1/presets/*', authenticate)
+  app.use('/v1/presets', authenticate)
+
+  function authenticate (context, next) {
+    const header = context.req.header('authorization') ?? ''
     const [scheme, token] = header.split(' ')
 
     if (scheme !== 'Bearer' || !token) {
-      return reply.code(401).send({ error: 'authorization_required' })
+      return context.json({ error: 'authorization_required' }, 401)
     }
 
-    const result = verifyToken(fastify.licenceKeys.publicKey, token)
-    if (!result.ok) {
-      return reply.code(401).send({ error: result.reason })
-    }
+    const result = verifyToken(services.licenceKeys.publicKey, token)
+    if (!result.ok) return context.json({ error: result.reason }, 401)
 
-    request.licence = {
+    context.set('licence', {
       key: result.payload.key,
       tier: result.payload.tier,
       features: result.payload.features ?? [],
       expired: result.expired
-    }
-  })
+    })
+    return next()
+  }
 
-  fastify.get('/v1/presets', async (request) => {
-    const presets = await fastify.storage.listPresets(request.licence.key)
-    return {
+  app.get('/v1/presets', async (context) => {
+    const presets = await services.storage.listPresets(context.get('licence').key)
+    return context.json({
       presets: presets.map(({ id, name, payload, updatedAt }) => ({
         id,
         name,
         payload,
-        updatedAt: updatedAt instanceof Date ? updatedAt.toISOString() : updatedAt
+        updatedAt: asIso(updatedAt)
       }))
-    }
+    })
   })
 
-  fastify.put('/v1/presets/:id', { schema: putSchema }, async (request) => {
-    const { id } = request.params
-    const { name, payload } = request.body
-    const row = await fastify.storage.putPreset({
-      licenceKey: request.licence.key,
+  app.put('/v1/presets/:id', async (context) => {
+    const id = context.req.param('id')
+    if (!PRESET_ID_PATTERN.test(id)) {
+      return context.json({ error: 'validation_failed', problems: ['id has an unexpected format'] }, 400)
+    }
+
+    const body = await readJsonBody(context, PUT_SPEC)
+    if (!body.ok) {
+      return context.json({ error: 'validation_failed', problems: body.problems }, 400)
+    }
+
+    const row = await services.storage.putPreset({
+      licenceKey: context.get('licence').key,
       id,
-      name,
-      payload
+      name: body.value.name,
+      payload: body.value.payload
     })
-    return {
-      id: row.id,
-      name: row.name,
-      updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt
-    }
+
+    return context.json({ id: row.id, name: row.name, updatedAt: asIso(row.updatedAt) })
   })
 
-  fastify.delete('/v1/presets/:id', { schema: idOnlySchema }, async (request, reply) => {
-    const deleted = await fastify.storage.deletePreset({
-      licenceKey: request.licence.key,
-      id: request.params.id
+  app.delete('/v1/presets/:id', async (context) => {
+    const id = context.req.param('id')
+    if (!PRESET_ID_PATTERN.test(id)) {
+      return context.json({ error: 'validation_failed', problems: ['id has an unexpected format'] }, 400)
+    }
+
+    const deleted = await services.storage.deletePreset({
+      licenceKey: context.get('licence').key,
+      id
     })
-    if (!deleted) return reply.code(404).send({ error: 'preset_not_found' })
-    return reply.code(204).send()
+    if (!deleted) return context.json({ error: 'preset_not_found' }, 404)
+    return context.body(null, 204)
   })
 }

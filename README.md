@@ -12,7 +12,12 @@ yerel motor, ve barındırılan bir kontrol düzlemi.
 | `web/` | Kontrol paneli: Vite 8 + React 19 + HeroUI v3 + Tailwind 4 | **iskelet çalışıyor** |
 | `docs/` | Mimari ve dağıtım notları | |
 | `AmbiFluxNanoR4LampArray/` | Eski HID LampArray firmware'i (Nano R4) | değiştirilecek |
-| `Dynamic Lighting/`, `Dynamic Lighting (Package)/` | Eski WinUI 3 uygulaması | kapsam dışı |
+
+WinUI 3 masaüstü uygulaması (`Dynamic Lighting/`, `Dynamic Lighting (Package)/`,
+`Dynamic Lighting.slnx`) **silindi.** Windows Dynamic Lighting desteği kapsamdan
+çıktı ve o ağaçtaki hiçbir şey yeni mimariye girmiyor; git geçmişinde duruyor
+(`fa622c5` ve öncesi). Yerine ne geleceği: ekranı yakalayıp seri porta yazan
+tarayıcı eklentisi.
 
 Kökteki `package.json` Hostinger'ın dağıttığı uygulamayı tanımlıyor ve `web`'i
 bir npm workspace olarak içeriyor. Fastify API'yi ve derlenmiş frontend'i aynı

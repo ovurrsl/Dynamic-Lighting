@@ -1,3 +1,28 @@
+> **ARŞİV — 2026-09.** Bu doküman WinUI 3 uygulamasının yerine ne
+> konabileceğini araştırıyordu. Ürün kararları o zamandan beri değişti, yani
+> **olduğu gibi okunmamalı.** Geçmiş kaydı olarak duruyor.
+>
+> **Geçersiz olanlar:**
+> - **§1 ve §4 — ASUS Aura ve Corsair iCUE Link port haritası: kapsam dışı.**
+>   Ürün yalnızca kendi Arduino cihazını sürüyor.
+> - **§4 — HID feature-report yolu: gitti.** Windows Dynamic Lighting /
+>   LampArray desteği tamamen kaldırıldı; firmware ESP32-S3 üzerinde yalnızca
+>   seri protokol konuşacak.
+> - **§6'daki "tarayıcı yakalaması 60 FPS'e kapalı" ifadesi yanlıştı.**
+>   Chromium'da `kMaxScreenCastFrameRate = 120.0`; gerçek kısıt her yakalamanın
+>   ≤4.17 ms bitmesini şart koşan %50 CPU valfi.
+> - Dokümanın LampArray yolunun korunacağını varsayan her yeri.
+>
+> **Hâlâ geçerli olanlar:**
+> - **§6** ekran yakalama uyarıları ve ölçümleri.
+> - **§9** barındırma analizi: barındırılan bir sayfanın neden kalıcı bağlantı
+>   tutamayacağı, ve korsanlığın barındırmayla engellenemeyeceği.
+>
+> Güncel mimari: [`../deploy-hostinger.md`](../deploy-hostinger.md) ve depo kökündeki
+> `README.md`.
+
+---
+
 # Node.js / web tabanlı mimariye geçiş analizi
 
 Bu doküman, WinUI 3 masaüstü uygulamasının yerine tarayıcıdan kullanılan bir

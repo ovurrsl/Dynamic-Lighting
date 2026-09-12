@@ -1,0 +1,16 @@
+/*
+ * Order matters: Tailwind first, then HeroUI.
+ *
+ * Note what is deliberately NOT here: the official template adds
+ * `@custom-variant dark (&:is(.dark *))`, but @heroui/styles already defines a
+ * richer `dark` variant that also matches [data-theme="dark"], the element
+ * itself, and prefers-color-scheme. Re-declaring it would replace that with a
+ * narrower class-and-ancestor-only version.
+ *
+ * Tailwind is compiled by @tailwindcss/postcss here rather than the Vite plugin
+ * the previous build used. HeroUI's stylesheet is source CSS (@apply, @utility,
+ * @custom-variant), so this was the migration's biggest unknown; it was settled
+ * by building a HeroUI ColorPicker on Next 16 and checking the CSS came out.
+ */
+@import "tailwindcss";
+@import "@heroui/styles";

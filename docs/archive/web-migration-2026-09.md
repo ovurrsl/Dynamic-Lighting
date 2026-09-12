@@ -18,7 +18,7 @@
 > - **§9** barındırma analizi: barındırılan bir sayfanın neden kalıcı bağlantı
 >   tutamayacağı, ve korsanlığın barındırmayla engellenemeyeceği.
 >
-> Güncel mimari: [`../deploy-hostinger.md`](../deploy-hostinger.md) ve depo kökündeki
+> Güncel mimari: [`../deploy.md`](../deploy.md) ve depo kökündeki
 > `README.md`.
 
 ---

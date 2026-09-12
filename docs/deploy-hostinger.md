@@ -17,10 +17,16 @@ Hostinger panelinde → uygulaman → Build settings:
 | Build command | `npm run build` |
 | Start command | `npm start` |
 
-`npm run build` şu an frontend olmadığı için `--if-present` sayesinde
-**başarıyla no-op**. UI kiti seçilip `web/` eklendiğinde `build:web` scripti
-tanımlanır ve aynı komut onu derler — build ayarlarını bir daha değiştirmen
-gerekmez.
+`npm ci` kökte çalışır ve `web` workspace'ini de kurar; `npm run build` onu
+`web/dist`'e derler ve Hono aynı süreçten servis eder. Tek kurulum, tek build,
+tek başlatma komutu — build ayarlarını bir daha değiştirmen gerekmiyor.
+
+Frontend yığını: **Vite 8 + React 19 + HeroUI v3 + Tailwind 4**. HeroUI'nin
+kendi CSS'i derlenmiş değil kaynak (`@apply`, `@utility`, `@custom-variant`
+kullanıyor), o yüzden Tailwind'i PostCSS değil **`@tailwindcss/vite` eklentisi**
+ile çalıştırmak zorunlu. Bir tuzak: Vite 8 esbuild'den Oxc'ye geçti, yani
+`build.minify: 'esbuild'` istemek esbuild'i ayrı bağımlılık olarak gerektiriyor
+ve hiçbir fayda vermiyor — varsayılanı kullan.
 
 ## Ortam değişkenleri
 

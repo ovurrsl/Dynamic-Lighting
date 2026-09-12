@@ -14,11 +14,16 @@
     "dev": "node --watch server/src/index.js",
     "test": "node --test \"server/test/*.test.js\"",
     "keygen": "node server/src/scripts/keygen.js",
-    "migrate": "node server/src/scripts/migrate.js"
+    "migrate": "node server/src/scripts/migrate.js",
+    "build:web": "npm run build --workspace @ambiflux/web",
+    "dev:web": "npm run dev --workspace @ambiflux/web"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
     "hono": "^4.13.7",
     "mysql2": "^3.24.4"
-  }
+  },
+  "workspaces": [
+    "web"
+  ]
 }

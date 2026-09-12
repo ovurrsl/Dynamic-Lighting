@@ -122,11 +122,14 @@ oluşturacak.
 Karar kapasiteyle ilgili değil — iş yükü günde birkaç lisans çağrısı, ikisi de
 fazlasıyla yeter. Belirleyici olan **serverless'ten erişilebilirlik:**
 
-- Serverless fonksiyon çağrılar arasında bağlantı havuzu tutamıyor. Her soğuk
-  başlatma yeni bir el sıkışma açardı ve bir trafik dalgası sunucunun bağlantı
-  limitini tüketirdi.
-- Hostinger'ın paylaşımlı MySQL'i uzaktan erişim için IP beyaz listesi istiyor;
-  Vercel'in çıkış adresleri sabit değil.
+- Serverless fonksiyon çağrılar arasında bağlantı havuzu tutamıyor. Her çağrı
+  kendi bağlantısını açardı, ve paylaşımlı barındırmada tavan dar: Hostinger'ın
+  yayınladığı limitlere göre MySQL **kullanıcı başına 25-200 eşzamanlı bağlantı**
+  (plana göre; giriş paketlerinde 25), global tavan 500. Bir trafik dalgası bunu
+  tüketir.
+- Uzaktan MySQL erişimi paylaşımlı barındırmada genelde kaynak adres kısıtına
+  bağlı, Vercel'in çıkış adresleri ise sabit değil. Bunu kendi panelinde
+  doğrulaman gerekir — ama üstteki havuz sorunu tek başına yeterli sebep.
 
 Supabase HTTP üzerinden konuşuyor. Yanlış yapılacak bir havuz yok, yani **aynı
 kod** uzun ömürlü bir `next start` sürecinde de, istek başına bir fonksiyonda da

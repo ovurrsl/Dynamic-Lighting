@@ -65,8 +65,11 @@ mevcut olanla örtüşür.
 
 ## Kural
 
-`.mcp.json` şu an yalnız satıcının kendi yazılımını içeriyor ve öyle kalmalı.
-Bir paketin resmî olup olmadığını isminden değil **publisher'ından** anlıyoruz:
+**Vercel, Next.js, React ve Tailwind 4 için üçüncü parti MCP sunucusu veya skill
+kullanılmıyor.** Bunlar için yalnız satıcının kendi yayınladığı şey kabul ediliyor;
+resmî karşılığı yoksa **hiçbir şey eklenmiyor.** Proje kararı.
+
+Bir paketin resmî olup olmadığı isminden değil **publisher'ından** anlaşılıyor:
 
 ```bash
 npm view <paket> maintainers repository.url
@@ -75,6 +78,35 @@ npm view <paket> maintainers repository.url
 `react-mcp`, `tailwindcss-mcp` ve `add-mcp` üçü de bu testte şahıs hesabı
 çıkıyor. Üçü de kurulur, üçü de çalışabilir, ama hiçbiri iddia ettiği satıcının
 değil.
+
+## Denetim
+
+Kurulu olan her şeyin publisher'ı doğrulandı:
+
+| Giriş | Kaynak | Publisher | Sonuç |
+|---|---|---|---|
+| `vercel` (MCP) | `https://mcp.vercel.com` | `authorization_servers: vercel.com`, `resource_name: "Vercel MCP"` | Vercel'in kendi endpoint'i |
+| `next-devtools` (MCP) | `next-devtools-mcp@0.4.0` | `vercel-release-bot <infra+release@vercel.com>`, repo `vercel/next-devtools-mcp` | Vercel |
+| `next-dev-loop` (skill) | `vercel/next.js` @ `v16.3.5` | depo etiketinden birebir | Vercel |
+| React | — | — | **hiçbir şey kurulu değil** |
+| Tailwind 4 | — | — | **hiçbir şey kurulu değil** |
+| `heroui-react` (MCP) | `@heroui/react-mcp@1.1.2` | `juniorgarciadev`, repo `heroui-inc/heroui-mcp` | HeroUI — aşağıdaki nota bak |
+
+İki nokta dürüstçe kayda geçsin:
+
+**1. `@heroui/react-mcp` şahıs hesabından yayınlanıyor.** Maintainer
+`juniorgarciadev <jrgarciadev@gmail.com>` — HeroUI'nin kurucusu, ama bir org bot'u
+değil. Resmî olduğunu gösteren şey `@heroui` **scope'u** (scope'lu pakete yayın
+yapmak org üyeliği gerektiriyor) ve deponun `heroui-inc` altında olması. HeroUI bu
+kuralın kapsadığı dört satıcıdan biri değil ve kurulumu ayrıca istenmişti, o yüzden
+duruyor. Tablodaki tek "publisher bir kişi" satırı bu.
+
+**2. `next-dev-loop` skill'i `agent-browser` kurmayı söylüyor.** Doğrulandı: repo
+`vercel-labs/agent-browser`, maintainer'ları arasında `vercel-release-bot` ve
+`zeit-bot` var — yani **Vercel'in kendi paketi**, üçüncü parti değil. Yine de
+**kurulu değil**, dolayısıyla skill'in tarayıcı yarısı çalışmıyor; `/_next/mcp`
+yarısı `agent-browser` olmadan da çalışıyor. Skill'in dosyasında Playwright'a
+referans yok.
 
 ## MCP onayı
 

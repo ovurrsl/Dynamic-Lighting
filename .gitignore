@@ -361,3 +361,14 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# ── Node / AmbiFlux ────────────────────────────────────────────────
+# node_modules is already ignored above.
+dist/
+build/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+# Local development data store (see server/src/storage/file.js)
+server/.data/

@@ -8,27 +8,27 @@ yerel motor, ve barındırılan bir kontrol düzlemi.
 
 | Dizin | Ne | Durum |
 |---|---|---|
-| `server/` | Hono kontrol düzlemi: lisans, profiller, güncelleme manifest'i | **çalışıyor** |
+| `server/` | Fastify kontrol düzlemi: lisans, profiller, güncelleme manifest'i | **çalışıyor** |
 | `web/` | Kontrol paneli: Vite 8 + React 19 + HeroUI v3 + Tailwind 4 | **iskelet çalışıyor** |
 | `docs/` | Mimari ve dağıtım notları | |
 | `AmbiFluxNanoR4LampArray/` | Eski HID LampArray firmware'i (Nano R4) | değiştirilecek |
 | `Dynamic Lighting/`, `Dynamic Lighting (Package)/` | Eski WinUI 3 uygulaması | kapsam dışı |
 
 Kökteki `package.json` Hostinger'ın dağıttığı uygulamayı tanımlıyor ve `web`'i
-bir npm workspace olarak içeriyor. Hono API'yi ve derlenmiş frontend'i aynı
+bir npm workspace olarak içeriyor. Fastify API'yi ve derlenmiş frontend'i aynı
 süreçten servis ediyor, yani Hostinger'ın kuracağı ve derleyeceği tek bir şey var.
 
-Backend yığını soğuk başlatma için seçildi, saniyede istek için değil: host
-süreci boşta durdurup sonraki istekte yeniden başlattığı için kullanıcının
-hissettiği tek gecikme o. Ölçülen: **Hono ~105 ms**, Fastify + AJV ~265 ms.
-Ayrıntı `docs/deploy-hostinger.md`'de.
+Backend Fastify. Host süreci boşta durdurup sonraki istekte yeniden
+başlattığı için kullanıcının hissettiği tek gecikme soğuk başlatma; bu yığında
+ölçülen **~265 ms**. Yalnız uykudan sonraki ilk isteği etkiliyor. Ayrıntı ve
+korunan optimizasyonlar `docs/deploy-hostinger.md`'de.
 
 ## Hızlı başlangıç
 
 ```bash
 npm install
-npm test              # 37 test; ağ ya da veritabanı gerekmez
-npm run build         # web/ -> web/dist, Hono onu servis eder
+npm test              # 27 test; ağ ya da veritabanı gerekmez
+npm run build         # web/ -> web/dist, Fastify onu servis eder
 npm run dev           # API, http://localhost:3000
 npm run dev:web       # arayüz, Vite dev sunucusu (API'ye proxy'ler)
 ```

@@ -18,7 +18,7 @@ Hostinger panelinde → uygulaman → Build settings:
 | Start command | `npm start` |
 
 `npm ci` kökte çalışır ve `web` workspace'ini de kurar; `npm run build` onu
-`web/dist`'e derler ve Hono aynı süreçten servis eder. Tek kurulum, tek build,
+`web/dist`'e derler ve Fastify aynı süreçten servis eder. Tek kurulum, tek build,
 tek başlatma komutu — build ayarlarını bir daha değiştirmen gerekmiyor.
 
 Frontend yığını: **Vite 8 + React 19 + HeroUI v3 + Tailwind 4**. HeroUI'nin
@@ -82,38 +82,33 @@ VALUES ('AF-XXXX-XXXX-XXXX', 'pro', 3, 'active', '["ambilight","hdr","presets"]'
 Ödeme sağlayıcısı (Lemon Squeezy / Paddle) bağlandığında bu satırı webhook
 oluşturacak.
 
-## Soğuk başlatma: neden yığın bu
+## Soğuk başlatma: bilinen bedel
 
 Hostinger süreci boşta durdurup sonraki istekte yeniden başlattığı için
 **kullanıcının hissettiği tek gecikme soğuk başlatma.** Saniyede istek sayısı bu
-üründe hiç bağlayıcı değil (günde birkaç lisans yenilemesi). O yüzden yığın
-saniyede istek için değil, açılış süresi için seçildi. Bu makinede ölçülen
-değerler:
+üründe hiç bağlayıcı değil (günde birkaç lisans yenilemesi).
+
+Backend **Fastify** — proje kararı. Bu makinede ölçülen açılış süreleri, karar
+görünür kalsın diye kayıtta:
 
 | Yığın | Soğuk başlatma |
 |---|---|
 | Çıplak `node:http` (taban) | ~75 ms |
-| **Hono + elle doğrulama/hız sınırı** (seçilen) | **~105 ms** |
-| Hono + Zod doğrulayıcı | ~180 ms |
-| Fastify + AJV + rate-limit (ilk sürüm) | ~265 ms |
+| Hono + elle doğrulama | ~105 ms |
+| **Fastify + AJV + rate-limit** (kullanılan) | **~265 ms** |
 
-Somut kararlar, hepsi ölçüme dayalı:
+Yani uygulama uyuduktan sonraki ilk isteğe ~190 ms ekleniyor. Sonraki istekler
+etkilenmiyor. Bunun karşılığında Fastify'ın olgun eklenti ekosistemi, yerleşik
+AJV şema doğrulaması ve pino günlüklemesi geliyor — hepsi kutudan.
 
-- **Hono, Fastify yerine.** Sadece import'u 19 ms'e karşı 107 ms.
-- **Doğrulama elle yazıldı, Zod/AJV yok.** Zod tek başına ~75 ms ekliyordu ve
-  doğrulayıcı süreçteki en pahalı şey olacaktı. Üç küçük istek gövdesi için bu
-  takas savunulabilir; `server/src/lib/validate.js` büyümeye başlarsa takas
-  bozulur ve Zod'a geçmek gerekir (dosyada yazıyor).
-- **pino yerine ~30 satırlık JSON logger.** pino, Fastify'ın import maliyetinin
-  parçasıydı.
-- **Şema kurulumu boot'tan çıktı** (yukarıda).
-- **`node:module` derleme önbelleği açık.** Fastify'da 35 ms değerindeydi; Hono'da
-  marjinal ama bedava.
+Framework'ten bağımsız olan ve **korunan** optimizasyonlar:
+
+- **Şema kurulumu boot'ta değil** → `npm run migrate`. Eskiden açılışta
+  çalışıyordu, yani her soğuk başlatma MySQL sürücüsünü yüklüyor (**78 ms**) ve
+  veritabanına dokunmayan istekler için bile üç DDL gidiş-dönüşü harcıyordu.
+- **`node:module` derleme önbelleği açık** — bu yığında ~35 ms değerinde.
 - **`mysql2` tembel yükleniyor** — `/healthz`, `/v1/version` ve statik dosyalar
-  sürücüye hiç dokunmuyor.
-
-Yan fayda: `node_modules` 30 MB / 3260 dosyadan **8.8 MB / 934 dosyaya** indi, bu
-da her dağıtımdaki `npm ci` süresini kısaltıyor.
+  sürücüye hiç dokunmuyor. `/healthz` bu yüzden en ucuz ısıtma pingi.
 
 ## Bilmen gereken üç Hostinger davranışı
 
@@ -154,6 +149,6 @@ Yerel olarak aynı şeyi çalıştırmak için:
 
 ```bash
 npm install
-npm test          # 23 test, ağ ve veritabanı gerektirmez
+npm test          # 27 test, ağ ve veritabanı gerektirmez
 npm run dev       # geçici anahtar üretir ve uyarır, bellek içi depolama kullanır
 ```

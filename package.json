@@ -2,30 +2,41 @@
   "name": "ambiflux",
   "version": "0.1.0",
   "private": true,
-  "description": "Screen-following ambilight: hosted control plane, local capture engine and ESP32-S3 firmware",
+  "description": "Screen-following ambilight: hosted control plane, browser capture engine and ESP32-S3 firmware",
   "license": "Apache-2.0",
-  "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.9"
   },
   "scripts": {
-    "start": "node server/src/index.js",
-    "build": "npm run build:web --if-present",
-    "dev": "node --watch server/src/index.js",
-    "test": "node --test \"server/test/*.test.js\"",
-    "keygen": "node server/src/scripts/keygen.js",
-    "migrate": "node server/src/scripts/migrate.js",
-    "build:web": "npm run build --workspace @ambiflux/web",
-    "dev:web": "npm run dev --workspace @ambiflux/web"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "keygen": "node scripts/keygen.mjs",
+    "migrate": "node scripts/migrate.mjs"
   },
   "dependencies": {
-    "@fastify/cors": "^10.1.0",
-    "@fastify/rate-limit": "^10.3.0",
-    "@fastify/static": "^8.3.0",
-    "fastify": "^5.12.4",
-    "mysql2": "^3.24.4"
+    "@heroui/react": "~3.2.5",
+    "@heroui/styles": "~3.2.5",
+    "@supabase/supabase-js": "^2.116.0",
+    "next": "^16.3.5",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zod": "^4.6.2"
   },
-  "workspaces": [
-    "web"
-  ]
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.18.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.0"
+  },
+  "imports": {
+    "#lib/*": "./lib/*.ts",
+    "#data/*": "./data/*.ts",
+    "#components/*": "./components/*.tsx",
+    "#test/*": "./test/*.ts"
+  }
 }

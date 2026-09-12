@@ -46,9 +46,11 @@ function explain (error: unknown): string {
 
 interface ActivationProps {
   onActivated: (grant: LicenceGrant) => void
+  /** Present now that this screen is a destination rather than a gate. */
+  onCancel?: () => void
 }
 
-export function Activation ({ onActivated }: ActivationProps) {
+export function Activation ({ onActivated, onCancel }: ActivationProps) {
   const [licenceKey, setLicenceKey] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isPending, setIsPending] = useState(false)
@@ -75,7 +77,8 @@ export function Activation ({ onActivated }: ActivationProps) {
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold">AmbiFlux</h1>
           <p className="text-sm text-muted">
-            Devam etmek için lisans anahtarını gir.
+            Lisans anahtarını gir. Paneli kullanmak için gerekmiyor; anahtar
+            tier'ını ve özelliklerini açıyor.
           </p>
         </div>
 
@@ -115,6 +118,22 @@ export function Activation ({ onActivated }: ActivationProps) {
         >
           Etkinleştir
         </Button>
+
+        {/*
+          Only rendered when a caller supplies a way back. The panel does, now
+          that this screen is somewhere you choose to go rather than a wall you
+          are held behind.
+        */}
+        {onCancel !== undefined && (
+          <Button
+            fullWidth
+            isDisabled={isPending}
+            variant="ghost"
+            onPress={onCancel}
+          >
+            Panele dön
+          </Button>
+        )}
       </Surface>
     </div>
   )

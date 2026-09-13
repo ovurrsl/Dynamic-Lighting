@@ -54,3 +54,6 @@ test/_probe*
 # Packaging scratch. The zip itself is a release asset, not a tracked file.
 extension/*.zip
 extension/.pack/
+
+# PlatformIO build and dependency cache
+firmware/.pio/

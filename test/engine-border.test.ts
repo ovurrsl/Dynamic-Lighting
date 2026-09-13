@@ -472,3 +472,353 @@ test('rejects a grid whose data does not cover its dimensions', () => {
   assert.equal(make().detect(grid(BRIGHT, BRIGHT, BRIGHT, 2, 2)).unknown, true)
   assert.deepEqual(make().detect(grid(BRIGHT, BRIGHT, BRIGHT, 3, 3)), NONE)
 })
+
+// ---------------------------------------------------------------------------
+// Review: adversarial cases. Each pins either a boundary the module already
+// held or one it should hold. Three were findings against the module as first
+// written (a one-frame hole after a candidate switch, disabled time credited
+// to a run, a NaN frame time poisoning the run); the fixes landed with them.
+// ---------------------------------------------------------------------------
+
+/** A detector settled on the letterbox at t = 0 whose candidate has just become the pillarbox. */
+function candidateJustSwitchedToPillarbox (): { d: BorderDetector, switched: number } {
+  const d = settledOnLetterbox()
+  const switched = 10000 + maxInconsistentMs + STEP
+  assert.deepEqual(feed(d, pillarbox(), 10000, switched), LETTERBOX)
+  return { d, switched }
+}
+
+test('a flicker frame arriving right after a candidate switch is discarded like any other', () => {
+  // The flicker protection has a hole exactly one frame wide: the instant the
+  // pillarbox becomes the candidate, the inconsistency run that put it there
+  // is still open, so a single letterbox frame on the very next tick is
+  // "inconsistent for longer than the window" and flips the candidate back,
+  // throwing away the run the pillarbox had just earned. Hyperion has the same
+  // hole (.cpp:170-179 never clears _inconsistentCnt); the point of the state
+  // machine (.cpp:151-159) is that ONE bad frame never costs a run.
+  const { d, switched } = candidateJustSwitchedToPillarbox()
+  assert.deepEqual(d.process(letterbox(), switched + STEP), LETTERBOX)
+  const due = switched + borderSwitchMs
+  assert.deepEqual(feed(d, pillarbox(), switched + 2 * STEP, due - STEP), LETTERBOX)
+  assert.deepEqual(d.process(pillarbox(), due), PILLARBOX, 'the flicker cost the pillarbox its run')
+})
+
+test('time spent disabled does not count toward the candidate\'s consistency run', () => {
+  // The run is stored as the instant it began, so a hard disable that lasts
+  // longer than borderSwitchMs hands the candidate a full run it never earned:
+  // the first frame after re-enable switches on 1.2 s of evidence.
+  const { d, switched } = candidateJustSwitchedToPillarbox()
+  assert.deepEqual(d.process(pillarbox(), switched + STEP), LETTERBOX)
+  d.setDisabled(true)
+  d.setDisabled(false)
+  const resumed = switched + STEP + 2 * borderSwitchMs
+  assert.deepEqual(d.process(pillarbox(), resumed), LETTERBOX, 'switched on the first frame after re-enable')
+  // The run resumes where it left off: borderSwitchMs - STEP still owed.
+  const due = resumed + borderSwitchMs - STEP
+  assert.deepEqual(feed(d, pillarbox(), resumed + STEP, due - STEP), LETTERBOX)
+  assert.deepEqual(d.process(pillarbox(), due), PILLARBOX)
+})
+
+test('a NaN timestamp is not believed and does not poison the run that follows', () => {
+  // `now - NaN` fails every comparison: a NaN frame on a disagreeing border
+  // skips the inconsistency window, and the candidate it installs carries a
+  // NaN start, so no later frame can ever satisfy `consistentFor >= limit`.
+  // The detector is then stuck on the old border for as long as the content
+  // stays put. Rejecting the frame (throw) or ignoring it both pass here.
+  const d = settledOnLetterbox()
+  assert.deepEqual(feed(d, pillarbox(), 10000, 10500), LETTERBOX)
+  try { d.process(pillarbox(), Number.NaN) } catch { /* a RangeError is an acceptable answer */ }
+  assert.deepEqual(feed(d, pillarbox(), 10600, 30000), PILLARBOX, 'twenty seconds of pillarbox never adopted')
+})
+
+test('the inconsistency window closes strictly after maxInconsistentMs and the switch fires exactly at borderSwitchMs', () => {
+  const d = settledOnLetterbox()
+  // Disagreement at 10000 and again exactly maxInconsistentMs later: both
+  // inside the window, both discarded.
+  assert.deepEqual(d.process(pillarbox(), 10000), LETTERBOX)
+  assert.deepEqual(d.process(pillarbox(), 10000 + maxInconsistentMs), LETTERBOX)
+  // One millisecond past it the pillarbox becomes the candidate; its run
+  // starts on that frame, and ends exactly borderSwitchMs later.
+  const adopted = 10000 + maxInconsistentMs + 1
+  assert.deepEqual(d.process(pillarbox(), adopted), LETTERBOX)
+  assert.deepEqual(d.process(pillarbox(), adopted + borderSwitchMs - 1), LETTERBOX)
+  assert.deepEqual(d.process(pillarbox(), adopted + borderSwitchMs), PILLARBOX)
+})
+
+test('frames alternating between two borders never let the outsider accumulate a run', () => {
+  // The window is measured from the FIRST disagreeing frame and reset by any
+  // agreeing one, so a 50% duty cycle of pillarbox frames at 100 ms is a
+  // stream of one-frame flickers. The letterbox run is unbroken meanwhile.
+  const d = settledOnLetterbox()
+  for (let t = 10000; t <= 40000; t += 2 * STEP) {
+    assert.deepEqual(d.process(pillarbox(), t), LETTERBOX, `pillarbox at ${t}`)
+    assert.deepEqual(d.process(letterbox(), t + STEP), LETTERBOX, `letterbox at ${t + STEP}`)
+  }
+})
+
+test('an out-of-order timestamp delays a switch but does not break it', () => {
+  const { d, switched } = candidateJustSwitchedToPillarbox()
+  // A frame stamped before the run began: negative age, not due, nothing else.
+  assert.deepEqual(d.process(pillarbox(), switched - 500), LETTERBOX)
+  const due = switched + borderSwitchMs
+  assert.deepEqual(feed(d, pillarbox(), switched + STEP, due - STEP), LETTERBOX)
+  assert.deepEqual(d.process(pillarbox(), due), PILLARBOX)
+})
+
+test('rapid enable and disable churn leaves the settled state untouched', () => {
+  const d = settledOnLetterbox()
+  for (let i = 0; i < 1000; i++) {
+    d.setDisabled(i % 2 === 0)
+    d.setEnabled(i % 3 !== 0)
+    assert.equal(d.active(), i % 2 !== 0 && i % 3 !== 0, `at ${i}`)
+    assert.equal(d.current(), d.active() ? d.process(letterbox(), STEP) : NO_BORDER)
+  }
+  d.setDisabled(false)
+  d.setEnabled(true)
+  assert.deepEqual(d.current(), LETTERBOX)
+  assert.deepEqual(d.process(pillarbox(), 2 * STEP), LETTERBOX, 'one frame after the churn is still one frame')
+})
+
+/** Wraps a grid so any read past the end of its data throws instead of yielding undefined. */
+function guarded (g: LinearGrid): { grid: LinearGrid, reads: () => number } {
+  let reads = 0
+  const data = new Proxy(g.data, {
+    get (target, prop) {
+      if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+        reads++
+        if (Number(prop) >= target.length) throw new RangeError(`read ${prop} of ${target.length}`)
+      }
+      return Reflect.get(target, prop)
+    }
+  })
+  return { grid: { width: g.width, height: g.height, data }, reads: () => reads }
+}
+
+test('every probe stays inside the grid for every size up to 40x40 in every mode, lit or black', () => {
+  // `undefined < t` is false, so a read past the end would silently count as
+  // a non-black pixel and invent a border edge; the guard makes it throw.
+  for (let w = 1; w <= 40; w++) {
+    for (let h = 1; h <= 40; h++) {
+      for (const mode of BORDER_MODES) {
+        const d = make({ mode })
+        for (const g of [grid(0, 0, 0, w, h), grid(BRIGHT, BRIGHT, BRIGHT, w, h)]) {
+          const r = d.detect(guarded({ ...g, data: new Float32Array(g.data) }).grid)
+          assert.ok(r.unknown || (r.topBottom >= 0 && r.leftRight >= 0), `${mode} ${w}x${h}`)
+        }
+        // A picture in the bottom-right quadrant only: the mirrored probes
+        // (w-1-x, h-1-y) are the ones that reach it.
+        const q = paint(grid(0, 0, 0, w, h), Math.floor(w / 2), Math.floor(h / 2), w, h, BRIGHT, BRIGHT, BRIGHT)
+        d.detect(guarded(q).grid)
+      }
+    }
+  }
+})
+
+test('detection on a 1080p grid reads a few lines, never the frame', () => {
+  const w = 1920
+  const h = 1080
+  // 2.39:1 in 16:9 at 1080p: 803 rows of picture, 138 rows of bar each end.
+  const bars = Math.floor((h - Math.round(w / 2.39)) / 2)
+  const g = paint(grid(0, 0, 0, w, h), 0, bars, w, h - bars, BRIGHT, BRIGHT, BRIGHT)
+  for (const mode of Y_MODES) {
+    assert.deepEqual(make({ mode }).detect(g), { unknown: false, topBottom: bars, leftRight: 0 }, mode)
+  }
+  // Worst case is an all-black frame, where every loop runs to its limit: at
+  // most four probes of three channels per index over w/3 + h/3 indices
+  // (.h:75-76), against six million floats in the frame.
+  const budget = 12 * (Math.floor(w / 3) + Math.floor(h / 3))
+  for (const mode of BORDER_MODES) {
+    const { grid: black1080, reads } = guarded(grid(0, 0, 0, w, h))
+    assert.equal(make({ mode }).detect(black1080).unknown, true, mode)
+    assert.ok(reads() <= budget, `${mode}: ${reads()} channel reads, budget ${budget}`)
+  }
+})
+
+test('NaN, infinite and out-of-range channels: only a value provably under the threshold is black', () => {
+  // The rule is `channel < threshold` on all three, nothing more (.h:297).
+  // A NaN cannot be under anything, so an undecoded pixel reads as picture
+  // and never invents a bar; a negative one is as black as black gets.
+  for (const mode of Y_MODES) {
+    assert.deepEqual(make({ mode }).detect(grid(Number.NaN, Number.NaN, Number.NaN)), NONE, `${mode}: NaN`)
+    assert.deepEqual(make({ mode }).detect(grid(0, 0, Number.NaN)), NONE, `${mode}: one NaN channel`)
+    assert.deepEqual(make({ mode }).detect(grid(2, 2, 2)), NONE, `${mode}: above range`)
+    assert.deepEqual(make({ mode }).detect(grid(Number.POSITIVE_INFINITY, 0, 0)), NONE, `${mode}: +inf`)
+    assert.equal(make({ mode }).detect(grid(-1, -1, -1)).unknown, true, `${mode}: negative`)
+    assert.equal(make({ mode }).detect(grid(Number.NEGATIVE_INFINITY, 0, 0)).unknown, true, `${mode}: -inf`)
+  }
+  // A NaN bar next to a real picture: the picture's edge is still found from
+  // the other probes, and the NaN pixels do not shrink it.
+  const g = paint(letterbox(), 0, 0, W, 2, Number.NaN, Number.NaN, Number.NaN)
+  assert.deepEqual(make({ mode: 'osd' }).detect(g), NONE, 'NaN in the bar is picture')
+})
+
+test('threshold 0 makes nothing black and threshold 1 makes everything short of full white black', () => {
+  // Both ends are legal and both match Hyperion's byte rule (`< 0` never,
+  // `< 255` for everything but 255; BlackBorderDetector.cpp:18-22).
+  const zero = make({ threshold: 0 })
+  assert.equal(zero.linearThreshold, 0)
+  assert.deepEqual(zero.detect(black()), NONE)
+  assert.deepEqual(zero.process(black(), 0), NONE)
+  const one = make({ threshold: 1 })
+  assert.equal(one.linearThreshold, 1)
+  assert.equal(one.detect(grid(0.999, 0.999, 0.999)).unknown, true)
+  assert.deepEqual(one.detect(grid(1, 1, 1)), NONE)
+})
+
+/** The largest float32 strictly below a positive float32. */
+function float32Below (v: number): number {
+  const f = new Float32Array([v])
+  const u = new Uint32Array(f.buffer)
+  u[0] = u[0]! - 1
+  return f[0]!
+}
+
+test('the largest float32 under the threshold is black, so the boundary is exact in the grid\'s own precision', () => {
+  const t = linearBlackThreshold(BORDER_DEFAULTS.threshold)
+  assert.equal(Math.fround(t), t, 'the threshold is itself a float32')
+  const below = float32Below(t)
+  assert.ok(below < t)
+  assert.equal(make().detect(grid(below, below, below)).unknown, true)
+  assert.deepEqual(make().detect(grid(t, t, t)), NONE)
+  // A double a hair under the threshold rounds UP to it in a Float32Array and
+  // reads as picture: that is the grid's precision, not the compare's.
+  const hair = t * (1 - 1e-9)
+  assert.ok(hair < t)
+  assert.equal(Math.fround(hair), t)
+  assert.deepEqual(make().detect(grid(hair, hair, hair)), NONE)
+})
+
+test('asymmetric bars report the smaller side: the probes read both ends and stop at the first picture', () => {
+  // 7 rows of bar on top, 3 at the bottom; 12 columns on the left, 5 on the
+  // right. Default reads the bottom up the middle column and the right along
+  // the middle row, so the smaller bar wins on each axis (.h:92, :104).
+  const g = paint(grid(), 12, 7, W - 5, H - 3, BRIGHT, BRIGHT, BRIGHT)
+  assert.deepEqual(make({ mode: 'default' }).detect(g), { unknown: false, topBottom: 3, leftRight: 5 })
+  assert.deepEqual(make({ mode: 'osd' }).detect(g), { unknown: false, topBottom: 3, leftRight: 5 })
+  // Classic looks only at the top-left corner and reports the LARGER bars.
+  assert.deepEqual(make({ mode: 'classic' }).detect(g), { unknown: false, topBottom: 7, leftRight: 12 })
+  // Letterbox reads the quarter columns from both ends: the bottom wins.
+  assert.deepEqual(make({ mode: 'letterbox' }).detect(g), { unknown: false, topBottom: 3, leftRight: 0 })
+})
+
+test('a caption wide enough to reach the quarter columns fools letterbox mode after all', () => {
+  // The centre column is read from the top only, but w/4 and 3w/4 are read
+  // from the bottom (.h:266-267): a caption spanning them is a picture edge.
+  const wide = paint(letterbox(), 20, H - 4, 76, H - 1, BRIGHT, BRIGHT, BRIGHT)
+  assert.deepEqual(make({ mode: 'letterbox' }).detect(wide), { unknown: false, topBottom: 1, leftRight: 0 })
+  // One column short of the quarter on each side and the rule holds.
+  const narrow = paint(letterbox(), 25, H - 4, 72, H - 1, BRIGHT, BRIGHT, BRIGHT)
+  assert.deepEqual(make({ mode: 'letterbox' }).detect(narrow), LETTERBOX_RAW)
+})
+
+test('an overlay flush against the picture\'s corner column defeats osd, as in Hyperion', () => {
+  // osd reads Y at the detected x and its mirror (.h:220-223): a logo drawn
+  // on column 0 of a letterboxed frame sits exactly on the probe.
+  const flush = paint(letterbox(), 0, 1, 8, 4, BRIGHT, BRIGHT, BRIGHT)
+  assert.deepEqual(make({ mode: 'osd' }).detect(flush), { unknown: false, topBottom: 1, leftRight: 0 })
+  // The same logo one column in is invisible to osd and still fools default
+  // only if it crosses w/3; this one does not.
+  const inset = paint(letterbox(), 1, 1, 9, 4, BRIGHT, BRIGHT, BRIGHT)
+  assert.deepEqual(make({ mode: 'osd' }).detect(inset), LETTERBOX_RAW)
+  assert.deepEqual(make({ mode: 'default' }).detect(inset), LETTERBOX_RAW)
+})
+
+test('grids one pixel wide or tall never throw, and only the probes that fit can find a picture', () => {
+  // 1 x 54: no X third, so default and osd are unknown whatever the content;
+  // letterbox and classic read column 0 and find the bar.
+  const column = paint(grid(0, 0, 0, 1, H), 0, LETTERBOX_BARS, 1, H - LETTERBOX_BARS, BRIGHT, BRIGHT, BRIGHT)
+  assert.equal(make({ mode: 'default' }).detect(column).unknown, true)
+  assert.equal(make({ mode: 'osd' }).detect(column).unknown, true)
+  assert.deepEqual(make({ mode: 'letterbox' }).detect(column), LETTERBOX_RAW)
+  assert.deepEqual(make({ mode: 'classic' }).detect(column), LETTERBOX_RAW)
+  // 96 x 1: no Y third; classic alone walks row 0 and finds the pillarbox.
+  const row = paint(grid(0, 0, 0, W, 1), PILLARBOX_BARS, 0, W - PILLARBOX_BARS, 1, BRIGHT, BRIGHT, BRIGHT)
+  for (const mode of ['default', 'osd', 'letterbox'] as const) {
+    assert.equal(make({ mode }).detect(row).unknown, true, mode)
+  }
+  assert.deepEqual(make({ mode: 'classic' }).detect(row), PILLARBOX_RAW)
+  // 1 x 1 in every mode: nothing to probe, unknown, no throw.
+  for (const mode of BORDER_MODES) {
+    assert.equal(make({ mode }).detect(grid(BRIGHT, BRIGHT, BRIGHT, 1, 1)).unknown, true, mode)
+  }
+})
+
+test('a first frame that is black, then a picture: the picture waits out the window but not borderSwitchMs', () => {
+  // The boot case: black screen, then letterboxed content. Unknown is the
+  // first detection and is accepted at once (trivially: it was the state);
+  // the letterbox then needs maxInconsistentMs of disagreement, and switches
+  // on the frame past it because there is no known border to protect.
+  const d = make()
+  assert.equal(d.process(black(), 0).unknown, true)
+  const adopted = STEP + maxInconsistentMs + STEP
+  assert.equal(feed(d, letterbox(), STEP, adopted - STEP).unknown, true)
+  assert.deepEqual(d.process(letterbox(), adopted), LETTERBOX)
+})
+
+test('a switch to unknown and back reports fresh frozen objects that compare equal to the constants', () => {
+  const d = settledOnLetterbox()
+  const gone = feed(d, black(), 10000, 10000 + maxInconsistentMs + STEP + unknownSwitchMs)
+  assert.deepEqual(gone, UNKNOWN_BORDER)
+  assert.ok(Object.isFrozen(gone))
+  // A known border replaces unknown as soon as its window closes.
+  const back = feed(d, letterbox(), 80000, 80000 + maxInconsistentMs + STEP)
+  assert.deepEqual(back, LETTERBOX)
+  assert.ok(Object.isFrozen(back))
+  assert.throws(() => { (back as Border).topBottom = 0 }, TypeError)
+})
+
+// ---------------------------------------------------------------------------
+// Spec review: probes and formulas pinned exactly.
+// ---------------------------------------------------------------------------
+
+test('osd probes all four picture corners: a block flush against the right edge column is seen too', () => {
+  // Columns 90..95 - the edge column included - rows 1..3 inside the top bar.
+  // Two-corner probing (left column only) would report the intact bar.
+  const topRight = paint(letterbox(), 90, 1, W, 4, BRIGHT, BRIGHT, BRIGHT)
+  assert.deepEqual(make({ mode: 'osd' }).detect(topRight), { unknown: false, topBottom: 1, leftRight: 0 })
+  const bottomRight = paint(letterbox(), 90, H - 4, W, H - 1, BRIGHT, BRIGHT, BRIGHT)
+  assert.deepEqual(make({ mode: 'osd' }).detect(bottomRight), { unknown: false, topBottom: 1, leftRight: 0 })
+})
+
+test('the probes stop exactly at a third: a bar of w/3 columns or h/3 rows is unknown, one pixel less is found', () => {
+  // w/3 = 32: x runs 0..31, all bar. A loop bound of `<=` would read column 32.
+  const wide32 = paint(grid(), 32, 0, W - 32, H, BRIGHT, BRIGHT, BRIGHT)
+  for (const mode of X_MODES) assert.equal(make({ mode }).detect(wide32).unknown, true, `${mode} at 32 columns`)
+  const wide31 = paint(grid(), 31, 0, W - 31, H, BRIGHT, BRIGHT, BRIGHT)
+  for (const mode of X_MODES) {
+    assert.deepEqual(make({ mode }).detect(wide31), { unknown: false, topBottom: 0, leftRight: 31 }, `${mode} at 31 columns`)
+  }
+  // h/3 = 18 for the three modes whose Y loop runs y < h/3. Classic walks a
+  // diagonal clamped to (w/3, h/3) itself (.h:136-149) and so does reach row
+  // 18; it is the one mode that finds an 18-row bar.
+  const deep18 = paint(grid(), 0, 18, W, H - 18, BRIGHT, BRIGHT, BRIGHT)
+  for (const mode of ['default', 'osd', 'letterbox'] as const) assert.equal(make({ mode }).detect(deep18).unknown, true, `${mode} at 18 rows`)
+  assert.deepEqual(make({ mode: 'classic' }).detect(deep18), { unknown: false, topBottom: 18, leftRight: 0 })
+  const deep17 = paint(grid(), 0, 17, W, H - 17, BRIGHT, BRIGHT, BRIGHT)
+  for (const mode of Y_MODES) {
+    assert.deepEqual(make({ mode }).detect(deep17), { unknown: false, topBottom: 17, leftRight: 0 }, `${mode} at 17 rows`)
+  }
+})
+
+test('the probe columns and rows are Hyperion\'s doubled floors, not the naive fractions', () => {
+  // 98 wide: w/4 = 24 and 3 * 24 = 72 (.h:252), where floor(3 * 98 / 4) is 73.
+  // Letterbox mode reads column 72 from the top; a lone lit pixel there is
+  // seen, one at 73 is not.
+  const at72 = paint(paint(grid(0, 0, 0, 98, H), 0, LETTERBOX_BARS, 98, H - LETTERBOX_BARS, BRIGHT, BRIGHT, BRIGHT), 72, 1, 73, 2, BRIGHT, BRIGHT, BRIGHT)
+  assert.deepEqual(make({ mode: 'letterbox' }).detect(at72), { unknown: false, topBottom: 1, leftRight: 0 })
+  const at73 = paint(paint(grid(0, 0, 0, 98, H), 0, LETTERBOX_BARS, 98, H - LETTERBOX_BARS, BRIGHT, BRIGHT, BRIGHT), 73, 1, 74, 2, BRIGHT, BRIGHT, BRIGHT)
+  assert.deepEqual(make({ mode: 'letterbox' }).detect(at73), LETTERBOX_RAW)
+
+  // 56 high: h/3 = 18 and 2 * 18 = 36 (.h:77-78), where floor(2 * 56 / 3) is 37.
+  // Default's X loop reads row 36 from the left.
+  const tallPillar = (): LinearGrid => paint(grid(0, 0, 0, W, 56), PILLARBOX_BARS, 0, W - PILLARBOX_BARS, 56, BRIGHT, BRIGHT, BRIGHT)
+  const at36 = paint(tallPillar(), 2, 36, 3, 37, BRIGHT, BRIGHT, BRIGHT)
+  assert.deepEqual(make({ mode: 'default' }).detect(at36), { unknown: false, topBottom: 0, leftRight: 2 })
+  const at37 = paint(tallPillar(), 2, 37, 3, 38, BRIGHT, BRIGHT, BRIGHT)
+  assert.deepEqual(make({ mode: 'default' }).detect(at37), { unknown: false, topBottom: 0, leftRight: PILLARBOX_BARS })
+})
+
+test('an oversized blurRemovePx is clamped so a picture always remains', () => {
+  assert.deepEqual(make({ blurRemovePx: 30 }).process(letterbox(), 0), { unknown: false, topBottom: Math.floor((H - 1) / 2), leftRight: 0 })
+  assert.deepEqual(make({ blurRemovePx: 60 }).process(pillarbox(), 0), { unknown: false, topBottom: 0, leftRight: Math.floor((W - 1) / 2) })
+})

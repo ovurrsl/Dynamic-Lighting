@@ -10,10 +10,12 @@ import { srgbToLinear } from '#lib/light'
  *
  * Port of Hyperion's BlackBorderDetector.h (the four probe patterns) and
  * BlackBorderProcessor.cpp (the hysteresis that keeps a border from twitching),
- * nightly c9f12db; bare `.h:line` and `.cpp:line` references below point into
- * those two files. The detectors are stateless, one call per frame, and by
- * design read a handful of lines rather than the whole frame - O(lines), not
- * O(pixels) - so running them at 120 Hz costs nothing worth measuring.
+ * nightly c9f12db. Citations: bare `.h:line` points into
+ * BlackBorderDetector.h, `Processor.h:line` into BlackBorderProcessor.h and
+ * `.cpp:line` into BlackBorderProcessor.cpp. The detectors are stateless, one
+ * call per frame, and by design read a handful of lines rather than the whole
+ * frame - O(lines), not O(pixels) - so running them at 120 Hz costs nothing
+ * worth measuring.
  *
  * Where this port departs from Hyperion, on purpose:
  *
@@ -33,8 +35,20 @@ import { srgbToLinear } from '#lib/light'
  *   darkness as in Hyperion without re-encoding a pixel to test it.
  * - A disabled detector returns NO_BORDER and touches nothing. Hyperion's
  *   process() overwrites its current border with "unknown" while disabled
- *   (.h:76-81), throwing away the consistent run it had built; here the state
- *   is frozen and resumes where it was when the effect ends.
+ *   (Processor.h:76-81), throwing away the consistent run it had built; here
+ *   the state is frozen and resumes where it was when the effect ends - and
+ *   the time spent disabled is not credited to any run: the runs are shifted
+ *   forward by the gap on the first frame after re-enabling, so a candidate
+ *   cannot win on evidence nobody looked at.
+ * - Adopting a new candidate closes the disagreeing run that installed it.
+ *   Hyperion leaves the counter at its maximum (.cpp:170-179), so ONE frame
+ *   of the old border on the very next tick counts as "inconsistent for too
+ *   long" and flips the candidate straight back, discarding the run the new
+ *   border had just earned - the one thing the state machine exists to
+ *   prevent (.cpp:151-159).
+ * - A non-finite frame time is refused. NaN fails every comparison, so a
+ *   NaN-stamped disagreeing frame skipped the window and installed a
+ *   candidate whose run could never become due.
  * - The very first detection is accepted at once whatever maxInconsistentMs
  *   is. Hyperion gets its fast start from the literal `_inconsistentCnt(10)`
  *   (.cpp:24) happening to equal the default limit (.cpp:17); a config with a
@@ -91,8 +105,9 @@ export interface BorderDetectorOptions {
   threshold?: number
   /**
    * Pixels added to every non-zero detected border, to step past the soft
-   * edge a scaler leaves between bar and picture (.h:92-100). Zero stays zero.
-   * Default 1.
+   * edge a scaler leaves between bar and picture (Processor.h:92-100). Zero
+   * stays zero, and the result is clamped so at least one row and one column
+   * of picture remain; Hyperion's is unclamped. Default 1.
    */
   blurRemovePx?: number
   /** Time an unknown result must persist before it replaces a known border. Default 60000 (Hyperion: 600 frames). */
@@ -105,6 +120,12 @@ export interface BorderDetectorOptions {
    * frames). The author's reason is the best comment in the repository
    * (.cpp:155-159): a capture card's flaky power supply produced "random"
    * frames with smaller bars every few frames, even on a frozen image.
+   *
+   * Measured from the first disagreeing frame, inclusively: at 10 FPS the
+   * switch lands on the twelfth disagreeing frame where Hyperion's count
+   * (incremented before it is compared, .cpp:170-171) lands on the eleventh,
+   * and 0 still discards the first disagreeing frame rather than disabling
+   * the filter.
    */
   maxInconsistentMs?: number
   /** The user's switch. Default true. See `setDisabled` for the other one. */
@@ -350,13 +371,20 @@ function validateGrid (grid: LinearGrid): void {
 // Hysteresis.
 // ---------------------------------------------------------------------------
 
-/** .h:92-100: step past the scaler's soft edge. Unknown has nothing to grow. */
-function withBlurRemoved (detected: Readonly<Border>, px: number): Readonly<Border> {
+/**
+ * Processor.h:92-100: step past the scaler's soft edge. Unknown has nothing
+ * to grow. Clamped so that some picture always remains: an oversized
+ * blurRemovePx is a configuration mistake, not a reason for the sampler to
+ * refuse every frame.
+ */
+function withBlurRemoved (detected: Readonly<Border>, px: number, grid: LinearGrid): Readonly<Border> {
   if (detected.unknown || px === 0) return detected
+  const maxTopBottom = Math.floor((grid.height - 1) / 2)
+  const maxLeftRight = Math.floor((grid.width - 1) / 2)
   return {
     unknown: false,
-    topBottom: detected.topBottom > 0 ? detected.topBottom + px : 0,
-    leftRight: detected.leftRight > 0 ? detected.leftRight + px : 0
+    topBottom: detected.topBottom > 0 ? Math.min(detected.topBottom + px, maxTopBottom) : 0,
+    leftRight: detected.leftRight > 0 ? Math.min(detected.leftRight + px, maxLeftRight) : 0
   }
 }
 
@@ -398,6 +426,10 @@ class BorderProcessor implements BorderDetector {
   private consistentSince = 0
   /** When the current run of detections disagreeing with the candidate began; null while they agree. */
   private inconsistentSince: number | null = null
+  /** Time of the last frame that was processed; null before the first. */
+  private lastSeen: number | null = null
+  /** Set when detection stops; the first frame after it resumes shifts the runs past the gap. */
+  private resumePending = false
 
   constructor (options: BorderDetectorOptions, clock: Clock) {
     this.clock = clock
@@ -424,7 +456,21 @@ class BorderProcessor implements BorderDetector {
 
   process (grid: LinearGrid, now: number = this.clock()): Readonly<Border> {
     if (!this.active()) return NO_BORDER
-    this.update(withBlurRemoved(this.detect(grid), this.blurRemovePx), now)
+    if (!Number.isFinite(now)) throw new RangeError(`border: frame time must be finite, got ${now}`)
+    if (this.resumePending) {
+      // Detection was off between the last frame and this one; the runs are
+      // moved forward by that gap so it counts for nothing.
+      this.resumePending = false
+      if (this.lastSeen !== null) {
+        const gap = now - this.lastSeen
+        if (gap > 0) {
+          this.consistentSince += gap
+          if (this.inconsistentSince !== null) this.inconsistentSince += gap
+        }
+      }
+    }
+    this.update(withBlurRemoved(this.detect(grid), this.blurRemovePx, grid), now)
+    this.lastSeen = now
     return this.currentBorder
   }
 
@@ -433,11 +479,15 @@ class BorderProcessor implements BorderDetector {
   }
 
   setEnabled (enabled: boolean): void {
+    const wasActive = this.active()
     this.userEnabled = enabled
+    if (wasActive && !this.active()) this.resumePending = true
   }
 
   setDisabled (disabled: boolean): void {
+    const wasActive = this.active()
     this.hardDisabled = disabled
+    if (wasActive && !this.active()) this.resumePending = true
   }
 
   // Hyperion keeps a third, derived flag up to date in both setters
@@ -451,6 +501,8 @@ class BorderProcessor implements BorderDetector {
     this.candidate = null
     this.consistentSince = 0
     this.inconsistentSince = null
+    this.lastSeen = null
+    this.resumePending = false
   }
 
   private update (detected: Readonly<Border>, now: number): void {
@@ -468,11 +520,13 @@ class BorderProcessor implements BorderDetector {
       }
       this.candidate = detected
       this.consistentSince = now
+      // The disagreeing run has done its job. Hyperion leaves its counter at
+      // the maximum here (.cpp:170-179), which lets a single frame of the old
+      // border on the next tick flip the candidate straight back.
+      this.inconsistentSince = null
     }
 
-    // .cpp:182-188. Also the only place the inconsistent run is cleared after
-    // a candidate switch: a candidate that at once disagrees with the next
-    // frame is replaced again without a fresh wait, exactly as in Hyperion.
+    // .cpp:182-188.
     if (bordersEqual(this.currentBorder, detected)) {
       this.inconsistentSince = null
       return

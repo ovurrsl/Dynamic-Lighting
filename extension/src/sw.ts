@@ -165,6 +165,13 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
       )
       return true
 
+    case 'ambiflux/prepare':
+      ensureOffscreen().then(
+        () => sendResponse({ ready: true }),
+        (error: unknown) => sendResponse({ ready: false, error: String(error) })
+      )
+      return true
+
     case 'ambiflux/start':
     case 'ambiflux/serial':
       relayToOffscreen({ ...message, target: 'offscreen' })

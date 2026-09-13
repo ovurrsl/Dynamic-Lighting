@@ -30,11 +30,19 @@ document.getElementById('serial')?.addEventListener('click', async () => {
 })
 
 document.getElementById('start')?.addEventListener('click', () => {
+  const asked = performance.now()
   chrome.desktopCapture.chooseDesktopMedia(['screen', 'window'], (streamId) => {
     if (!streamId) { say('Ekran seçilmedi.'); return }
+    // How long the id had been alive when the engine got it. It expires within
+    // seconds, so this number is the first thing to look at when a capture
+    // fails for no apparent reason.
+    const aged = Math.round(performance.now() - asked)
     const message: Message = { type: 'ambiflux/start', target: 'sw', streamId }
     chrome.runtime.sendMessage(message, (response: unknown) => {
-      say(`Başlatıldı: ${JSON.stringify(response)}`)
+      const body = response as { state?: string, error?: string } | undefined
+      say(body?.state === 'running'
+        ? `Yakalama çalışıyor. (seçim ${aged} ms sürdü)`
+        : `Başlatılamadı: ${body?.error ?? JSON.stringify(response)}\n(seçim ${aged} ms sürdü)`)
     })
   })
 })
@@ -42,6 +50,17 @@ document.getElementById('start')?.addEventListener('click', () => {
 document.getElementById('stop')?.addEventListener('click', () => {
   const message: Message = { type: 'ambiflux/stop', target: 'sw' }
   chrome.runtime.sendMessage(message, (response: unknown) => say(`Durduruldu: ${JSON.stringify(response)}`))
+})
+
+/**
+ * Build the engine document while the popup is merely open. By the time a
+ * screen has been chosen it already exists, so the streamId is consumed
+ * immediately instead of waiting out the document's startup - and the id only
+ * lives for a few seconds.
+ */
+chrome.runtime.sendMessage({ type: 'ambiflux/prepare', target: 'sw' } satisfies Message, () => {
+  // Nothing to do with the answer; the failure path is the start button's.
+  void chrome.runtime.lastError
 })
 
 const ping: Message = { type: 'ambiflux/ping', target: 'sw' }

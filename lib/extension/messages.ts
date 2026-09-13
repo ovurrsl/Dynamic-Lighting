@@ -30,6 +30,16 @@ export type Message =
    */
   | { type: 'ambiflux/start'; target: Target; streamId: string }
   | { type: 'ambiflux/stop'; target: Target }
+  /**
+   * Build the engine document NOW, before anything needs it.
+   *
+   * The streamId from chrome.desktopCapture expires within seconds, and
+   * creating the offscreen document is not instant - so doing it after the
+   * picker returns spends the id's whole lifetime on document startup. The
+   * popup sends this when it opens, which is many seconds before the user has
+   * finished choosing a screen.
+   */
+  | { type: 'ambiflux/prepare'; target: Target }
   /** Asks the worker for the engine's state and its latest statistics. */
   | { type: 'ambiflux/status'; target: Target }
   | { type: 'ambiflux/status-reply'; version: string; state: EngineState; stats: EngineStats | null }

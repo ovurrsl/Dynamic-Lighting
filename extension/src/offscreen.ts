@@ -221,27 +221,53 @@ function scheduleReconnect (): void {
 // Capture side.
 // ---------------------------------------------------------------------------
 
+/**
+ * Opens the capture the picker chose.
+ *
+ * The streamId from chrome.desktopCapture is consumed through getUserMedia with
+ * Chromium's legacy `mandatory` constraints; this is the documented offscreen
+ * pattern and the only way a document with no user gesture can start a screen
+ * capture.
+ *
+ * It is tried twice on purpose. `maxFrameRate` is a legacy constraint, and a
+ * `mandatory` block is all-or-nothing: if Chrome does not honour one member it
+ * rejects the whole request, and the error it gives is about the capture rather
+ * than about the constraint. Dropping the rate and trying again separates the
+ * two causes that otherwise look identical - a rejected constraint from a
+ * streamId that has already expired - and the rate is a ceiling we can live
+ * without (the pipeline is latest-wins, so an over-fast source costs drops,
+ * not correctness).
+ */
+async function openCapture (streamId: string): Promise<MediaStream> {
+  const base = { chromeMediaSource: 'desktop', chromeMediaSourceId: streamId }
+  const attempt = async (mandatory: Record<string, unknown>): Promise<MediaStream> =>
+    navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory } } as unknown as MediaStreamConstraints)
+  try {
+    return await attempt({ ...base, maxFrameRate: OUTPUT_HZ })
+  } catch (first) {
+    try {
+      return await attempt(base)
+    } catch (second) {
+      // Both messages, because which one appeared tells you which cause it was.
+      throw new Error(`${describeCaptureError(second)} (kare hızı sınırıyla: ${describeCaptureError(first)})`)
+    }
+  }
+}
+
+function describeCaptureError (error: unknown): string {
+  if (!(error instanceof Error)) return String(error)
+  // DOMException carries the useful half in `name`; `message` alone reads as
+  // "Error starting tab capture" whatever actually went wrong.
+  return error.name === '' || error.name === 'Error' ? error.message : `${error.name}: ${error.message}`
+}
+
 async function start (streamId: string): Promise<void> {
   if (state === 'running' || state === 'starting') stop()
   state = 'starting'
   lastError = undefined
   report()
   try {
-    // The streamId from chrome.desktopCapture is consumed through getUserMedia
-    // with the Chromium-specific `mandatory` constraints; this is the
-    // documented offscreen pattern and the only way a document without a user
-    // gesture can begin a screen capture.
-    const constraints = {
-      audio: false,
-      video: {
-        mandatory: {
-          chromeMediaSource: 'desktop',
-          chromeMediaSourceId: streamId,
-          maxFrameRate: OUTPUT_HZ
-        }
-      }
-    } as unknown as MediaStreamConstraints
-    const stream = await navigator.mediaDevices.getUserMedia(constraints)
+    const stream = await openCapture(streamId)
     const video = stream.getVideoTracks()[0]
     if (video === undefined) throw new Error('no video track')
     track = video

@@ -445,7 +445,7 @@ out = clamp(round(f), 0, 255)
 residual = f - out          // yuvarlama hatası sonraki kareye taşınıyor
 ```
 
-Hedef 10.4 ise 25 Hz'de 10,10,11,10,10,11… çıkıyor ve göz 10.4 olarak
+Hedef 10.4 ise 25 Hz'de 10,11,10,11,10,10,11,10,11,10… çıkıyor ve göz 10.4 olarak
 integre ediyor. `mean ∈ [0,255]` olduğu için residual ±0.5 civarında sınırlı —
 wind-up yok.
 

@@ -1,3 +1,5 @@
+import type { EngineConfig } from '#lib/engine/config'
+
 /**
  * Every message that crosses a boundary in the extension, as one discriminated
  * union. Three boundaries exist and they are not interchangeable:
@@ -36,6 +38,16 @@ export type Message =
    * gesture); the engine should look again with getPorts() and connect.
    */
   | { type: 'ambiflux/serial'; target: Target }
+  /**
+   * Replaces the engine's configuration - the layout, the blacklist, the
+   * channel order. `config` is UNVALIDATED here on purpose: it arrives from
+   * the panel or from chrome.storage, so the worker parses it with
+   * parseEngineConfig and answers with the error rather than trusting it.
+   */
+  | { type: 'ambiflux/config'; target: Target; config: unknown }
+  /** Asks for the configuration in force. */
+  | { type: 'ambiflux/config-get'; target: Target }
+  | { type: 'ambiflux/config-reply'; config: EngineConfig | null; error?: string }
   /** Offscreen -> worker: the latest statistics, kept for whoever asks next. */
   | { type: 'ambiflux/stats'; target: Target; stats: EngineStats }
   | { type: 'ambiflux/state'; target: Target; state: EngineState }
@@ -62,6 +74,8 @@ export type LinkMode = 'none' | 'loopback' | 'port'
  */
 export interface EngineStats {
   state: EngineState
+  /** LEDs the configured layout describes, so the panel can show what it is driving. */
+  leds: number
   /** Frames the capture delivered since start. */
   capturedFrames: number
   /** Delivered capture rate over the last two seconds; count-based, never getSettings(). */

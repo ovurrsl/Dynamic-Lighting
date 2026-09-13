@@ -1,13 +1,14 @@
-import { createAdjustment } from '#lib/engine/adjust'
+import { createAdjustment, type Adjustment } from '#lib/engine/adjust'
 import { createBorderDetector } from '#lib/engine/border'
+import { DEFAULT_ENGINE_CONFIG, parseEngineConfig, resolveLayout, type EngineConfig } from '#lib/engine/config'
 import { allocLinearGrid, createRgbaDecoder } from '#lib/engine/decode'
-import { REFERENCE_LAYOUT, classicLayout, ledCount } from '#lib/engine/layout'
+import { createColorOrder, type ColorOrderStage } from '#lib/engine/order'
 import { HEADER_SIZE, encodeAfx, frameSize } from '#lib/engine/protocol'
-import { createSampler } from '#lib/engine/sample'
+import { createSampler, type Sampler } from '#lib/engine/sample'
 import { createLoopbackSink, createSerialWriter, type LoopbackSink, type SerialWriter } from '#lib/engine/serial'
-import { createSmoother } from '#lib/engine/smooth'
+import { createSmoother, type Smoother } from '#lib/engine/smooth'
 import { createArrivalMeter, createValueMeter } from '#lib/engine/stats'
-import { NO_BORDER, allocLedColors, type Border } from '#lib/engine/types'
+import { NO_BORDER, allocLedColors, type Border, type LedColors } from '#lib/engine/types'
 import { isMessage, type EngineState, type EngineStats, type LinkMode, type Message } from '#lib/extension/messages'
 import { encodeLinear16 } from '#lib/light'
 
@@ -19,8 +20,9 @@ import { encodeLinear16 } from '#lib/light'
  *   -> 2D canvas -> getImageData -> sRGB decode (lib/engine/decode)
  *   -> black-border detector -> sampler -> adjustment -> smoother target
  *
- *   fixed tick -> smoother.tick -> encodeLinear16 -> Afx frame
- *   -> latest-wins serial writer -> Web Serial port, or the loopback sink
+ *   fixed tick -> smoother.tick -> channel order -> encodeLinear16
+ *   -> Afx frame -> latest-wins serial writer -> Web Serial port, or the
+ *   loopback sink
  *
  * Two rules from docs/hyperion-port-plan.md hold everywhere in this file:
  *
@@ -36,6 +38,11 @@ import { encodeLinear16 } from '#lib/light'
  * WebGL here. One unknown remains, and it is measured by the panel's counters
  * rather than assumed: whether this document's timers and frame delivery are
  * throttled the way a hidden tab's are.
+ *
+ * Everything the rig is - how many LEDs, where each looks, how the strip is
+ * wired - lives in the `EngineConfig` the worker hands over, and the stages
+ * that depend on it are rebuilt when it changes. The capture keeps running
+ * across a rebuild: a layout edit should not cost the user their screen pick.
  */
 
 const GRID_W = 128
@@ -50,20 +57,9 @@ const RECONNECT_MS = 3000
 
 const clock = (): number => performance.now()
 
-const LEDS = ledCount(REFERENCE_LAYOUT)
-const layout = classicLayout(REFERENCE_LAYOUT)
-
 const decoder = createRgbaDecoder(GRID_W, GRID_H)
 const grid = allocLinearGrid(GRID_W, GRID_H)
 const detector = createBorderDetector({}, clock)
-const sampler = createSampler({ layout, width: GRID_W, height: GRID_H })
-const adjustment = createAdjustment([{ leds: '*' }], LEDS)
-const smoother = createSmoother({ mode: 'asymmetric', count: LEDS, outputHz: OUTPUT_HZ }, clock)
-const target = allocLedColors(LEDS)
-
-/** One wire buffer; the payload is encoded straight into it and encodeAfx leaves it in place. */
-const wire = new Uint8Array(frameSize('Afx', LEDS))
-const wirePayload = wire.subarray(HEADER_SIZE, HEADER_SIZE + LEDS * 6)
 
 const canvas = new OffscreenCanvas(GRID_W, GRID_H)
 const ctx = requireContext(canvas)
@@ -89,6 +85,58 @@ let reader: ReadableStreamDefaultReader<VideoFrame> | null = null
 let processing: Promise<void> | null = null
 let tickTimer: ReturnType<typeof setInterval> | null = null
 let reportTimer: ReturnType<typeof setInterval> | null = null
+
+// ---------------------------------------------------------------------------
+// The configured stages. Rebuilt together, because they all depend on the LED
+// count and a half-rebuilt pipeline would write a frame of the wrong length.
+// ---------------------------------------------------------------------------
+
+interface Stages {
+  config: EngineConfig
+  leds: number
+  sampler: Sampler
+  adjustment: Adjustment
+  order: ColorOrderStage
+  smoother: Smoother
+  target: LedColors
+  /** One wire buffer; the payload is encoded into it in place. */
+  wire: Uint8Array
+  wirePayload: Uint8Array
+}
+
+function build (config: EngineConfig): Stages {
+  const layout = resolveLayout(config)
+  const leds = layout.length
+  const wire = new Uint8Array(frameSize('Afx', leds))
+  return {
+    config,
+    leds,
+    sampler: createSampler({ layout, width: GRID_W, height: GRID_H }),
+    adjustment: createAdjustment([{ leds: '*' }], leds),
+    order: createColorOrder(leds, {
+      order: config.colorOrder.order,
+      ...(config.colorOrder.overrides === undefined ? {} : { overrides: config.colorOrder.overrides })
+    }),
+    smoother: createSmoother({ mode: 'asymmetric', count: leds, outputHz: OUTPUT_HZ }, clock),
+    target: allocLedColors(leds),
+    wire,
+    wirePayload: wire.subarray(HEADER_SIZE, HEADER_SIZE + leds * 6)
+  }
+}
+
+let stages = build(DEFAULT_ENGINE_CONFIG)
+
+/**
+ * Swaps in a new configuration. The border the detector found is kept - it is
+ * a fact about the content, not about the strip - but the sampler is told
+ * again, because its index map is built per border.
+ */
+function applyConfig (value: unknown): void {
+  const config = parseEngineConfig(value)
+  const next = build(config)
+  next.sampler.setBorder(border)
+  stages = next
+}
 
 // ---------------------------------------------------------------------------
 // The link: a paired Web Serial port when there is one, the loopback otherwise.
@@ -221,7 +269,7 @@ function resetCounters (): void {
   pipelineDrops = 0
   border = NO_BORDER
   detector.reset()
-  smoother.reset()
+  stages.smoother.reset()
 }
 
 async function pump (video: MediaStreamTrack): Promise<void> {
@@ -272,11 +320,14 @@ async function processFrame (frame: VideoFrame, arrivedAt: number): Promise<void
     decoder.decode(image.data, grid)
 
     const now = clock()
+    // Read `stages` once: a config swap between two of these lines would mix a
+    // sampler with another layout's target buffer.
+    const s = stages
     border = detector.process(grid, now)
-    sampler.setBorder(border)
-    sampler.sample(grid, target, 'mean')
-    adjustment.apply(target)
-    smoother.setTarget(target, now)
+    s.sampler.setBorder(border)
+    s.sampler.sample(grid, s.target, 'mean')
+    s.adjustment.apply(s.target)
+    s.smoother.setTarget(s.target, now)
     processTimes.add(clock() - arrivedAt)
     // A frame is the most precise clock edge we get; take an output slot if
     // one is open rather than wait for the 4 ms timer.
@@ -293,13 +344,17 @@ async function processFrame (frame: VideoFrame, arrivedAt: number): Promise<void
 
 function tick (): void {
   if (state !== 'running') return
+  const s = stages
   const now = clock()
-  const out = smoother.tick(now)
+  const out = s.smoother.tick(now)
   if (out === null) return
   outputs.mark(now)
-  encodeLinear16(out, wirePayload)
-  encodeAfx(wirePayload, wire)
-  writer.send(wire)
+  // The channel order is the last thing before the bytes: everything above it,
+  // the corner calibration included, works in real colours.
+  s.order.apply(out)
+  encodeLinear16(out, s.wirePayload)
+  encodeAfx(s.wirePayload, s.wire)
+  writer.send(s.wire)
 }
 
 function stop (): void {
@@ -318,9 +373,10 @@ function stop (): void {
   // One black frame so the strip does not hold the last picture; the port
   // stays open for the next session.
   if (linkMode === 'port') {
-    wirePayload.fill(0)
-    encodeAfx(wirePayload, wire)
-    writer.send(wire)
+    const s = stages
+    s.wirePayload.fill(0)
+    encodeAfx(s.wirePayload, s.wire)
+    writer.send(s.wire)
   }
   report()
 }
@@ -334,6 +390,7 @@ function report (): void {
   const settings = track?.getSettings()
   const stats: EngineStats = {
     state,
+    leds: stages.leds,
     capturedFrames: captured,
     deliveredFps: a.fps,
     interArrivalMs: { p50: a.p50, p99: a.p99, max: a.max },
@@ -375,6 +432,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         .then(connectSerial)
         .then(() => sendResponse({ link: linkMode, port: portLabel, error: lastError }))
       return true
+    case 'ambiflux/config':
+      try {
+        applyConfig(message.config)
+        sendResponse({ type: 'ambiflux/config-reply', config: stages.config } satisfies Message)
+      } catch (error) {
+        // The engine keeps the configuration it had: a bad edit must not stop
+        // the strip mid-film.
+        sendResponse({
+          type: 'ambiflux/config-reply',
+          config: stages.config,
+          error: error instanceof Error ? error.message : String(error)
+        } satisfies Message)
+      }
+      return false
+    case 'ambiflux/config-get':
+      sendResponse({ type: 'ambiflux/config-reply', config: stages.config } satisfies Message)
+      return false
     case 'ambiflux/ping':
       sendResponse({ type: 'ambiflux/pong', version: 'offscreen', engine: state } satisfies Message)
       return false
@@ -383,4 +457,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 })
 
-report()
+/**
+ * The worker holds the stored configuration, so ask for it as soon as this
+ * document exists rather than waiting for the first edit. Until it answers the
+ * reference rig is in force, which is also what a fresh install has.
+ */
+void chrome.runtime.sendMessage({ type: 'ambiflux/config-get', target: 'sw' } satisfies Message)
+  .then((reply: unknown) => {
+    if (typeof reply === 'object' && reply !== null && (reply as { type?: string }).type === 'ambiflux/config-reply') {
+      const config = (reply as { config: unknown }).config
+      if (config !== null && config !== undefined) applyConfig(config)
+    }
+  })
+  .catch(() => { /* no stored config yet; the default stands */ })
+  .finally(() => { report() })

@@ -1,5 +1,6 @@
 import { APP_VERSION } from '#data/version'
 
+import { DEFAULT_ENGINE_CONFIG, parseEngineConfig, type EngineConfig } from '#lib/engine/config'
 import { isMessage, type Message } from '#lib/extension/messages'
 
 /**
@@ -16,6 +17,8 @@ import { isMessage, type Message } from '#lib/extension/messages'
  */
 
 const OFFSCREEN_URL = 'offscreen.html'
+/** Where the configuration lives across a worker that Chrome keeps killing. */
+const CONFIG_KEY = 'ambiflux/config'
 
 let creating: Promise<void> | null = null
 
@@ -44,6 +47,59 @@ async function ensureOffscreen (): Promise<void> {
 
 let lastState: Message & { type: 'ambiflux/state' } | null = null
 let lastStats: Message & { type: 'ambiflux/stats' } | null = null
+
+/**
+ * The configuration in force, and the worker is its owner: the offscreen
+ * document is destroyed whenever capture stops and this worker itself is killed
+ * after ~30 s idle, so neither can hold it. chrome.storage.local survives both.
+ *
+ * Read through `loadConfig`, which parses what storage returns rather than
+ * trusting it: the stored value was written by an older version of this
+ * extension, which is a trust boundary like any other.
+ */
+let config: EngineConfig | null = null
+
+async function loadConfig (): Promise<EngineConfig> {
+  if (config !== null) return config
+  try {
+    const stored = await chrome.storage.local.get(CONFIG_KEY)
+    const raw = stored[CONFIG_KEY]
+    config = raw === undefined ? DEFAULT_ENGINE_CONFIG : parseEngineConfig(raw)
+  } catch {
+    // A config this version cannot read is not a reason to light nothing; the
+    // reference rig stands until the panel sends a good one.
+    config = DEFAULT_ENGINE_CONFIG
+  }
+  return config
+}
+
+/**
+ * Validates, stores and forwards a new configuration. Validation happens here
+ * as well as in the engine because this is the boundary the panel talks to: a
+ * config that cannot be built must never reach storage, or the next start
+ * would load it and fail with no one listening.
+ */
+async function setConfig (value: unknown): Promise<{ config: EngineConfig, error?: string }> {
+  let parsed: EngineConfig
+  try {
+    parsed = parseEngineConfig(value)
+  } catch (error) {
+    return { config: await loadConfig(), error: error instanceof Error ? error.message : String(error) }
+  }
+  config = parsed
+  await chrome.storage.local.set({ [CONFIG_KEY]: parsed })
+  // Only if the engine is up: creating the document just to configure it would
+  // start a capture nobody asked for.
+  if (await offscreenExists()) {
+    try {
+      await chrome.runtime.sendMessage({ type: 'ambiflux/config', target: 'offscreen', config: parsed } satisfies Message)
+    } catch {
+      // The document went away between the check and the send; it will ask for
+      // the configuration itself when it next loads.
+    }
+  }
+  return { config: parsed }
+}
 
 async function relayToOffscreen (message: Message): Promise<unknown> {
   await ensureOffscreen()
@@ -89,6 +145,24 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
 
     case 'ambiflux/status':
       status().then(sendResponse, (error: unknown) => sendResponse({ error: String(error) }))
+      return true
+
+    case 'ambiflux/config':
+      setConfig(message.config).then(
+        (result) => sendResponse({
+          type: 'ambiflux/config-reply',
+          config: result.config,
+          ...(result.error === undefined ? {} : { error: result.error })
+        } satisfies Message),
+        (error: unknown) => sendResponse({ type: 'ambiflux/config-reply', config: null, error: String(error) } satisfies Message)
+      )
+      return true
+
+    case 'ambiflux/config-get':
+      loadConfig().then(
+        (current) => sendResponse({ type: 'ambiflux/config-reply', config: current } satisfies Message),
+        (error: unknown) => sendResponse({ type: 'ambiflux/config-reply', config: null, error: String(error) } satisfies Message)
+      )
       return true
 
     case 'ambiflux/start':

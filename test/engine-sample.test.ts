@@ -7,6 +7,7 @@ import {
   KMEANS_CONVERGENCE,
   KMEANS_MAX_ITERATIONS,
   LARGE_REGION_PIXELS,
+  MAX_ACCURACY_LEVEL,
   SAMPLE_MODES,
   createSampler,
   type SampleMode,
@@ -322,7 +323,7 @@ test('dominant returns the modal colour of a 70/30 split, exactly', () => {
 })
 
 test('dominant pools near-identical shades, so dithered flat content beats a smaller solid patch (Hyperion keys on the exact byte value)', () => {
-  // 40 pixels of one grey, 35 of a grey one 8-bit step away, 45 of red. On
+  // 40 pixels of one grey, 35 of a grey one sRGB step away (188 vs 189), 45 of red. On
   // exact keys (ImageToLedsMap.h:586) red is the largest single value and
   // wins; on 5-bit keys the two greys share a bin and their 75 votes win.
   const a1: Rgb = [0.5, 0.5, 0.5]
@@ -395,7 +396,7 @@ test('accuracyLevel outside 0..4 is clamped and reported, not logged', () => {
   const high = sampler(FULL_FRAME, 10, 10, { accuracyLevel: 7 })
   assert.equal(high.warnings.length, 1)
   assert.match(high.warnings[0]!, /accuracyLevel 7/)
-  assert.match(high.warnings[0]!, /4/)
+  assert.match(high.warnings[0]!, new RegExp(`using ${MAX_ACCURACY_LEVEL}`))
   const max = sampler(FULL_FRAME, 10, 10, { accuracyLevel: 4 })
   assert.deepEqual(max.warnings, [])
   assert.deepEqual(led(sampleAll(high, g, 'dominantAdvanced'), 0), led(sampleAll(max, g, 'dominantAdvanced'), 0))
@@ -862,4 +863,44 @@ test('a longer grid buffer and a longer output buffer are accepted, and only cou
     for (let i = 0; i < LEDS; i++) assert.deepEqual(led(out, i), [f(0.3), f(0.6), f(0.9)], `${mode} LED ${i}`)
     assert.deepEqual(Array.from(out.subarray(LEDS * 3)), [f(0.7), f(0.7), f(0.7)], `${mode} stays inside count * 3`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// Spec review: the deviations and defects that had no discriminating test.
+// ---------------------------------------------------------------------------
+
+test('an empty k-means cluster keeps its centroid; Hyperion\'s reset to black steals the dark pixels', () => {
+  // 9x1: four zeros, three 0.4s and two 0.9s in green, three clusters seeded
+  // black / green / white. White is never populated. Keeping it where it is
+  // leaves cluster 0 with the zeros and the 0.4s (mean 0.1714); resetting it
+  // to black (.h:677) parks a second centroid on the black seed's spot, which
+  // then takes the four zeros and returns (0, 0, 0).
+  const values = [0, 0, 0, 0, 0.4, 0.4, 0.4, 0.9, 0.9]
+  const g = grid(9, 1, (x) => [0, values[x]!, 0])
+  const out = sampleAll(sampler(FULL_FRAME, 9, 1, { accuracyLevel: 2 }), g, 'dominantAdvanced')
+  assertLed(out, 0, [0, 0.4 * 3 / 7, 0], 1e-6)
+})
+
+test('meanSquared on a region whose squared byte sum overflows 32 bits is exact (defect #5)', () => {
+  // 520x520 solid white through the guard's every-2nd-pixel skip is 67 600
+  // pixels; their squared byte sum, 67 600 * 255^2 = 4.396e9, wraps a 32-bit
+  // accumulator (.h:508). Floats return exactly 1.
+  const g = solid(1, 1, 1, 520, 520)
+  const s = sampler(FULL_FRAME, 520, 520)
+  assert.equal(s.pixelIndices(0).length, 260 * 260)
+  assert.equal(s.warnings.length, 1)
+  const out = sampleAll(s, g, 'meanSquared')
+  assert.deepEqual(led(out, 0), [1, 1, 1])
+  assert.deepEqual(led(sampleAll(s, g, 'mean'), 0), [1, 1, 1])
+})
+
+test('a histogram tie goes to the bin that reached the count first (.h:597, strict greater)', () => {
+  // Rows 0-4 colour A, rows 5-9 colour B: 50 pixels each. A reaches 50 at
+  // pixel 49, B at pixel 99; strict-greater keeps A, greater-or-equal would
+  // hand it to B.
+  const a: Rgb = [0.2, 0.3, 0.4]
+  const b: Rgb = [0.7, 0.6, 0.5]
+  const g = grid(10, 10, (_x, y) => (y < 5 ? a : b))
+  const out = sampleAll(sampler(FULL_FRAME, 10, 10), g, 'dominant')
+  assertLed(out, 0, [f(0.2), f(0.3), f(0.4)], 1e-6)
 })

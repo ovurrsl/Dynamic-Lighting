@@ -16,7 +16,8 @@ import { NO_BORDER } from '#lib/engine/types'
  * The grid is LINEAR light (lib/engine/types.ts), and that changes what the
  * simplest mode means. Hyperion averages sRGB bytes (.h:419-438), which is not
  * an average of light: a region half black and half white averages to sRGB
- * 127, about a fifth of the light actually on screen. Here the mean of the
+ * 127, which decodes to 0.21 - about two-fifths of the 0.5 of light actually
+ * on screen. Here the mean of the
  * linear values IS the area average - the colour a diffuser in front of that
  * region would produce - which is what Hyperion's "mean squared" mode
  * approximates from the wrong side (docs/hyperion-port-plan.md section 9).

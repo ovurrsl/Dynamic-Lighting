@@ -5,6 +5,7 @@ import {
   ADJUSTMENT_DEFAULTS,
   CUBE_CORNERS,
   IDENTITY_CORNERS,
+  MAX_GAIN,
   backlightFloor,
   brightnessScalars,
   cornerWeights,
@@ -17,7 +18,8 @@ import {
   parseLedSelector,
   TEMPERATURE_MAX,
   TEMPERATURE_MIN,
-  type AdjustmentProfile
+  type AdjustmentProfile,
+  type Oklab
 } from '#lib/engine/adjust'
 import { REFERENCE_LAYOUT, ledCount } from '#lib/engine/layout'
 import { allocLedColors, fillLedColors, type LedColors, type LinearRgb } from '#lib/engine/types'
@@ -158,16 +160,12 @@ test('taper defaults to 1.0; Hyperion\'s 2.2 applied in linear light crushes mid
   near(tapered, 0.0343, 5e-4)
   assert.ok(tapered < midGrey / 6, `${tapered} is not a sixfold crush of ${midGrey}`)
 
-  // And that is what Hyperion's LUT does to the light output too: byte 128
-  // becomes byte 55 (RgbTransform.cpp:65 + truncating cast), which is 0.0382
-  // linear. The two agree to within 15% because sRGB is itself roughly a 2.2
-  // power - i.e. 2.2 here is the same artistic crush, not a decode of
-  // anything. Hence the default of 1.0.
-  const hyperionByte = Math.floor((128 / 255) ** 2.2 * 255)
-  assert.equal(hyperionByte, 55)
-  const hyperionLight = srgbToLinear(hyperionByte / 255)
-  near(hyperionLight, 0.0382, 5e-4)
-  near(tapered / hyperionLight, 1, 0.15)
+  // Hyperion's LUT sends byte 128 to byte 55 (RgbTransform.cpp:65 + a
+  // truncating cast), and on a linear PWM wire byte 55 is 0.216 of the light:
+  // its 2.2 is the decode our capture already performed, and 2.2 here is a
+  // second one. The comparison of the two wires is the test below named
+  // 'our default delivers the same mid-grey light as Hyperion's default'.
+  assert.equal(Math.floor((128 / 255) ** 2.2 * 255), 55)
 
   // The knob's intended range barely moves mid-grey.
   const gentle = through({ taper: 1.3 }, midGrey, midGrey, midGrey).r
@@ -193,12 +191,70 @@ test('Oklab round trip is the identity to 1e-6', () => {
     near(back.g, c.g, 1e-6, `g of ${JSON.stringify(c)}`)
     near(back.b, c.b, 1e-6, `b of ${JSON.stringify(c)}`)
   }
-  // Anchors from Ottosson's tables: white is L=1 with no chroma, black is 0.
+  // Anchors from Ottosson's tables: white is L=1 with no chroma, black is 0,
+  // and the three primaries land on his published values - an internally
+  // consistent but wrong matrix pair would round-trip just as well.
   const white = linearToOklab({ r: 1, g: 1, b: 1 })
   near(white.L, 1, 1e-6)
   near(white.a, 0, 1e-6)
   near(white.b, 0, 1e-6)
   assert.deepEqual(linearToOklab({ r: 0, g: 0, b: 0 }), { L: 0, a: 0, b: 0 })
+  const anchors: Array<[LinearRgb, Oklab]> = [
+    [{ r: 1, g: 0, b: 0 }, { L: 0.627955, a: 0.224863, b: 0.125846 }],
+    [{ r: 0, g: 1, b: 0 }, { L: 0.866440, a: -0.233888, b: 0.179498 }],
+    [{ r: 0, g: 0, b: 1 }, { L: 0.452014, a: -0.032457, b: -0.311528 }]
+  ]
+  for (const [rgb, lab] of anchors) {
+    const got = linearToOklab(rgb)
+    near(got.L, lab.L, 1e-6, `L of ${JSON.stringify(rgb)}`)
+    near(got.a, lab.a, 1e-6, `a of ${JSON.stringify(rgb)}`)
+    near(got.b, lab.b, 1e-6, `b of ${JSON.stringify(rgb)}`)
+  }
+})
+
+test('brightness gain dims a saturated colour all the way to black without a hue shift', () => {
+  // Scaling L alone leaves pure blue's chroma behind: L = 0 with that chroma
+  // is outside the gamut and its clamped inverse is 11 % blue with a red
+  // leak. The whole vector scales, so every colour reaches black at 0.
+  for (const c of [{ r: 0, g: 0, b: 1 }, { r: 1, g: 0, b: 0 }, { r: 0, g: 1, b: 0 }, { r: 1, g: 1, b: 1 }]) {
+    assert.deepEqual(through({ brightnessGain: 0 }, c.r, c.g, c.b), { r: 0, g: 0, b: 0 }, JSON.stringify(c))
+  }
+  const blue = through({ brightnessGain: 0.1 }, 0, 0, 1)
+  // Round-off from the Oklab inverse, not a leak: the old code leaked 1-2 %.
+  near(blue.r, 0, 1e-9, 'no red leaks into a dimmed blue')
+  near(blue.g, 0, 1e-9)
+  near(blue.b, 0.001, 1e-6, 'a tenth of the lightness is a thousandth of the light')
+  near(linearToOklab(blue).L, 0.1 * 0.452014, 1e-6)
+  // The knob's whole travel covers the whole lightness range.
+  let prev = 0
+  for (let g = 0; g <= 1; g += 0.1) {
+    const L = linearToOklab(through({ brightnessGain: g }, 0, 0, 1)).L
+    assert.ok(L >= prev - 1e-9, `gain ${g}`)
+    prev = L
+  }
+  near(prev, 0.452014, 1e-6)
+})
+
+test('the chain clamps its input whatever the profile, and a NaN channel does not poison the others', () => {
+  assert.deepEqual(through({}, 1.5, 0, 0), { r: 1, g: 0, b: 0 })
+  assert.deepEqual(through({}, -0.5, 0.5, 0.5), { r: 0, g: 0.5, b: 0.5 })
+  assert.deepEqual(through({}, Number.POSITIVE_INFINITY, 0, 0), { r: 1, g: 0, b: 0 })
+  const nan = through({ red: { r: 1, g: 0.1, b: 0 } }, Number.NaN, 0.5, 0.5)
+  assert.equal(nan.r, 0)
+  assert.ok(Number.isFinite(nan.g) && Number.isFinite(nan.b), `NaN must not spread: ${JSON.stringify(nan)}`)
+  // A hair-negative input with a taper used to be NaN through Math.pow.
+  const tapered = through({ taper: 1.1 }, -1e-7, 0.5, 0.5)
+  assert.equal(tapered.r, 0)
+  assert.ok(Number.isFinite(tapered.g))
+})
+
+test('gains have a ceiling, and leds and backlightColored are validated like every other field', () => {
+  assert.throws(() => createAdjustment([{ leds: '*', brightnessGain: 1e103 }], 1), RangeError)
+  assert.throws(() => createAdjustment([{ leds: '*', saturationGain: MAX_GAIN + 1 }], 1), RangeError)
+  assert.deepEqual(through({ brightnessGain: MAX_GAIN }, 1, 1, 1), { r: 1, g: 1, b: 1 })
+  assert.throws(() => createAdjustment([{ leds: 3 as unknown as string }], 5), TypeError)
+  assert.throws(() => createAdjustment([{} as unknown as AdjustmentProfile], 5), TypeError)
+  assert.throws(() => createAdjustment([{ leds: '*', backlightColored: 'no' as unknown as boolean }], 5), TypeError)
 })
 
 test('saturation gain 0 gives a neutral at the same lightness', () => {
@@ -223,9 +279,14 @@ test('brightness gain scales Oklab lightness and the inverse is clamped where th
   const dimmed = through({ brightnessGain: 0.5 }, c.r, c.g, c.b)
   const after = linearToOklab(dimmed)
   near(after.L, before.L * 0.5, 1e-6)
-  // Chroma and hue kept: a and b are untouched by a lightness gain.
-  near(after.a, before.a, 1e-6)
-  near(after.b, before.b, 1e-6)
+  // The whole vector scales: chroma halves with lightness, the hue (the
+  // direction of (a, b)) is kept, and in linear light the colour is the same
+  // colour at 0.5^3 of the light.
+  near(after.a, before.a * 0.5, 1e-6)
+  near(after.b, before.b * 0.5, 1e-6)
+  near(dimmed.r / c.r, 0.125, 1e-6)
+  near(dimmed.g / c.g, 0.125, 1e-6)
+  near(dimmed.b / c.b, 0.125, 1e-6)
 
   // Pure red at triple chroma leaves the sRGB gamut: the unclamped inverse has
   // negative channels (ColorSys.cpp:80's reason for clamping) and the stage
@@ -629,17 +690,20 @@ test('our default delivers the same mid-grey light as Hyperion\'s default; taper
   assert.ok(hyperionWire / doubled > 6, `${doubled} must be far below Hyperion's ${hyperionWire}`)
 })
 
-test('Kelvin is taken as given: 6699 K and 6650 K are not the 6600 K identity', () => {
-  // KelvinToRgb.h:23 does `temperature /= 100` on an int, so every value in
-  // 6600..6699 is the identity there. Here the fit is evaluated where asked.
+test('Kelvin is evaluated in whole hundreds: 6601..6699 K is the 6600 K identity, the seam is at 6700', () => {
+  // KelvinToRgb.h:23 does `temperature /= 100` on an int, and that is kept:
+  // the fit's green piece dips just above 66, and a continuous evaluation
+  // would tint white magenta one slider step above the default (6650 K gives
+  // g = 0.981 encoded, a 4 % green loss in light).
   assert.deepEqual(kelvinToSrgb(6600), { r: 1, g: 1, b: 1 })
   for (const k of [6601, 6650, 6699]) {
-    const c = kelvinToSrgb(k)
-    assert.ok(c.g < 0.995, `${k} K must not collapse onto 6600 K, got g ${c.g}`)
-    assert.notDeepEqual(c, kelvinToSrgb(6600))
+    assert.deepEqual(kelvinToSrgb(k), { r: 1, g: 1, b: 1 }, `${k} K`)
+    assert.deepEqual(through({ temperature: k }, 1, 1, 1), { r: 1, g: 1, b: 1 }, `${k} K through the chain`)
   }
-  // And the seam of the fit is where Helland put it, on either side of 66.
-  assert.ok(kelvinToSrgb(6599).b < 1 && kelvinToSrgb(6601).g < 1)
+  // The seam of the fit is still there, one plateau up, and blue's is one down.
+  assert.ok(kelvinToSrgb(6700).g < 0.995 && kelvinToSrgb(6700).r < 1)
+  assert.ok(kelvinToSrgb(6599).b < 1)
+  assert.deepEqual(kelvinToSrgb(6599), kelvinToSrgb(6500))
 })
 
 test('Helland\'s channels are not truncated to bytes', () => {

@@ -177,9 +177,18 @@ export function oklabToLinear (c: Oklab): LinearRgb {
 }
 
 /**
- * Scales chroma by `saturationGain` and lightness by `brightnessGain`, writing
- * the result to `out`. Chroma is `hypot(a, b)`, so scaling a and b together
- * scales C and keeps the hue - no polar conversion needed.
+ * Scales chroma by `saturationGain` and the whole Oklab vector by
+ * `brightnessGain`, writing the result to `out`. Chroma is `hypot(a, b)`, so
+ * scaling a and b together scales C and keeps the hue - no polar conversion
+ * needed.
+ *
+ * Brightness scales L, a AND b. Oklab's cube root makes a uniform scaling of
+ * linear light by s a uniform scaling of (L, a, b) by cbrt(s), so scaling all
+ * three by the gain is exactly "the same colour, dimmer" - every colour
+ * reaches black at 0 and no hue moves. Scaling L alone (a first cut of this
+ * stage) leaves the chroma of a saturated colour behind: L = 0 with pure
+ * blue's chroma is a point outside the gamut whose inverse is 11 % blue, and
+ * the per-channel clamp then lifts it further and leaks red into it.
  *
  * Clamped on the way out. ColorSys.cpp:80 records the reason for the Okhsv
  * version - "okhsv_to_srgb can output rgb colors with slightly negative
@@ -192,8 +201,8 @@ export function oklabGain (
 ): void {
   linearToOklabInto(r, g, b, out)
   const L = (out[0] ?? 0) * brightnessGain
-  const a = (out[1] ?? 0) * saturationGain
-  const bb = (out[2] ?? 0) * saturationGain
+  const a = (out[1] ?? 0) * saturationGain * brightnessGain
+  const bb = (out[2] ?? 0) * saturationGain * brightnessGain
   oklabToLinearInto(L, a, bb, out)
   out[0] = clamp01(out[0] ?? 0)
   out[1] = clamp01(out[1] ?? 0)
@@ -209,17 +218,18 @@ export function oklabGain (
  *
  * Hyperion's "gamma" (RgbTransform.cpp:55-79) is a 256-entry LUT
  * `255 * (i/255)^gamma`, schema default 2.2, applied to values that are
- * ALREADY sRGB encoded (port plan section 9 proves nothing in its LED path is
- * ever linearised). It is not a decode - it is a perceptual darkening knob
- * that happens to wear a decode's number.
+ * still sRGB encoded (port plan section 9 proves nothing in its LED path is
+ * ever linearised). The LED wire is linear PWM (lib/light.ts), so that LUT
+ * IS Hyperion's decode: byte 128 becomes byte 55, and byte 55 lights the
+ * LED at 55/255 = 0.216 - the light sRGB mid-grey stands for. Hyperion's
+ * default is right, for its pipeline.
  *
  * Here the decode has already happened at capture, so the same exponent on
- * linear values is a second power curve on top of the first: mid-grey
- * (sRGB 128, linear 0.216) becomes 0.034, a sixfold crush. That is also what
- * Hyperion's default does to the light output (its LUT sends byte 128 to 55,
- * which is 0.038 linear), which is exactly why the number must not be
- * carried over: the correct light level of mid-grey is 0.216, and a linear
- * pipeline delivers it with taper 1.0. Deliberate deviation: DEFAULT 1.0.
+ * linear values is a SECOND decode: mid-grey (0.216 linear) becomes 0.034,
+ * six times darker than what Hyperion's default puts on the wire. That is
+ * why the number must not be carried over: the correct light level of
+ * mid-grey is 0.216, and a linear pipeline delivers it with taper 1.0.
+ * Deliberate deviation: DEFAULT 1.0.
  *
  * What survives is an artistic "make the dark end darker" knob. Useful values
  * are 1.0-1.3. It is applied per channel with one exponent; Hyperion's three
@@ -319,16 +329,17 @@ export const TEMPERATURE_DEFAULT = 6600
  * ENCODED byte values, because the fit was made against rendered colour
  * swatches, not against light.
  *
- * Two byte artefacts of the port are dropped: Hyperion divides the Kelvin
- * value by 100 as an integer (so 6699 K is 6600 K) and truncates each channel
- * to an int; this takes the Kelvin value as given. One property of the fit
- * itself is kept, because it is the fit: its pieces do not quite meet at 66,
- * so green dips about 1% encoded just above 6600 K and blue just below.
- * Hyperion's integer division moves that seam, it does not remove it.
+ * Hyperion's integer division of the Kelvin value by 100 (KelvinToRgb.h:23)
+ * is KEPT: the fit is evaluated in whole hundreds, so 6600..6699 K is one
+ * plateau and the identity. The pieces of the fit do not quite meet at 66 -
+ * green dips about 1 % encoded just above it - and evaluating it
+ * continuously would put that dip one slider step above the default, tinting
+ * white magenta at 6650 K where a Hyperion user's saved 6650 stays white.
+ * The other byte artefact, truncating each channel to an int, is dropped.
  */
 export function kelvinToSrgb (kelvin: number): EncodedRgb {
   if (!Number.isFinite(kelvin)) throw new RangeError(`adjust: temperature must be a finite Kelvin value, got ${kelvin}`)
-  const t = Math.min(TEMPERATURE_MAX, Math.max(TEMPERATURE_MIN, kelvin)) / 100
+  const t = Math.floor(Math.min(TEMPERATURE_MAX, Math.max(TEMPERATURE_MIN, kelvin)) / 100)
 
   const red = t <= 66
     ? 255
@@ -348,13 +359,15 @@ export function kelvinToSrgb (kelvin: number): EncodedRgb {
 /**
  * The per-channel multiplier the chain actually uses.
  *
- * Hyperion multiplies its sRGB bytes by Helland's sRGB bytes
- * (RgbTransform.cpp:212-217) - both encoded, so the tint is at least
- * self-consistent. Our channels are linear, and multiplying linear light by
- * an ENCODED ratio would be wrong by the whole transfer curve: at 3000 K
- * Helland's blue is 0.43 encoded, which is 0.15 in light, so the naive
- * multiply would leave blue nearly three times too strong and the "warm"
- * setting would barely warm. Deliberate deviation: decode the triple first.
+ * Helland's triple is a set of sRGB-encoded swatch values, and our channels
+ * are linear light. Multiplying linear light by an ENCODED ratio would be
+ * wrong by the whole transfer curve: at 3000 K Helland's blue is 0.43
+ * encoded, which is 0.15 in light, so the naive multiply would leave blue
+ * nearly three times too strong and the "warm" setting would barely warm.
+ * So the triple is decoded first, as the spec prescribes. (Hyperion
+ * multiplies its bytes by Helland's bytes, RgbTransform.cpp:212-217; on its
+ * linear wire that is an encoded ratio applied to roughly linear values, so
+ * its warm settings are stronger than the same Kelvin here.)
  */
 export function kelvinToLinearRgb (kelvin: number): LinearRgb {
   const m = kelvinToSrgb(kelvin)
@@ -371,10 +384,12 @@ export function kelvinToLinearRgb (kelvin: number): LinearRgb {
  * The curve is Hyperion's (RgbTransform.cpp:87-102): `shaped = (2^(2t)-1)/3`
  * with k = 2, chosen there for "full dynamic use of 0..100", so the slider is
  * fine at the dark end where a floor is actually chosen; 50 gives a third of
- * full scale, byte 85. That byte is a floor in Hyperion's sRGB-encoded world,
- * so its light level is `srgbToLinear(85/255)` - which is what a user who
- * tuned "50" on Hyperion expects to see, and what a linear floor of 1/3 (three
- * times brighter) would not be. Hyperion's truncation of the byte is dropped.
+ * full scale. The spec defines the floor as the LIGHT of an sRGB grey of that
+ * value, `srgbToLinear(shaped)`, so 50 is 0.091 linear. That is deliberately
+ * not what Hyperion's byte 85 does on a linear wire (a third of full light,
+ * three times brighter): a floor is chosen by eye at the dark end, where the
+ * sRGB scale is the one that matches perception. Hyperion's truncation of the
+ * byte is dropped.
  */
 export function backlightFloor (threshold: number): number {
   const t = Math.min(100, Math.max(0, threshold)) / 100
@@ -459,8 +474,10 @@ class CompiledProfile {
 
   constructor (profile: AdjustmentProfile) {
     const d = ADJUSTMENT_DEFAULTS
-    this.saturationGain = finite('saturationGain', profile.saturationGain ?? d.saturationGain, 0)
-    this.brightnessGain = finite('brightnessGain', profile.brightnessGain ?? d.brightnessGain, 0)
+    // Nothing above single digits means anything for either gain, and an
+    // absurd one (1e103) overflows the cube in the inverse to NaN.
+    this.saturationGain = finite('saturationGain', profile.saturationGain ?? d.saturationGain, 0, MAX_GAIN)
+    this.brightnessGain = finite('brightnessGain', profile.brightnessGain ?? d.brightnessGain, 0, MAX_GAIN)
     this.gainIsIdentity = this.saturationGain === 1 && this.brightnessGain === 1
 
     this.taper = finite('taper', profile.taper ?? d.taper, 0)
@@ -508,14 +525,22 @@ class CompiledProfile {
 
     const threshold = finite('backlightThreshold', profile.backlightThreshold ?? d.backlightThreshold, 0, 100)
     this.floor = backlightFloor(threshold)
-    this.backlightColored = profile.backlightColored ?? d.backlightColored
+    const colored = profile.backlightColored ?? d.backlightColored
+    if (typeof colored !== 'boolean') throw new TypeError(`adjust: backlightColored must be a boolean, got ${String(colored)}`)
+    this.backlightColored = colored
   }
 
   /** Runs the eight stages on the triple at `colors[i..i+2]`, in place. */
   adjust (colors: LedColors, i: number, backlightEnabled: boolean): void {
-    let r = colors[i] ?? 0
-    let g = colors[i + 1] ?? 0
-    let b = colors[i + 2] ?? 0
+    // The contract is linear 0..1, but a smoother overshoot or an upstream bug
+    // is a plausible source of a hair-negative channel or a NaN, and the
+    // stages below are not all closed under either: pow() of a negative is
+    // NaN, and a NaN poisons all three channels through the corner weights.
+    // Clamp once here so the output range never depends on which stages
+    // happen to be active.
+    let r = clampChannel(colors[i] ?? 0)
+    let g = clampChannel(colors[i + 1] ?? 0)
+    let b = clampChannel(colors[i + 2] ?? 0)
 
     // 1. Gains in Oklab. Skipped at the defaults, exactly as Hyperion skips
     //    its Okhsv stage, so the default profile does not pay a round trip.
@@ -567,7 +592,11 @@ class CompiledProfile {
     }
 
     // 8. Backlight floor, port of RgbTransform::applyBacklight
-    //    (RgbTransform.cpp:181-199). Note the uncoloured branch SETS every
+    //    (RgbTransform.cpp:181-199), with the gate moved to linear light as
+    //    the spec prescribes: the sum of the linear channels against three
+    //    times the linear floor. Hyperion compares encoded bytes, so the set
+    //    of colours it lifts is not the same set; (0.3, 0, 0) linear is left
+    //    alone here and lifted there. Note the uncoloured branch SETS every
     //    channel to the floor, so a dim pure red below the threshold becomes
     //    grey; that is Hyperion's behaviour and the reason `backlightColored`
     //    exists. A floor of 0 can never trigger and is skipped.
@@ -597,6 +626,14 @@ function finite (name: string, value: number, min: number, max = Number.POSITIVE
   return value
 }
 
+/** Largest gain accepted; see CompiledProfile. */
+export const MAX_GAIN = 16
+
+/** clamp01 that also sends NaN to 0: `!(v >= 0)` is the NaN test. */
+function clampChannel (v: number): number {
+  return !(v >= 0) ? 0 : v > 1 ? 1 : v
+}
+
 /**
  * Builds the per-LED table for a strip of `count` LEDs and returns the chain.
  *
@@ -612,6 +649,7 @@ export function createAdjustment (profiles: readonly AdjustmentProfile[], count:
 
   const table: Array<CompiledProfile | null> = new Array<CompiledProfile | null>(count).fill(null)
   for (const profile of profiles) {
+    if (typeof profile.leds !== 'string') throw new TypeError(`adjust: leds must be a selector string, got ${String(profile.leds)}`)
     const compiled = new CompiledProfile(profile)
     for (const led of parseLedSelector(profile.leds, count)) table[led] = compiled
   }

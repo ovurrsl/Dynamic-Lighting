@@ -3,7 +3,9 @@ import test from 'node:test'
 
 import { REFERENCE_LAYOUT, classicLayout } from '#lib/engine/layout'
 import {
+  CLUSTER_SEEDS,
   KMEANS_CONVERGENCE,
+  KMEANS_MAX_ITERATIONS,
   LARGE_REGION_PIXELS,
   SAMPLE_MODES,
   createSampler,
@@ -464,4 +466,400 @@ test('rejects a grid of another size, a short buffer, a border that leaves no pi
   assert.throws(() => sampler(RECTS, W, H, { reducedPixelSetFactor: 4 }), RangeError)
   assert.throws(() => sampler(RECTS, W, H, { reducedPixelSetFactor: 0.5 }), RangeError)
   assert.throws(() => sampler(RECTS, W, H, { accuracyLevel: 2.5 }), RangeError)
+})
+
+// ---------------------------------------------------------------------------
+// Adversarial coverage: the edges the spec makes reachable.
+// ---------------------------------------------------------------------------
+
+/** The offsets of a pixel box read at `step` along both axes, row-major, as the map should hold them. */
+function boxIndices (box: Box, width: number, step: number): number[] {
+  const out: number[] = []
+  for (let y = box.y0; y < box.y1; y += step) {
+    for (let x = box.x0; x < box.x1; x += step) out.push(y * width + x)
+  }
+  return out
+}
+
+/** ImageToLedsMap.cpp:58-98 end to end, guard included: what one LED's index list must be. */
+function referenceIndices (rect: LedRect, width: number, height: number, leftRight: number, topBottom: number, factor: number): number[] {
+  if (rect.xMax - rect.xMin < 1e-6 || rect.yMax - rect.yMin < 1e-6) return []
+  const box = pixelBox(rect, width, height, leftRight, topBottom)
+  let step = factor + 1
+  if (step === 1 && (box.y1 - box.y0) * (box.x1 - box.x0) > LARGE_REGION_PIXELS) step = 2
+  return boxIndices(box, width, step)
+}
+
+function meanOf (g: LinearGrid, indices: readonly number[]): Rgb {
+  const sum = [0, 0, 0]
+  for (const i of indices) {
+    for (let c = 0; c < 3; c++) sum[c]! += g.data[i * 3 + c]!
+  }
+  return [sum[0]! / indices.length, sum[1]! / indices.length, sum[2]! / indices.length]
+}
+
+function pixelsOf (g: LinearGrid): Rgb[] {
+  const out: Rgb[] = []
+  for (let i = 0; i < g.width * g.height; i++) out.push([g.data[i * 3]!, g.data[i * 3 + 1]!, g.data[i * 3 + 2]!])
+  return out
+}
+
+/**
+ * Lloyd's k-means exactly as the module describes its own: fixed seeds,
+ * squared Euclidean with ties to the lower cluster, populated centroids move
+ * to their mean, stop when the largest move is under KMEANS_CONVERGENCE or
+ * at `cap` iterations, answer the most-populated cluster (first wins a tie).
+ * Written from the description, not the code, so it can disagree.
+ */
+function referenceKMeans (pixels: readonly Rgb[], k: number, cap: number): { colour: Rgb, iterations: number } {
+  const c: [number, number, number][] = CLUSTER_SEEDS.slice(0, k).map((s) => [s.r, s.g, s.b])
+  let members: number[] = []
+  let iterations = 0
+  while (iterations < cap) {
+    const sums = c.map((): [number, number, number] => [0, 0, 0])
+    members = c.map(() => 0)
+    for (const p of pixels) {
+      let best = 0
+      let bestDistance = Number.POSITIVE_INFINITY
+      for (let j = 0; j < k; j++) {
+        const d = (p[0] - c[j]![0]) ** 2 + (p[1] - c[j]![1]) ** 2 + (p[2] - c[j]![2]) ** 2
+        if (d < bestDistance) {
+          bestDistance = d
+          best = j
+        }
+      }
+      sums[best]![0] += p[0]
+      sums[best]![1] += p[1]
+      sums[best]![2] += p[2]
+      members[best]!++
+    }
+    let maxMove = 0
+    for (let j = 0; j < k; j++) {
+      const n = members[j]!
+      if (n === 0) continue
+      const next: [number, number, number] = [sums[j]![0] / n, sums[j]![1] / n, sums[j]![2] / n]
+      maxMove = Math.max(maxMove, Math.hypot(next[0] - c[j]![0], next[1] - c[j]![1], next[2] - c[j]![2]))
+      c[j] = next
+    }
+    iterations++
+    if (maxMove < KMEANS_CONVERGENCE) break
+  }
+  let dominant = 0
+  for (let j = 1; j < k; j++) if (members[j]! > members[dominant]!) dominant = j
+  return { colour: c[dominant]!, iterations }
+}
+
+test('a border on every side insets every LED to the reference box, with and without a pixel skip', () => {
+  // Column in red, row in green, and a blue that is not a function of either
+  // alone, so no wrong read of any kind averages to the right answer.
+  const ramp = grid(W, H, (x, y) => [x / (W - 1), y / (H - 1), ((x * 7 + y * 13) % 17) / 16])
+  const border = { leftRight: 5, topBottom: 3 }
+  for (const factor of [0, 2]) {
+    const s = sampler(RECTS, W, H, { reducedPixelSetFactor: factor })
+    assert.equal(s.setBorder({ unknown: false, ...border }), true)
+    const out = sampleAll(s, ramp, 'mean')
+    for (let i = 0; i < LEDS; i++) {
+      const expected = referenceIndices(RECTS[i]!, W, H, border.leftRight, border.topBottom, factor)
+      assert.ok(expected.length > 0, `LED ${i} keeps at least one pixel`)
+      assert.deepEqual(Array.from(s.pixelIndices(i)), expected, `LED ${i} indices at factor ${factor}`)
+      for (const p of expected) {
+        const x = p % W
+        const y = Math.floor(p / W)
+        assert.ok(x >= border.leftRight && x < W - border.leftRight && y >= border.topBottom && y < H - border.topBottom, `LED ${i} reads (${x}, ${y}) in a bar`)
+      }
+      assertLed(out, i, meanOf(ramp, expected), 1e-6, `LED ${i} at factor ${factor}`)
+    }
+  }
+})
+
+test('the largest legal border leaves every LED at least one pixel of picture, and one more is refused', () => {
+  const s = sampler(RECTS)
+  const lr = (W - 1) >> 1 // 31: two columns of picture
+  const tb = (H - 1) >> 1 // 17: two rows
+  assert.equal(s.setBorder({ unknown: false, leftRight: lr, topBottom: tb }), true)
+  const picture = new Set([tb * W + lr, tb * W + lr + 1, (tb + 1) * W + lr, (tb + 1) * W + lr + 1])
+  for (let i = 0; i < LEDS; i++) {
+    const idx = s.pixelIndices(i)
+    assert.ok(idx.length >= 1, `LED ${i} has a pixel`)
+    for (const p of idx) assert.ok(picture.has(p), `LED ${i} reads ${p}, outside the 2x2 picture`)
+  }
+  // Light the picture and nothing else: every LED is lit in every per-LED mode.
+  const g = grid(W, H, (x, y) => (picture.has(y * W + x) ? [0.25 + 0.5 * (x - lr), 0.25 + 0.5 * (y - tb), 0.5] : [0, 0, 0]))
+  for (const mode of PER_LED_MODES) {
+    const out = sampleAll(s, g, mode)
+    for (let i = 0; i < LEDS; i++) {
+      const [r, gg, b] = led(out, i)
+      assert.ok(r >= 0.25 && gg >= 0.25 && b === 0.5, `${mode} LED ${i} = ${r}, ${gg}, ${b}`)
+    }
+  }
+  assert.throws(() => s.setBorder({ unknown: false, leftRight: lr + 1, topBottom: tb }), RangeError)
+  assert.throws(() => s.setBorder({ unknown: false, leftRight: lr, topBottom: tb + 1 }), RangeError)
+  // A refused border leaves the previous map in place.
+  assert.deepEqual(s.border(), { unknown: false, leftRight: lr, topBottom: tb })
+  for (const p of s.pixelIndices(0)) assert.ok(picture.has(p))
+
+  // An odd grid with a one-pixel picture: all 108 LEDs read pixel (2, 1).
+  const tiny = sampler(RECTS, 5, 3)
+  assert.equal(tiny.setBorder({ unknown: false, leftRight: 2, topBottom: 1 }), true)
+  for (let i = 0; i < LEDS; i++) assert.deepEqual(Array.from(tiny.pixelIndices(i)), [1 * 5 + 2], `LED ${i}`)
+})
+
+test('the large-region guard fires above 1600 pixels, not at 1600', () => {
+  const checker = (w: number, h: number): LinearGrid => grid(w, h, (x, y) => ((x + y) % 2 === 0 ? [1, 1, 1] : [0, 0, 0]))
+
+  const at = sampler(FULL_FRAME, 40, 40)
+  assert.deepEqual(at.warnings, [])
+  assert.equal(at.pixelIndices(0).length, LARGE_REGION_PIXELS)
+  assert.deepEqual(led(sampleAll(at, checker(40, 40), 'mean'), 0), [0.5, 0.5, 0.5])
+
+  const over = sampler(FULL_FRAME, 41, 40)
+  assert.equal(over.warnings.length, 1)
+  assert.deepEqual(Array.from(over.pixelIndices(0)), boxIndices({ x0: 0, x1: 41, y0: 0, y1: 40 }, 41, 2))
+  assert.equal(over.pixelIndices(0).length, 21 * 20)
+  assert.deepEqual(led(sampleAll(over, checker(41, 40), 'mean'), 0), [1, 1, 1])
+})
+
+test('an empty layout is a sampler of zero LEDs that every mode leaves alone', () => {
+  const s = sampler([])
+  assert.equal(s.count, 0)
+  assert.deepEqual(s.warnings, [])
+  const out = allocLedColors(0)
+  for (const mode of SAMPLE_MODES) assert.equal(s.sample(solid(0.3, 0.6, 0.9), out, mode), out)
+  assert.throws(() => s.pixelIndices(0), RangeError)
+  assert.equal(s.setBorder({ unknown: false, leftRight: 4, topBottom: 2 }), true)
+  for (const mode of SAMPLE_MODES) assert.equal(s.sample(solid(0.3, 0.6, 0.9), out, mode), out)
+})
+
+test('a 1x1 grid: one LED and all 108 LEDs read the single pixel in every mode', () => {
+  const g = solid(0.2, 0.7, 0.4, 1, 1)
+  for (const layout of [FULL_FRAME, RECTS]) {
+    const s = sampler(layout, 1, 1)
+    assert.deepEqual(s.warnings, [])
+    for (let i = 0; i < s.count; i++) assert.deepEqual(Array.from(s.pixelIndices(i)), [0], `LED ${i}`)
+    for (const mode of SAMPLE_MODES) {
+      const out = sampleAll(s, g, mode)
+      for (let i = 0; i < s.count; i++) assert.deepEqual(led(out, i), [f(0.2), f(0.7), f(0.4)], `${mode} LED ${i}`)
+    }
+    assert.throws(() => s.setBorder({ unknown: false, leftRight: 1, topBottom: 0 }), RangeError)
+    assert.throws(() => s.setBorder({ unknown: false, leftRight: 0, topBottom: 1 }), RangeError)
+    // An unknown border carries no insets, however wild the numbers it came with.
+    assert.equal(s.setBorder({ unknown: true, leftRight: 99, topBottom: Number.NaN }), false)
+  }
+})
+
+test('a NaN pixel reaches only the LEDs that read it and leaves nothing behind for the next frame', () => {
+  const paint = (x: number, y: number): Rgb => [0.2 + 0.6 * (x / (W - 1)), 0.5, 0.2 + 0.6 * (y / (H - 1))]
+  const clean = grid(W, H, paint)
+  const poisoned = grid(W, H, (x, y) => (x === 0 && y === 0 ? [Number.NaN, Number.NaN, Number.NaN] : paint(x, y)))
+  const s = sampler(RECTS)
+  // The top-left corner belongs to the first top LED and the last left LED.
+  const readers = range(0, LEDS).filter((i) => s.pixelIndices(i).includes(0))
+  assert.deepEqual(readers, [0, LEDS - 1])
+  for (const mode of PER_LED_MODES) {
+    const expected = sampleAll(s, clean, mode)
+    const out = sampleAll(s, poisoned, mode)
+    for (let i = 0; i < LEDS; i++) {
+      if (readers.includes(i)) continue
+      assert.deepEqual(led(out, i), led(expected, i), `${mode} LED ${i}`)
+    }
+    assert.deepEqual(sampleAll(s, clean, mode), expected, `${mode}: the frame after is exact again`)
+  }
+})
+
+test('out-of-range floats: the mean is plain arithmetic and dominant pools everything past the ends into the end bins', () => {
+  const s = sampler(FULL_FRAME, 10, 10)
+  const hot: Rgb = [1.7, -0.5, 2]
+  const warm: Rgb = [1.2, -2, 0.5]
+  const g = grid(10, 10, (_x, y) => (y < 6 ? hot : warm))
+  assertLed(sampleAll(s, g, 'mean'), 0, [0.6 * f(1.7) + 0.4 * f(1.2), 0.6 * f(-0.5) + 0.4 * f(-2), 0.6 * 2 + 0.4 * 0.5])
+  // Red 1.7 and 1.2 share the top bin and green -0.5 and -2 the bottom one;
+  // blue 2 (top bin) and 0.5 (bin 16) keep the two colours apart, so the
+  // 60-pixel colour wins and comes back as it is, unclamped.
+  assert.deepEqual(led(sampleAll(s, g, 'dominant'), 0), [f(1.7), f(-0.5), 2])
+})
+
+test('every rebuild equals the reference map for that border, through churn and through the buffer growing', () => {
+  const layout: LedRect[] = [...FULL_FRAME, ...RECTS]
+  const ramp = grid(W, H, (x, y) => [x / (W - 1), y / (H - 1), ((x * 5 + y * 3) % 11) / 10])
+  const s = sampler(layout)
+  const borders = [
+    // FULL_FRAME: 32 x 20 = 640 pixels, more than the 576 the guard left at
+    // construction, so the index buffer has to grow.
+    { leftRight: 16, topBottom: 8 },
+    { leftRight: 20, topBottom: 10 },
+    { leftRight: 0, topBottom: 0 },
+    // 62 x 34 = 2108: the guard again.
+    { leftRight: 1, topBottom: 1 },
+    // 40 x 36 = 1440: under the guard, 1440 pixels, another growth.
+    { leftRight: 12, topBottom: 0 },
+    { leftRight: 0, topBottom: 0 }
+  ]
+  for (let round = 0; round < 3; round++) {
+    for (const b of borders) {
+      s.setBorder({ unknown: false, ...b })
+      const fresh = sampler(layout)
+      fresh.setBorder({ unknown: false, ...b })
+      assert.deepEqual(s.warnings, fresh.warnings, `warnings at ${JSON.stringify(b)}`)
+      const out = sampleAll(s, ramp, 'mean')
+      for (let i = 0; i < s.count; i++) {
+        const expected = referenceIndices(layout[i]!, W, H, b.leftRight, b.topBottom, 0)
+        assert.deepEqual(Array.from(s.pixelIndices(i)), expected, `LED ${i} at ${JSON.stringify(b)}`)
+        assertLed(out, i, meanOf(ramp, expected), 1e-6, `LED ${i} at ${JSON.stringify(b)}`)
+      }
+      for (const mode of SAMPLE_MODES) assert.deepEqual(sampleAll(s, ramp, mode), sampleAll(fresh, ramp, mode), `${mode} at ${JSON.stringify(b)}`)
+    }
+  }
+  // Toggling every frame is the caller's right.
+  const a = sampleAll(s, ramp, 'mean')
+  s.setBorder({ unknown: false, leftRight: 3, topBottom: 2 })
+  const bb = sampleAll(s, ramp, 'mean')
+  for (let i = 0; i < 500; i++) {
+    assert.equal(s.setBorder(i % 2 === 0 ? NO_BORDER : { unknown: false, leftRight: 3, topBottom: 2 }), true)
+  }
+  assert.deepEqual(sampleAll(s, ramp, 'mean'), bb)
+  s.setBorder(NO_BORDER)
+  assert.deepEqual(sampleAll(s, ramp, 'mean'), a)
+})
+
+test('dominantAdvanced stops at the iteration cap on a chain that Lloyd\'s would keep walking', () => {
+  // 400 black pixels pin the first centroid at black. The 24 greens are each
+  // placed just above the boundary the previous capture leaves behind, so
+  // every iteration moves the second centroid by more than 1/255 and takes
+  // exactly one more of them: 25 iterations to converge, uncapped.
+  const chain = [
+    0.9, 0.475, 0.3972, 0.3198, 0.2786, 0.2495, 0.2279, 0.211, 0.1974, 0.1862, 0.1766, 0.1684,
+    0.1613, 0.1549, 0.1493, 0.1443, 0.1397, 0.1355, 0.1317, 0.1282, 0.125, 0.1219, 0.1191, 0.1165
+  ]
+  const blacks = 400
+  const w = 53
+  const h = 8
+  assert.equal(w * h, blacks + chain.length)
+  const g = grid(w, h, (x, y) => {
+    const i = y * w + x
+    return i < blacks ? [0, 0, 0] : [0, chain[i - blacks]!, 0]
+  })
+  const pixels = pixelsOf(g)
+  const uncapped = referenceKMeans(pixels, 2, Number.POSITIVE_INFINITY)
+  assert.ok(uncapped.iterations > KMEANS_MAX_ITERATIONS, `needs ${uncapped.iterations} iterations uncapped`)
+  const capped = referenceKMeans(pixels, 2, KMEANS_MAX_ITERATIONS)
+  assert.ok(Math.abs(capped.colour[1] - uncapped.colour[1]) > 1e-4, 'the cap changes the answer, so the test can see it')
+
+  const s = sampler(FULL_FRAME, w, h, { accuracyLevel: 1 })
+  const out = sampleAll(s, g, 'dominantAdvanced')
+  assertLed(out, 0, capped.colour, 1e-7, 'the state after exactly KMEANS_MAX_ITERATIONS')
+  // The same chain through the other modes stays inside the content.
+  for (const mode of ['dominant', 'mean', 'meanSquared', 'unicolorDominantAdvanced'] as const) {
+    const [r, gg, b] = led(sampleAll(s, g, mode), 0)
+    assert.ok(r === 0 && b === 0 && gg >= 0 && gg <= 0.9, `${mode} = ${r}, ${gg}, ${b}`)
+  }
+})
+
+test('dominantAdvanced: a tie between seeds goes to the lower cluster, and content on the seeds converges without moving', () => {
+  // Every pixel exactly as far from black as from green: cluster 0 takes all.
+  const two = sampler(FULL_FRAME, 8, 8, { accuracyLevel: 1 })
+  assert.deepEqual(led(sampleAll(two, solid(0, 0.5, 0, 8, 8), 'dominantAdvanced'), 0), [0, 0.5, 0])
+
+  // Rows of the five seeds, yellow the widest.
+  const seeds = CLUSTER_SEEDS.map((c): Rgb => [c.r, c.g, c.b])
+  const g = grid(10, 10, (_x, y) => seeds[y < 2 ? 0 : y < 4 ? 1 : y < 6 ? 2 : y < 7 ? 3 : 4]!)
+  const five = sampler(FULL_FRAME, 10, 10, { accuracyLevel: 4 })
+  assert.deepEqual(led(sampleAll(five, g, 'dominantAdvanced'), 0), [1, 1, 0])
+  // With three clusters yellow is as far from green as from white and goes
+  // to green; red is nearest black. Green's cluster holds 30 yellow and 20
+  // green pixels, more than any other, and its centroid is their mean.
+  const three = sampler(FULL_FRAME, 10, 10, { accuracyLevel: 2 })
+  assertLed(sampleAll(three, g, 'dominantAdvanced'), 0, [0.6, 1, 0])
+  assert.deepEqual(led(sampleAll(three, g, 'dominantAdvanced'), 0), led(sampleAll(three, g, 'unicolorDominantAdvanced'), 0))
+})
+
+test('an inverted or sub-micro rectangle has no area, maps to no pixels and samples black without complaint', () => {
+  const layout: LedRect[] = [
+    { xMin: 0.6, xMax: 0.4, yMin: 0, yMax: 1 },
+    { xMin: 0, xMax: 1, yMin: 0.9, yMax: 0.1 },
+    { xMin: 0.5, xMax: 0.5 + 9e-7, yMin: 0, yMax: 1 },
+    ...FULL_FRAME
+  ]
+  const s = sampler(layout)
+  for (let i = 0; i < 3; i++) assert.equal(s.pixelIndices(i).length, 0, `LED ${i}`)
+  const g = solid(0.4, 0.5, 0.6)
+  for (const mode of PER_LED_MODES) {
+    const out = sampleAll(s, g, mode)
+    for (let i = 0; i < 3; i++) assert.deepEqual(led(out, i), [0, 0, 0], `${mode} LED ${i}`)
+    assertLed(out, 3, [f(0.4), f(0.5), f(0.6)], 1e-6, mode)
+  }
+  // The unicolor modes never look at the map, so the empty LEDs light too.
+  for (const mode of ['unicolorMean', 'unicolorDominant', 'unicolorDominantAdvanced'] as const) {
+    const out = sampleAll(s, g, mode)
+    for (let i = 0; i < 4; i++) assertLed(out, i, [f(0.4), f(0.5), f(0.6)], 1e-6, `${mode} LED ${i}`)
+  }
+})
+
+test('a 1280x720 grid: the guard fires on every LED, names eight and counts the rest, and every LED still averages its stepped box', () => {
+  const w = 1280
+  const h = 720
+  const s = sampler(RECTS, w, h)
+  assert.equal(s.warnings.length, 1)
+  assert.match(s.warnings[0]!, /108 LED region/)
+  assert.match(s.warnings[0]!, /LED 0, 1, 2, 3, 4, 5, 6, 7 and 100 more/)
+  // Column in red, row in green, a checkerboard in blue.
+  const ramp = grid(w, h, (x, y) => [x / (w - 1), y / (h - 1), (x + y) % 2])
+  const out = sampleAll(s, ramp, 'mean')
+  for (let i = 0; i < LEDS; i++) {
+    const expected = referenceIndices(RECTS[i]!, w, h, 0, 0, 0)
+    assert.equal(s.pixelIndices(i).length, expected.length, `LED ${i} pixel count`)
+    assertLed(out, i, meanOf(ramp, expected), 1e-6, `LED ${i}`)
+    // Every second pixel on both axes sees one parity of the checkerboard
+    // only: the bias the warning exists to disclose.
+    const blue = led(out, i)[2]
+    assert.ok(blue === 0 || blue === 1, `LED ${i} blue ${blue}`)
+  }
+  // The unicolor modes still walk all 921 600 pixels.
+  assertLed(sampleAll(s, ramp, 'unicolorMean'), 0, [0.5, 0.5, 0.5], 1e-6)
+  for (const mode of ['unicolorDominant', 'unicolorDominantAdvanced'] as const) {
+    const [r, gg, b] = led(sampleAll(s, ramp, mode), 0)
+    assert.ok(Number.isFinite(r) && Number.isFinite(gg) && Number.isFinite(b), mode)
+  }
+})
+
+test('the accuracy warning survives every rebuild while the guard warning comes and goes', () => {
+  const s = sampler(FULL_FRAME, W, H, { accuracyLevel: 9 })
+  assert.equal(s.warnings.length, 2)
+  assert.match(s.warnings[0]!, /accuracyLevel 9/)
+  assert.match(s.warnings[1]!, new RegExp(String(LARGE_REGION_PIXELS)))
+  const same = s.warnings
+  s.setBorder({ unknown: false, leftRight: 16, topBottom: 8 })
+  assert.equal(s.warnings, same, 'one array for the life of the sampler')
+  assert.equal(s.warnings.length, 1)
+  assert.match(s.warnings[0]!, /accuracyLevel 9/)
+  s.setBorder(NO_BORDER)
+  assert.equal(s.warnings.length, 2)
+  assert.match(s.warnings[0]!, /accuracyLevel 9/)
+})
+
+test('a rectangle edge that lands on a half pixel rounds up, as qRound does', () => {
+  const s = sampler([
+    { xMin: 0, xMax: 0.25, yMin: 0, yMax: 1 },
+    { xMin: 0.25, xMax: 1, yMin: 0, yMax: 1 },
+    { xMin: 0.05, xMax: 0.15, yMin: 0, yMax: 1 }
+  ], 10, 1)
+  // 10 * 0.25 = 2.5 -> 3: the first LED owns columns 0..2 and the second 3..9.
+  assert.deepEqual(Array.from(s.pixelIndices(0)), [0, 1, 2])
+  assert.deepEqual(Array.from(s.pixelIndices(1)), [3, 4, 5, 6, 7, 8, 9])
+  // 0.5 -> 1 and 1.5 -> 2: one column, the second.
+  assert.deepEqual(Array.from(s.pixelIndices(2)), [1])
+})
+
+test('a longer grid buffer and a longer output buffer are accepted, and only count * 3 floats are written', () => {
+  const s = sampler(RECTS)
+  const g = solid(0.3, 0.6, 0.9)
+  const data = new Float32Array(W * H * 3 + 5).fill(0.1)
+  data.set(g.data)
+  const bigger: LinearGrid = { width: W, height: H, data }
+  const out = new Float32Array(LEDS * 3 + 3)
+  for (const mode of SAMPLE_MODES) {
+    out.fill(0.7)
+    s.sample(bigger, out, mode)
+    for (let i = 0; i < LEDS; i++) assert.deepEqual(led(out, i), [f(0.3), f(0.6), f(0.9)], `${mode} LED ${i}`)
+    assert.deepEqual(Array.from(out.subarray(LEDS * 3)), [f(0.7), f(0.7), f(0.7)], `${mode} stays inside count * 3`)
+  }
 })

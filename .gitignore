@@ -34,3 +34,9 @@ server/.data/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Extension build output; load extension/dist unpacked
+extension/dist/
+
+# Scratch tests written while probing a module by hand; never part of the suite that ships.
+test/_probe*

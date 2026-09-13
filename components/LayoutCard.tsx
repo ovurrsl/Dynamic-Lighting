@@ -25,6 +25,7 @@ import {
 } from '#lib/engine/config'
 import { CORNERS, LAYOUT_DEFAULTS, NO_KEYSTONE, type Corner, type Keystone } from '#lib/engine/layout'
 import { COLOR_ORDERS, type ColorOrder } from '#lib/engine/order'
+import { createLiveSampler, PREVIEW_HZ, type LiveFrame, type LiveSampler } from '#lib/live-sampler'
 import { CORNER_ORDER, frameAspect, isDefaultKeystone, wireOrderColor } from '#lib/preview'
 import type { LedRect } from '#lib/engine/types'
 import { fetchConfig, saveConfig } from '#lib/extension-client'
@@ -160,7 +161,13 @@ export function LayoutCard ({
   const [advanced, setAdvanced] = useState(false)
   const [editingCorners, setEditingCorners] = useState(false)
   const [screen, setScreen] = useState<MediaStream | null>(null)
+  /**
+   * The live sample: one colour per LED, taken from the captured screen by the
+   * engine's own modules. Null until a capture is running.
+   */
+  const [live, setLive] = useState<LiveFrame | null>(null)
   const video = useRef<HTMLVideoElement>(null)
+  const liveSampler = useRef<LiveSampler | null>(null)
 
   /**
    * Where the starting configuration comes from, in order: the extension, then
@@ -298,11 +305,40 @@ export function LayoutCard ({
     const element = video.current
     if (element === null) return
     element.srcObject = screen
-    if (screen !== null) void element.play().catch(() => {})
+    if (screen === null) { setLive(null); return }
+    void element.play().catch(() => {})
+
+    // A plain interval rather than requestAnimationFrame: the rate is a
+    // deliberate 15 Hz, not "as fast as the compositor", and a preview that
+    // competes with the engine for the GPU is a preview that costs frames.
+    const sampler = createLiveSampler(resolved.ok ? resolved.value.config : DEFAULT_ENGINE_CONFIG as EngineConfig)
+    liveSampler.current = sampler
+    const id = setInterval(() => {
+      try {
+        const frame = sampler.sample(element)
+        if (frame !== null) setLive(frame)
+      } catch {
+        // A frame the browser will not draw yet is not worth a notice; the
+        // next tick is 66 ms away.
+      }
+    }, Math.round(1000 / PREVIEW_HZ))
+
     return () => {
-      if (screen !== null) for (const track of screen.getTracks()) track.stop()
+      clearInterval(id)
+      liveSampler.current = null
+      setLive(null)
+      for (const track of screen.getTracks()) track.stop()
     }
+    // The sampler is rebuilt from the draft by its own effect below; this one
+    // owns the capture's lifetime and must not restart on every edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen])
+
+  // A layout edit has to reach the running sampler, or the live colours would
+  // keep coming from the layout that was showing when capture started.
+  useEffect(() => {
+    if (resolved.ok) liveSampler.current?.configure(resolved.value.config)
+  }, [resolved])
 
   const aspectRatio = frameAspect(layout)
 
@@ -311,30 +347,53 @@ export function LayoutCard ({
       <Card.Header>
         <Card.Title>Monitör yerleşimi</Card.Title>
         <Card.Description>
-          Her LED'in ekranın neresine baktığı. Resim, motorun örnekleme yaparken
-          çağırdığı fonksiyonun çıktısı — yani gördüğün şey ölçülen şey.
+          Her LED'in ekranın neresine baktığı. <b>Ekranı göster</b>'e basınca
+          yakalanan görüntü arkaya geliyor ve her LED motorun o bölgeden gerçekten
+          okuduğu renkle doluyor — yani gördüğün şey şeride gidecek şey.
         </Card.Description>
       </Card.Header>
       <Card.Content className="flex flex-col gap-5">
         {shown !== null && (
           <div className="relative overflow-hidden rounded-lg bg-black/80">
+            {/*
+              Dimmed while sampling. At full brightness the LEDs vanish into
+              the picture - they are the same colour as it, which is the point -
+              so the screen becomes the context and the LEDs the subject.
+            */}
             <video
-              className={`absolute inset-0 size-full object-fill ${screen === null ? 'hidden' : ''}`}
+              className={`absolute inset-0 size-full object-fill transition-opacity ${screen === null ? 'hidden' : live === null ? '' : 'opacity-45'}`}
               muted
               playsInline
               ref={video}
             />
             <LedFrame
               aspectRatio={aspectRatio}
-              colorAt={wireOrderColor}
+              colorAt={live === null
+                ? wireOrderColor
+                : (at) => live.colors[at] ?? 'rgb(0 0 0)'}
               keystone={editingCorners ? keystone : undefined}
               label={`${shown.rects.length} LED'in örnekleme bölgeleri`}
               onKeystone={editingCorners ? moveCorner : undefined}
+              outline={live !== null}
               outlineFirst
               rects={shown.rects}
               transparent
             />
           </div>
+        )}
+
+        {live !== null && (
+          <Surface className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl p-3 font-mono text-xs" variant="secondary">
+            <span className="text-muted">canlı</span>
+            <span>{live.source?.width}×{live.source?.height}</span>
+            <span className="text-muted">siyah kenar</span>
+            <span>
+              {live.border.unknown
+                ? 'bilinmiyor'
+                : `üst/alt ${live.border.topBottom}px · yan ${live.border.leftRight}px`}
+            </span>
+            <span className="text-muted">renkler motorun örneklediği renkler</span>
+          </Surface>
         )}
 
         <div className="flex flex-wrap items-center gap-3">

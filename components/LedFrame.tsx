@@ -35,6 +35,7 @@ export function LedFrame ({
   colorAt,
   outlineFirst = false,
   glow = false,
+  outline = false,
   transparent = false,
   keystone,
   onKeystone,
@@ -47,6 +48,13 @@ export function LedFrame ({
   outlineFirst?: boolean
   /** Adds a blurred copy behind the LEDs, so they read as light rather than paint. */
   glow?: boolean
+  /**
+   * Outlines every LED. Needed whenever something is shown BEHIND the frame:
+   * an LED filled with the colour it sampled is, by definition, the same colour
+   * as the pixels under it, so without an edge the whole ring disappears into
+   * the picture and the view stops showing anything.
+   */
+  outline?: boolean
   /** Drop the black ground, for when something is shown behind the frame. */
   transparent?: boolean
   /**
@@ -98,8 +106,8 @@ export function LedFrame ({
         fill={colorAt(at, count)}
         height={h}
         key={at}
-        stroke={outlineFirst && at === 0 ? 'white' : 'none'}
-        strokeWidth={outlineFirst && at === 0 ? 3 : 0}
+        stroke={outlineFirst && at === 0 ? 'white' : outline ? 'rgb(0 0 0 / 0.55)' : 'none'}
+        strokeWidth={outlineFirst && at === 0 ? 4 : outline ? 1.5 : 0}
         width={w}
         x={rect.xMin * width}
         y={rect.yMin * height}

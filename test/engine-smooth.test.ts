@@ -63,10 +63,20 @@ test('setTarget alone changes nothing observable, in every mode', () => {
     // it. Here the input is only stored until a tick moves towards it.
     s.setTarget(RED, 1)
     s.setTarget(GREEN, 2)
-    s.setTarget(WHITE, 3)
+    // Grey below the asymmetric cut threshold, so the bypass cannot hide a
+    // setTarget that snapped the state.
+    const grey = solid(0.2, 0.2, 0.2)
+    s.setTarget(grey, 3)
     assert.deepEqual(s.current(), BLACK, `${mode}: current() after setTarget`)
     assert.equal(s.tick(3), null, `${mode}: no slot open yet`)
     assert.deepEqual(s.current(), BLACK, `${mode}: current() after a non-emitting tick`)
+    // The next emitted frame is on its way to grey - not any of the targets,
+    // which is what a setTarget that wrote `state` would have produced.
+    const frame = s.tick(PERIOD)!
+    assert.notDeepEqual(frame, RED, `${mode}: red was never shown`)
+    assert.notDeepEqual(frame, GREEN, `${mode}: green was never shown`)
+    assert.notDeepEqual(frame, grey, `${mode}: grey is reached over time, not at once`)
+    assert.ok(frame[0]! > 0 && frame[0]! < 0.2, `${mode}: first frame ${frame[0]} is mid-transition`)
   }
 })
 
@@ -164,10 +174,11 @@ test('a frame of a different size resets the smoother to that size, from black',
   const frame = s.tick(300)!
   assert.equal(frame.length, half.length)
   // Starts over from black rather than carrying the old red into the new
-  // layout: no red, and green still in flight. (The last write was at 200 and
-  // the target arrived at 300, so this first step is k = 1 - 150/250 = 0.4.)
+  // layout: no red, and green still in flight. The reset also forgets the
+  // last emission, so this first step integrates from the target's arrival
+  // (k = 0) and only the minStep floor moves.
   assert.equal(frame[0], 0)
-  near(frame[1]!, 0.4, 1e-6)
+  near(frame[1]!, SMOOTHING_DEFAULTS.minStep, 1e-9)
   assert.throws(() => s.setTarget(new Float32Array(7), 301), RangeError)
 
   s.reset()
@@ -492,4 +503,244 @@ test('asymmetric: a scene cut snaps the whole frame in one tick; one LED jumping
   under.setTarget(solid(0.24, 0.24, 0.24), 0)
   under.tick(0)
   near(under.tick(PERIOD)![0]!, 0.24 * partial, 1e-5)
+})
+
+// ---------------------------------------------------------------------------
+// Adversarial coverage added in review. Seven of these reproduced findings
+// against the module as first written (a negative dt, a NaN sample, a double
+// frame after a short stall, linear never landing under a streaming input, the
+// deadband holding short of the target, a sub-ulp minStep, decay below 1);
+// the fixes landed with them and every test here is regression coverage.
+// ---------------------------------------------------------------------------
+
+test('a single-LED strip runs every mode end to end', () => {
+  const target = new Float32Array([0.1, 0.2, 0.3])
+  for (const mode of MODES) {
+    const s = make(mode, {}, 1)
+    s.setTarget(target, 0)
+    const frames = run(s, 0, 600, PERIOD)
+    assert.ok(frames.length > 60, `${mode}: ${frames.length} frames`)
+    const last = frames[frames.length - 1]!.frame
+    assert.equal(last.length, 3)
+    // The IIR stops inside its relative band of the brightest channel.
+    const tolerance = mode === 'asymmetric' ? SMOOTHING_DEFAULTS.relFloor * 0.3 : 1e-6
+    frameNear(last, target, tolerance, mode)
+  }
+})
+
+test('a strip of fifty thousand LEDs is smoothed without an index slip', () => {
+  const n = 50_000
+  const target = solid(0.5, 0.25, 0.125, n)
+  for (const mode of MODES) {
+    const s = make(mode, {}, n)
+    for (let t = 0; t <= 20 * PERIOD; t += PERIOD) {
+      s.setTarget(target, t)
+      s.tick(t)
+    }
+    const out = s.current()
+    assert.equal(out.length, n * 3)
+    for (let c = 0; c < 3; c++) {
+      const first = out[c]!
+      const last = out[(n - 1) * 3 + c]!
+      assert.ok(Number.isFinite(first) && first > 0 && first <= target[c]!, `${mode}: channel ${c} = ${first}`)
+      assert.equal(last, first, `${mode}: the last LED must see what the first does`)
+    }
+  }
+})
+
+test('a target that flips every tick keeps the output inside the hull of the targets, in every mode', () => {
+  // 0.4 / 0.6 keeps the flip below the asymmetric cut threshold once the
+  // first frame has snapped, so all three modes have to filter it.
+  const lo = solid(0.4, 0.4, 0.4)
+  const hi = solid(0.6, 0.6, 0.6)
+  for (const mode of MODES) {
+    const s = make(mode)
+    let i = 0
+    for (let t = 0; t <= 1000; t += PERIOD, i++) {
+      s.setTarget(i % 2 === 0 ? lo : hi, t)
+      const frame = s.tick(t)
+      if (!frame) continue
+      for (const v of frame) {
+        assert.ok(v >= 0 && v <= hi[0]! + 1e-6, `${mode} t=${t}: ${v} left [0, 0.6]`)
+        if (t > 800) assert.ok(v >= lo[0]! - 1e-6, `${mode} t=${t}: ${v} fell out of the hull`)
+      }
+    }
+  }
+})
+
+test('an out-of-range target keeps every mode finite and on cadence', () => {
+  // The smoother does not clamp: clamping is the encoder's job (clamp01 in
+  // lib/light.ts) and a clamp here would hide an upstream bug. What it must
+  // not do is blow up or lose the beat.
+  for (const mode of MODES) {
+    const s = make(mode)
+    s.setTarget(solid(2, -1, 0.5), 0)
+    const frames = run(s, 0, 1000 - 1e-6, PERIOD)
+    assert.equal(frames.length, 120, mode)
+    for (const { frame } of frames) for (const v of frame) assert.ok(Number.isFinite(v), `${mode}: ${v}`)
+  }
+})
+
+test('a tick earlier than the last emission is ignored rather than rewinding the schedule', () => {
+  const s = make('linear')
+  s.setTarget(RED, 0)
+  assert.ok(s.tick(100))
+  assert.equal(s.tick(50), null)
+  assert.equal(s.tick(100 + PERIOD - 0.01), null)
+  assert.ok(s.tick(100 + PERIOD))
+})
+
+test('linear and decay treat a target stamped later than the tick as not shown yet', () => {
+  const linear = make('linear')
+  linear.setTarget(solid(0.5, 0, 0), 100)
+  // k would be negative; clamped to 0 only the minStep floor moves.
+  near(linear.tick(0)![0]!, SMOOTHING_DEFAULTS.minStep, 1e-9)
+
+  const decay = make('decay')
+  decay.setTarget(RED, 100)
+  assert.deepEqual(decay.tick(0), BLACK)
+})
+
+test('asymmetric: a target stamped later than the tick must not fling the output out of range', () => {
+  const s = make('asymmetric')
+  s.setTarget(solid(0.1, 0.1, 0.1), 100)
+  // dt = -100: attack = 1 - exp(100 / 15) = -785, and 0.1 * -785 = -78.5.
+  const frame = s.tick(0)!
+  for (let i = 0; i < frame.length; i++) {
+    assert.ok(frame[i]! >= 0 && frame[i]! <= 0.1, `channel ${i} = ${frame[i]}`)
+  }
+})
+
+test('decay: a frame arriving exactly at the window start owns the whole window', () => {
+  const s = make('decay', { settlingMs: 150 })
+  s.setTarget(RED, 0)
+  s.setTarget(GREEN, 50)
+  // windowStart = 50. Red's slice is [50, 50): nothing, and it must not be
+  // picked as the straddling frame either, because green starts on the edge.
+  const frame = s.tick(200)!
+  near(frame[0]!, 0, 1e-6, 'red')
+  near(frame[1]!, 1, 1e-6, 'green')
+})
+
+test('decay: targets that pile up at one instant are shown for no time and the last of them wins', () => {
+  const s = make('decay', { settlingMs: 150 })
+  s.setTarget(BLACK, -1000)
+  for (let i = 0; i < 5000; i++) s.setTarget(i % 2 === 0 ? GREEN : RED, 0)
+  // Half-way through the window the straddling black still owns half of it;
+  // the 4999 frames that were replaced within the same instant weigh nothing.
+  const half = s.tick(75)!
+  near(half[0]!, 0.5, 1e-6, 'red')
+  near(half[1]!, 0, 1e-6, 'green')
+  frameNear(s.tick(150)!, RED, 1e-6)
+})
+
+test('linear and decay shake off a NaN sample once it has left the window', () => {
+  const grey = solid(0.5, 0.5, 0.5)
+  for (const mode of ['linear', 'decay'] as const) {
+    const s = make(mode)
+    s.setTarget(grey, 0)
+    run(s, 0, 300, PERIOD)
+    const bad = grey.slice()
+    bad[0] = NaN
+    s.setTarget(bad, 400)
+    s.tick(400)
+    s.setTarget(grey, 400 + PERIOD)
+    run(s, 400 + PERIOD, 1400, PERIOD)
+    // Linear recovers at the settling snap, decay once the frame is pruned.
+    near(s.current()[0]!, 0.5, 1e-6, mode)
+  }
+})
+
+test('asymmetric: one NaN sample must not trap the channel or disable the scene cut for good', () => {
+  const grey = solid(0.5, 0.5, 0.5)
+  const s = make('asymmetric')
+  s.setTarget(grey, 0)
+  run(s, 0, 300, PERIOD)
+  const bad = grey.slice()
+  bad[0] = NaN
+  s.setTarget(bad, 400)
+  s.tick(400)
+  // Every later target is valid. Three seconds on, the channel is still NaN
+  // (diff = x - NaN never enters the deadband, and y + NaN is NaN), and the
+  // cut test's mean over all channels is NaN too, so it can never fire again.
+  s.setTarget(grey, 400 + PERIOD)
+  run(s, 400 + PERIOD, 3400, PERIOD)
+  assert.ok(Number.isFinite(s.current()[0]!), `channel 0 is ${s.current()[0]}`)
+  s.setTarget(WHITE, 3500)
+  assert.deepEqual(s.tick(3500), WHITE, 'a full-frame cut must still snap')
+})
+
+test('two frames never go out closer together than half a period, stall or no stall', () => {
+  // The slot schedule re-anchors only once a whole slot has been missed. A
+  // stall that ends late in the next slot takes that slot and the following
+  // one opens moments later: two frames a millisecond apart, which is the
+  // burst the rate limiter is there to prevent (the spec's gate is
+  // `now >= lastEmit + period`). GC pauses of 8-16 ms are routine.
+  const s = make('linear')
+  s.setTarget(RED, 0)
+  assert.ok(s.tick(0))
+  assert.ok(s.tick(16.5), 'slot 1, taken 8.2 ms late')
+  assert.equal(s.tick(17.5), null, 'slot 2, one millisecond after the last frame')
+
+  for (const gap of [PERIOD + 0.1, PERIOD * 1.5, PERIOD * 1.99]) {
+    const t = make('linear')
+    t.setTarget(RED, 0)
+    let last = -Infinity
+    for (const time of [0, gap, gap + 0.5, gap + 1]) {
+      if (t.tick(time)) {
+        assert.ok(time - last >= PERIOD / 2, `gap ${gap}: frames at ${last} and ${time}`)
+        last = time
+      }
+    }
+  }
+})
+
+test('linear: a static screen re-sent every frame still settles within twice settlingMs', () => {
+  // Capture re-sends the same colour at 60 Hz - the normal case for a still
+  // image - while the output runs at 120 Hz. Hyperion's write() (cpp:215)
+  // re-arms the target time on every frame too; the question is whether the
+  // port wants to inherit that, and either way it needs a test.
+  const s = make('linear')
+  const target = solid(0.5, 0, 0)
+  let at150 = -1
+  let settledAt = -1
+  for (let i = 0; i * PERIOD <= 2000; i++) {
+    const t = i * PERIOD
+    if (i % 2 === 0) s.setTarget(target, t)
+    const frame = s.tick(t)
+    if (!frame) continue
+    if (i === 18) at150 = frame[0]!
+    if (settledAt < 0 && frame[0] === target[0]) settledAt = t
+  }
+  assert.ok(settledAt >= 0 && settledAt <= 2 * SMOOTHING_DEFAULTS.settlingMs,
+    `at 150 ms the output was ${at150}; it reached the target at ${settledAt} ms`)
+})
+
+test('asymmetric: a target held still is eventually reproduced exactly', () => {
+  const s = make('asymmetric')
+  const target = solid(0.2, 0.2, 0.2)
+  for (let t = 0; t <= 3000; t += PERIOD) {
+    s.setTarget(target, t)
+    s.tick(t)
+  }
+  // Stops at 0.19865: once x - y < 0.01 * y the output freezes 0.67 % short.
+  frameNear(s.current(), target, 1e-6)
+})
+
+test('linear: a minStep below Float32 resolution still moves the output every tick', () => {
+  const s = make('linear', { minStep: 1e-9, outputHz: 1000 }, 1)
+  s.setTarget(new Float32Array([0.5, 0, 0]), 0)
+  run(s, 0, 200, 1)
+  assert.equal(s.current()[0], 0.5)
+  // Two Float32 ulps of 0.5 away. k = 1 - 150 / 151 ~ 0.0066, so k * diff is
+  // below minStep and the floor applies - but 0.5 + 1e-9 is 0.5 in Float32.
+  const nudge = new Float32Array([0.5 + 2 * 2 ** -24, 0, 0])
+  s.setTarget(nudge, 201)
+  assert.notEqual(s.tick(201)![0], 0.5)
+})
+
+test('decay: a decay below 1 is rejected, since it would weight the oldest slice the most', () => {
+  // With decay = 0.5 the oldest tenth of the window outweighs the newest.
+  assert.ok(decayWeight(0.5, 0, 0.1) > decayWeight(0.5, 0.9, 1))
+  assert.throws(() => make('decay', { decay: 0.5 }), RangeError)
 })

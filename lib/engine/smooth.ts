@@ -47,7 +47,12 @@ export interface SmootherBaseOptions {
 /** Port of Hyperion's `linear` type: a straight-line approach to the target. */
 export interface LinearSmootherOptions extends SmootherBaseOptions {
   mode: 'linear'
-  /** Time from a new target to reaching it. Default 150. */
+  /**
+   * Time from a CHANGE of target to reaching it. Default 150. Measured from
+   * the last frame that differed from the one before: a still image re-sent
+   * every frame does not restart the clock. (Hyperion re-arms on every write,
+   * cpp:215, under which a streaming input never lands - see LinearSmoother.)
+   */
   settlingMs?: number
   /**
    * Smallest per-channel move while not at the target. Float analogue of
@@ -73,7 +78,17 @@ export interface DecaySmootherOptions extends SmootherBaseOptions {
   normalizePartialWindow?: boolean
 }
 
-/** Ours: first-order IIR with separate attack and release, deadband, cut bypass. */
+/**
+ * Ours: first-order IIR with separate attack and release, deadband, cut bypass.
+ *
+ * The deadband is applied to the TARGET the output heads for, not to the
+ * output's motion: a new frame within `max(absFloor, relFloor * accepted)` of
+ * the accepted target is capture noise and is ignored; one outside it becomes
+ * the new accepted target. The output then runs all the way to the accepted
+ * target and lands on it exactly (the last sub-`absFloor` remainder is
+ * snapped), so a still image is reproduced to the bit rather than held up to
+ * `relFloor` short of it.
+ */
 export interface AsymmetricSmootherOptions extends SmootherBaseOptions {
   mode: 'asymmetric'
   /** Time constant when a channel rises. Default 15. */
@@ -82,7 +97,7 @@ export interface AsymmetricSmootherOptions extends SmootherBaseOptions {
   releaseMs?: number
   /** Absolute deadband floor, linear. Default 4/65535 (four 16-bit LSBs). */
   absFloor?: number
-  /** Relative deadband, fraction of the current output. Default 0.01. */
+  /** Relative deadband, fraction of the accepted target. Default 0.01. */
   relFloor?: number
   /** Mean |target - output| over all channels above which the frame snaps. Default 0.25. */
   cutThreshold?: number
@@ -112,7 +127,9 @@ export interface Smoother {
   /**
    * Forgets all colour state (output, targets, history) and starts again from
    * black, optionally with a new LED count. The output cadence is kept: the
-   * rate limiter belongs to the link, not to the colours.
+   * rate limiter belongs to the link, not to the colours. The first frame
+   * after a reset integrates from the next target's arrival, not from the
+   * last emission before the reset, so it really does start from black.
    */
   reset (count?: number): void
 }
@@ -148,11 +165,16 @@ const TIME_EPS = 1e-6
  *
  * After a stall of a period or more (tab throttled, GC pause) the schedule
  * re-anchors to `now` rather than paying the missed slots back as a burst; a
- * burst is the one thing a rate limiter exists to prevent.
+ * burst is the one thing a rate limiter exists to prevent. A shorter stall
+ * that ends late inside a slot keeps the grid, and the next slot would then
+ * open moments later - so on top of the grid no two takes may be closer than
+ * half a period. That floor never bites for tick spacings under a period and
+ * only ever drops the second frame of such a double.
  */
 class Cadence {
   private readonly period: number
   private nextDue: number | null = null
+  private lastTaken = -Infinity
 
   constructor (period: number) {
     this.period = period
@@ -161,9 +183,11 @@ class Cadence {
   /** True when a slot is open at `now`, and takes it. */
   take (now: number): boolean {
     if (this.nextDue !== null && now + TIME_EPS < this.nextDue) return false
+    if (now - this.lastTaken < this.period / 2) return false
     this.nextDue = this.nextDue === null || now - this.nextDue >= this.period
       ? now + this.period
       : this.nextDue + this.period
+    this.lastTaken = now
     return true
   }
 }
@@ -244,9 +268,22 @@ abstract class SmootherBase implements Smoother {
       if (colors.length % 3 !== 0) throw new RangeError(`smooth: frame length ${colors.length} is not a multiple of 3`)
       this.reset(colors.length / 3)
     }
+    // Whether anything in the frame differs from the target already held: a
+    // still image re-sent every frame is not a new target, and the modes that
+    // time their approach from the target's arrival must not restart on it.
+    let changed = this.targetSetTime === null
+    if (!changed) {
+      const target = this.target
+      for (let i = 0; i < target.length; i++) {
+        if (target[i] !== colors[i]) {
+          changed = true
+          break
+        }
+      }
+    }
     this.target.set(colors)
     this.targetSetTime = now
-    this.onTarget(now)
+    this.onTarget(now, changed)
   }
 
   tick (now: number = this.clock()): LedColors | null {
@@ -273,11 +310,13 @@ abstract class SmootherBase implements Smoother {
     this.target = allocLedColors(this.ledCount)
     this.out = allocLedColors(this.ledCount)
     this.targetSetTime = null
+    // The integration origin goes too; the cadence lives in `output` and stays.
+    this.lastEmit = null
     this.onReset()
   }
 
-  /** Called after a new target is stored. Must not move `state`. */
-  protected onTarget (_now: number): void {}
+  /** Called after a new target is stored; `changed` is false for a repeat of the previous one. Must not move `state`. */
+  protected onTarget (_now: number, _changed: boolean): void {}
   /** Called on every tick, emitting or not. */
   protected observe (_now: number): void {}
   /** Brings `state` up to `now` for a frame that is about to go out. */
@@ -312,10 +351,15 @@ class LinearSmoother extends SmootherBase {
     requirePositive('minStep', this.minStep)
   }
 
-  protected override onTarget (now: number): void {
-    // cpp:215. Hyperion's write() also snaps output to input on first use
-    // (cpp:221-226); we do not - the first frame ramps from black like any other.
-    this.targetTime = now + this.settlingMs
+  protected override onTarget (now: number, changed: boolean): void {
+    // cpp:215, with one deliberate difference: Hyperion re-arms on EVERY
+    // write, so under a streaming input that repeats a still image the
+    // settling snap never fires and settlingMs turns into a time constant
+    // (63 % at 150 ms, exact only after eight of them). Here an unchanged
+    // frame leaves the clock alone. Hyperion's write() also snaps output to
+    // input on first use (cpp:221-226); we do not - the first frame ramps from
+    // black like any other.
+    if (changed) this.targetTime = now + this.settlingMs
   }
 
   protected override advance (now: number): void {
@@ -338,7 +382,8 @@ class LinearSmoother extends SmootherBase {
     const minStep = this.minStep
     for (let i = 0; i < state.length; i++) {
       const prev = state[i] as number
-      const diff = (target[i] as number) - prev
+      const goal = target[i] as number
+      const diff = goal - prev
       if (diff === 0) continue
       const distance = Math.abs(diff)
       // cpp:514-516: `ceil(k * |diff|)` guarantees at least one LSB of movement
@@ -348,9 +393,24 @@ class LinearSmoother extends SmootherBase {
       let step = k * distance
       if (step < minStep) step = minStep
       if (step > distance) step = distance
-      state[i] = diff < 0 ? prev - step : prev + step
+      let next = diff < 0 ? prev - step : prev + step
+      // The state is Float32: a step below one ulp of `prev` would round away
+      // and the tick would stall, breaking the guarantee above. Move by one
+      // ulp instead, never past the target.
+      if (Math.fround(next) === prev) {
+        next = nudgeFloat32(prev, goal)
+        if (diff < 0 ? next < goal : next > goal) next = goal
+      }
+      state[i] = next
     }
   }
+}
+
+/** One float32 ulp from `value` towards `towards`. */
+function nudgeFloat32 (value: number, towards: number): number {
+  const magnitude = Math.abs(value)
+  const ulp = magnitude === 0 ? 2 ** -149 : 2 ** (Math.floor(Math.log2(magnitude)) - 23)
+  return towards > value ? value + ulp : value - ulp
 }
 
 interface RememberedFrame {
@@ -391,13 +451,15 @@ class DecaySmoother extends SmootherBase {
     const interpolationHz = options.interpolationHz ?? this.outputHz
     this.normalizePartialWindow = options.normalizePartialWindow ?? false
     requirePositive('settlingMs', this.window)
-    requirePositive('decay', this.decay)
+    // Below 1 the weight function inverts: the oldest slice of the window
+    // would outweigh the newest, the opposite of what the knob promises.
+    if (!(this.decay >= 1) || !Number.isFinite(this.decay)) throw new RangeError(`smooth: decay must be a finite number of at least 1, got ${this.decay}`)
     requirePositive('interpolationHz', interpolationHz)
     this.interpolation = new Cadence(1000 / interpolationHz)
     this.acc = new Float64Array(this.ledCount * 3)
   }
 
-  protected override onTarget (now: number): void {
+  protected override onTarget (now: number, _changed: boolean): void {
     // cpp:543-566. Prune frames that ended before the window starts, but keep
     // the newest of them: it was still on screen when the window opened, and
     // without it the oldest slice of the window would have no colour at all.
@@ -482,21 +544,31 @@ class DecaySmoother extends SmootherBase {
  *
  * Two additions a plain IIR needs to be usable on captured video:
  *
- * - A perceptual deadband. Capture noise (compression, the source's own
- *   dither) jitters every channel a little on every frame; a 15 ms attack
- *   passes most of that through and the strip shimmers on a still image.
- *   Changes below `max(absFloor, relFloor * y)` are ignored and the output
- *   holds. Relative because contrast perception is: a fixed absolute band big
- *   enough to matter at full brightness would freeze the dark end, where the
- *   whole signal is that size, and one small enough for the dark end does
- *   nothing at the top. The absolute floor only takes over where relative
- *   would shrink below the wire's resolution.
+ * - A perceptual deadband, on the target. Capture noise (compression, the
+ *   source's own dither) jitters every channel a little on every frame; a
+ *   15 ms attack passes most of that through and the strip shimmers on a
+ *   still image. So the IIR does not chase the raw frame but an ACCEPTED
+ *   target: a new value within `max(absFloor, relFloor * accepted)` of it is
+ *   noise and leaves it alone, one outside it replaces it. Relative because
+ *   contrast perception is: a fixed absolute band big enough to matter at
+ *   full brightness would freeze the dark end, where the whole signal is
+ *   that size, and one small enough for the dark end does nothing at the
+ *   top. The absolute floor only takes over where relative would shrink
+ *   below the wire's resolution. Putting the band on the target rather than
+ *   on the output's motion is what lets the output LAND: it runs all the way
+ *   to the accepted value, and the final remainder under `absFloor` - below
+ *   anything the wire can show - is snapped, so a still image comes out
+ *   exact and a fade to black ends at 0, not four LSBs above it.
  *
  * - A scene-cut bypass. When the whole frame moves at once the release tail
  *   is a visible smear of the previous scene; if the mean |x - y| over ALL
  *   channels exceeds `cutThreshold` every channel snaps this tick. Judged on
  *   the whole frame so a single flashing element does not trip it. Hyperion
  *   has no equivalent.
+ *
+ * A non-finite channel in a frame is ignored - the accepted target keeps its
+ * last value - because NaN is absorbing in an IIR: `y + NaN` is NaN for ever,
+ * and one such channel would also poison the cut mean for the whole strip.
  */
 class AsymmetricSmoother extends SmootherBase {
   readonly mode = 'asymmetric' as const
@@ -505,6 +577,8 @@ class AsymmetricSmoother extends SmootherBase {
   private readonly absFloor: number
   private readonly relFloor: number
   private readonly cutThreshold: number
+  /** The deadbanded target the output heads for. */
+  private accepted: LedColors
 
   constructor (options: AsymmetricSmootherOptions, clock: Clock) {
     super(options, clock)
@@ -518,32 +592,56 @@ class AsymmetricSmoother extends SmootherBase {
     requireNonNegative('absFloor', this.absFloor)
     requireNonNegative('relFloor', this.relFloor)
     requireNonNegative('cutThreshold', this.cutThreshold)
+    this.accepted = allocLedColors(this.ledCount)
+  }
+
+  protected override onTarget (_now: number, _changed: boolean): void {
+    const { target, accepted, absFloor, relFloor } = this
+    for (let i = 0; i < target.length; i++) {
+      const x = target[i] as number
+      if (!Number.isFinite(x)) continue
+      const a = accepted[i] as number
+      const diff = x - a
+      const eps = Math.max(absFloor, relFloor * a)
+      if (diff < eps && diff > -eps) continue
+      accepted[i] = x
+    }
+  }
+
+  protected override onReset (): void {
+    this.accepted = allocLedColors(this.ledCount)
   }
 
   protected override advance (now: number): void {
-    const { state, target } = this
+    const { state, accepted, absFloor } = this
 
     let totalDistance = 0
-    for (let i = 0; i < state.length; i++) totalDistance += Math.abs((target[i] as number) - (state[i] as number))
+    for (let i = 0; i < state.length; i++) totalDistance += Math.abs((accepted[i] as number) - (state[i] as number))
     if (totalDistance / state.length > this.cutThreshold) {
-      state.set(target)
+      state.set(accepted)
       return
     }
 
     // Integrate from the last emission; before the first one, from the moment
     // the target existed, so a late-starting output loop lands where a running
-    // one would have.
-    const dt = now - (this.lastEmit ?? this.targetSetTime ?? now)
+    // one would have. A target stamped later than this tick has not been shown
+    // yet and contributes nothing (a negative dt would flip the sign of the
+    // whole step).
+    let dt = now - (this.lastEmit ?? this.targetSetTime ?? now)
+    if (dt < 0) dt = 0
     const attack = 1 - Math.exp(-dt / this.attackMs)
     const release = 1 - Math.exp(-dt / this.releaseMs)
-    const { absFloor, relFloor } = this
 
     for (let i = 0; i < state.length; i++) {
       const y = state[i] as number
-      const x = target[i] as number
+      const x = accepted[i] as number
       const diff = x - y
-      const eps = Math.max(absFloor, relFloor * y)
-      if (diff < eps && diff > -eps) continue
+      if (diff === 0) continue
+      // Below the wire's resolution: land, do not creep.
+      if (diff < absFloor && diff > -absFloor) {
+        state[i] = x
+        continue
+      }
       state[i] = y + diff * (diff > 0 ? attack : release)
     }
   }

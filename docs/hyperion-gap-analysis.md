@@ -115,15 +115,62 @@ ham soket gerektiriyor.
 
 ---
 
-## 3. Yol haritası
+## 3. Platformlar
+
+Odak **Windows + Chrome**, ama mimari baştan bunun ötesini hedefliyor. Her satır
+bir iddia değil, bir kısıt listesi.
+
+| Platform | Tarayıcı | Panel | Ekran yakalama | Seri port (Arduino) | Ağ cihazı (WLED) |
+|---|---|---|---|---|---|
+| **Windows** | **Chrome/Edge** | ✅ | ✅ eklenti | ✅ Web Serial | ✅ |
+| Windows | Firefox | ✅ | ✅ `getDisplayMedia` | ❌ Web Serial yok | ✅ |
+| macOS | Chrome | ✅ | ✅ eklenti | ✅ | ✅ |
+| macOS | Safari | ✅ | ✅ `getDisplayMedia` (Safari 13+) | ❌ | ✅ |
+| Android | Chrome | ✅ | ❌ mobilde yok | ❌ (WebUSB var, Web Serial yok) | ✅ |
+| Android TV | Chrome | ✅ | ❌ | ❌ | ✅ |
+| Apple TV | Safari (tvOS 17+) | ✅ | ❌ | ❌ | ✅ |
+
+Üç gerçek, dürüstçe:
+
+1. **Web Serial yalnız Chromium'da var.** Firefox ve Safari onu uygulamayı
+   reddetti. Bu platformlarda Arduino'ya doğrudan bağlanmak mümkün değil —
+   ve bu bizim düzeltebileceğimiz bir şey değil.
+2. **Mobil ve TV'de ekran yakalama yok.** `getDisplayMedia` mobil Chrome ve
+   Safari'de yok. Ama bu platformlar **kumanda** olarak tam değerli: efekt seç,
+   renk ayarla, profil yükle — hepsi ağ cihazına ya da çalışan bir masaüstü
+   örneğine gider.
+3. **Ağ cihazı desteği her platformu açıyor.** WLED'e HTTP ile bağlanmak her
+   yerde çalışıyor. Bu yüzden ağ cihazları yol haritasında efektlerden hemen
+   sonra: yakalamanın olmadığı her platformda uygulamayı yine de kullanılır
+   kılan tek madde bu.
+
+Bunu mimaride karşılayan şey **çıkış katmanının soyut olması**: `serial.ts` bir
+`FrameSink` uyguluyor, WLED sürücüsü de aynı arayüzü uygulayacak, ve panel
+hangisinin bağlı olduğunu bilmek zorunda kalmayacak.
+
+## 4. Yol haritası
 
 Sıra etkiye göre, ve her biri bir öncekinden bağımsız:
 
 1. **Efekt motoru** — uygulamayı ekran yakalamasız kullanılır kılıyor, ve
-   tarayıcıda Hyperion'dakinden daha ucuz.
-2. **Öncelik katmanları** — ön plan/arka plan efekti, kaynak öncelikleri.
-   Efektler gelince bunlar anlam kazanıyor.
-3. **WLED sürücüsü** — kendi firmware'imizi zorunlu olmaktan çıkarıyor.
-4. **Ses görselleştirici** — Web Audio, küçük iş, büyük görünürlük.
-5. **Olaylar** — sekme gizlenince duraklat, zamanlanmış aç/kapat.
-6. **Çoklu örnek** — mimariyi en çok değiştiren madde, o yüzden en sonda.
+   tarayıcıda Hyperion'dakinden daha ucuz. Mobil ve TV'de çalışabilen ilk
+   gerçek özellik de bu.
+2. **Çıkış katmanını soyutla** — `FrameSink` arayüzü; seri port onu zaten
+   uyguluyor, ağ cihazları için önkoşul.
+3. **WLED sürücüsü** — kendi firmware'imizi zorunlu olmaktan çıkarıyor ve
+   Web Serial'ı olmayan her platformu açıyor.
+4. **Ses görselleştirici** — Web Audio, küçük iş, büyük görünürlük, her
+   platformda çalışıyor.
+5. **Öncelik katmanları** — ön plan/arka plan efekti, kaynak öncelikleri.
+   Efektler ve ses gelince bunlar anlam kazanıyor.
+6. **Olaylar** — sekme gizlenince duraklat, zamanlanmış aç/kapat.
+7. **Çoklu örnek** — mimariyi en çok değiştiren madde, o yüzden en sonda.
+
+### Yapılandırılabilirlik kuralı
+
+Hiçbir şey bu depodaki düzeneğe göre sabitlenmeyecek. 108 LED, 35/19/35/19
+kenarlar, 16:9, 1500 mA güç bütçesi — hepsi **varsayılan**, hiçbiri varsayım.
+Firmware tarafında bu zaten böyle (`AxC` ile çalışma zamanı yapılandırması,
+NVS'te saklanıyor); panel tarafında da yerleşim editörü her knob'u açıyor.
+Yeni bir özellik eklenirken ölçüt şu: *başka bir monitörü, başka bir şeridi,
+başka bir beslemesi olan biri bunu ayarlayabiliyor mu?*

@@ -18,7 +18,7 @@ Depo kökü **tek bir Next.js uygulaması.** Workspace yok, alt paket yok.
 | `extension/` | Chrome eklentisi (MV3): yakalama + hat + seri port, offscreen document'ta | **derleniyor**, gerçek ekranda henüz ölçülmedi |
 | `components/` | HeroUI v3 ekranları | **çalışıyor** |
 | `supabase/migrations/` | Şema SQL'i, tek doğru kaynak | **çalışıyor** |
-| `test/` | 205 test, ağ ve veritabanı gerektirmez | **çalışıyor** |
+| `test/` | 334 test, ağ ve veritabanı gerektirmez | **çalışıyor** |
 | `docs/hyperion-port-plan.md` | Hyperion.NG'den ne, nasıl, neden aktarılıyor | plan |
 | `AmbiFluxNanoR4LampArray/` | Eski HID LampArray firmware'i | ESP32-S3'e yeniden yazılacak |
 
@@ -55,7 +55,7 @@ değişirse mantık yerinde kalıyor.
 
 ```bash
 npm install
-npm test          # 205 test; ağ, veritabanı ya da build gerekmez
+npm test          # 334 test; ağ, veritabanı ya da build gerekmez
 npm run typecheck
 npm run dev       # http://localhost:3000
 npm run build

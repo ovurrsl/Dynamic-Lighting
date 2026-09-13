@@ -1,6 +1,8 @@
 # Vercel builds the Next app at the root. None of these are part of it.
-extension
-AmbiFluxNanoR4LampArray
-test
-supabase
-docs
+# Anchored with a leading slash: .vercelignore uses gitignore syntax, and a
+# bare `extension` would also drop lib/extension/, which the panel imports.
+/extension/
+/AmbiFluxNanoR4LampArray/
+/test/
+/supabase/
+/docs/

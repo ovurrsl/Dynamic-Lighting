@@ -40,6 +40,14 @@ export type Message =
    * finished choosing a screen.
    */
   | { type: 'ambiflux/prepare'; target: Target }
+  /**
+   * Runs the engine on a generated picture instead of the screen.
+   *
+   * The bench run: it proves the pipeline with no screen, no picker and no
+   * board, and it is the only way to tell "the engine is broken" apart from
+   * "the capture never started" - which look identical from outside.
+   */
+  | { type: 'ambiflux/selftest'; target: Target }
   /** Asks the worker for the engine's state and its latest statistics. */
   | { type: 'ambiflux/status'; target: Target }
   | { type: 'ambiflux/status-reply'; version: string; state: EngineState; stats: EngineStats | null }

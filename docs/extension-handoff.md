@@ -8,8 +8,8 @@ Depoda bu dosyanın kardeşleri: `docs/hyperion-port-plan.md` (motor
 algoritmalarının kaynağı ve Hyperion.NG'den kopyalanmayacak 10 kusur),
 `docs/deploy.md`, `docs/tooling.md`, ve kök `README.md`.
 
-Son güncelleme: 2026-09-13. Durum: **eklenti derleniyor ve yükleniyor, ama
-gerçek bir ekranda henüz tek kare yakalamadı.** Açık hata §9'da.
+Son güncelleme: 2026-09-13. Durum: **motor çalışıyor ve ölçüldü** (§9.1), ama
+**ekran yakalama kullanıcının makinesinde başlamıyor** (§9.2).
 
 ---
 
@@ -305,7 +305,51 @@ köşesi, `clockwise`, `offset`, `gap`, `overlap`, `edgeGap`, `aspectRatio`,
 
 ---
 
-## 9. AÇIK HATA — yakalama başlamıyor
+## 9. Ölçüm ve açık hata
+
+### 9.1 Motorun kendisi çalışıyor — ölçüldü
+
+Uzantı bu depoda, başsız Chromium'a `--load-extension` ile yüklenip **sentetik
+kaynakla** sürüldü (`ambiflux/selftest`: offscreen dokümanda bir canvas
+`captureStream`). Ekran, seçici ve kart olmadan tüm hat koştu.
+
+```
+durum running · LED 108 · yakalanan 605 · teslim fps 57.3
+varış p50 17.0 ms · p99 28.5 ms · boşluk 0 · hat düşen 0
+işleme p50 1.70 ms · p99 24.90 ms · çıkış fps 114.7
+link loopback yazılan 1107 · kabul 1107 · RED 0
+kenar 0/0 · kaynak 640x360
+```
+
+**Bunun kanıtladıkları:**
+
+- **`MediaStreamTrackProcessor` offscreen dokümanda kare teslim ediyor.** Bu
+  E6'nın çekirdeği ve mimarinin dayandığı varsayımdı; artık varsayım değil.
+- Hat uçtan uca koşuyor: küçültme, decode, kenar algılama, örnekleme, düzeltme,
+  yumuşatma, kanal sırası, `Afx` çerçeveleme.
+- **Çerçeveleme doğru: 1107 karede RED 0.** Loopback'in referans ayrıştırıcısı
+  hepsini kabul etti — Fletcher escape'i ve başlık aritmetiği tutuyor.
+- Kuyruk yok: `pipelineDrops` 0, `captureGaps` 0.
+- Kenar algılayıcı sınama resminin **ortasındaki** siyah kareyi letterbox
+  sanmadı (0/0) — aradığı bantlar kenarlarda.
+- İşleme p50 **1.70 ms**, 120 Hz'in 8.33 ms bütçesinde rahat.
+
+**Kanıtlamadıkları — bunları iddia etme:**
+
+- Kaynak bir **canvas**, masaüstü yakalaması değil. Gerçek yakalamanın kare
+  biçimi (NV12/I420), çözünürlüğü (1440p) ve maliyeti farklı.
+- **Arka plan kısıtlaması denenmedi.** Offscreen dokümanın hiç render
+  edilmediği için kısıtlanmadığı tezi hâlâ sınanmadı.
+- İşleme **p99 24.90 ms**, bütçenin üç katı. Tek tük; muhtemelen GC ya da ilk
+  karelerin ısınması, ama 1440p'de bakılmalı. Sayaç zaten yerinde.
+- Çıkış fps 114.7, hedef 120. Sentetik kaynak 60 Hz boyandığı için teslim 57
+  fps; yumuşatıcı aradaki kareleri üretiyor.
+
+Tekrarlamak için: uzantı popup'ında **"Ekransız sına"**. Bu düğme kalıcı ve
+ürünün parçası — şerit karanlık kaldığında "motor bozuk" ile "yakalama hiç
+başlamadı"yı ayıran tek şey, ve ikisi dışarıdan aynı görünüyor.
+
+### 9.2 AÇIK HATA — ekran yakalama başlamıyor
 
 **Belirti** (kullanıcının makinesinde, 2026-09-13):
 
@@ -369,7 +413,7 @@ bir kısmı mimariyi değiştirebilir.
 
 | # | Ne | Neden önemli |
 |---|---|---|
-| **E6** | Offscreen'de MSTP kare teslim ediyor mu | **Bu fazın tek gerçek bilinmezi.** Sıfır kare gelirse yedek mimari: MSTP dokümanda kalır, `VideoFrame` transfer edilip küçültme worker'da yapılır. |
+| ~~E6~~ | Offscreen'de MSTP kare teslim ediyor mu | **KAPANDI, §9.1.** Sentetik kaynakla 605 kare, 57 fps, 0 düşen. Yedek mimariye (kareleri worker'a geçirmek) gerek yok. Arka plan kısıtlaması hâlâ sınanmadı. |
 | **E4** | Teslim edilen FPS: istenen 60 ve 120'de, ön planda **ve** arka planda | Kareleri say, `getSettings().frameRate`'i yok say. p50/p1/p99 varış aralığı bildir — ortalama tam da önemsenen duraklamaları saklıyor. |
 | **E7** | Aliasing: 1 piksel dama deseni + ince metin | Tek aşamalı küçültme headless'ta doğru çıktı; gerçek GPU'da ve NV12 kaynakta tekrar. |
 | **E8** | İçerik matrisi (DRM): Netflix tarayıcı vs Store, Prime, Disney+, YouTube HDR | Test sonucu değil, **ürün destek dokümanı**. Ne reklam edilebileceğini değiştirebilir. |

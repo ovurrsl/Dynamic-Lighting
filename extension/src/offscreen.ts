@@ -85,6 +85,8 @@ let reader: ReadableStreamDefaultReader<VideoFrame> | null = null
 let processing: Promise<void> | null = null
 let tickTimer: ReturnType<typeof setInterval> | null = null
 let reportTimer: ReturnType<typeof setInterval> | null = null
+/** Paints the self-test picture; null unless the synthetic source is running. */
+let testTimer: ReturnType<typeof setInterval> | null = null
 
 // ---------------------------------------------------------------------------
 // The configured stages. Rebuilt together, because they all depend on the LED
@@ -262,14 +264,63 @@ function describeCaptureError (error: unknown): string {
 }
 
 async function start (streamId: string): Promise<void> {
+  await begin(async () => {
+    const stream = await openCapture(streamId)
+    const video = stream.getVideoTracks()[0]
+    if (video === undefined) throw new Error('no video track')
+    return video
+  })
+}
+
+/**
+ * Runs the whole engine on a generated picture instead of the screen.
+ *
+ * This is the bench run from the plan's stage 0, and it earns its place three
+ * times over: it proves the pipeline end to end with no screen, no picker and
+ * no board; it is the only way to tell "the engine is broken" apart from "the
+ * capture never started", which are the same symptom from outside; and it is
+ * what a customer can run when their strip stays dark.
+ *
+ * The source is a canvas captured at the output rate. Drawing happens on a
+ * plain interval, never requestAnimationFrame - in a document that is never
+ * rendered rAF does not fire, which is the same reason the engine is here.
+ */
+async function startSelfTest (): Promise<void> {
+  await begin(async () => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 640
+    canvas.height = 360
+    const paint = canvas.getContext('2d')
+    if (paint === null) throw new Error('2d context yok')
+    let frame = 0
+    testTimer = setInterval(() => {
+      // A hue that travels around the border, so every LED lights in turn and
+      // the wire order is visible on the strip as a moving comet.
+      const t = frame++ / 120
+      const grad = paint.createLinearGradient(0, 0, canvas.width, canvas.height)
+      grad.addColorStop(0, `hsl(${(t * 120) % 360} 90% 50%)`)
+      grad.addColorStop(1, `hsl(${(t * 120 + 180) % 360} 90% 50%)`)
+      paint.fillStyle = grad
+      paint.fillRect(0, 0, canvas.width, canvas.height)
+      // A black centre: the border detector must NOT read this as letterboxing,
+      // because the bars it looks for are at the edges.
+      paint.fillStyle = '#000'
+      paint.fillRect(canvas.width * 0.2, canvas.height * 0.2, canvas.width * 0.6, canvas.height * 0.6)
+    }, Math.round(1000 / 60))
+    const video = canvas.captureStream(OUTPUT_HZ).getVideoTracks()[0]
+    if (video === undefined) throw new Error('captureStream video vermedi')
+    return video
+  })
+}
+
+/** Everything both sources share: start the clocks, the link and the pump. */
+async function begin (open: () => Promise<MediaStreamTrack>): Promise<void> {
   if (state === 'running' || state === 'starting') stop()
   state = 'starting'
   lastError = undefined
   report()
   try {
-    const stream = await openCapture(streamId)
-    const video = stream.getVideoTracks()[0]
-    if (video === undefined) throw new Error('no video track')
+    const video = await open()
     track = video
     video.addEventListener('ended', () => { stop() }, { once: true })
 
@@ -387,9 +438,11 @@ function stop (): void {
   if (tickTimer !== null) clearInterval(tickTimer)
   if (reportTimer !== null) clearInterval(reportTimer)
   if (reconnectTimer !== null) clearTimeout(reconnectTimer)
+  if (testTimer !== null) clearInterval(testTimer)
   tickTimer = null
   reportTimer = null
   reconnectTimer = null
+  testTimer = null
   const r = reader
   reader = null
   void r?.cancel().catch(() => { /* already closed */ })
@@ -448,6 +501,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   switch (message.type) {
     case 'ambiflux/start':
       start(message.streamId).then(() => sendResponse({ state, error: lastError }))
+      return true
+    case 'ambiflux/selftest':
+      startSelfTest().then(() => sendResponse({ state, error: lastError }))
       return true
     case 'ambiflux/stop':
       stop()

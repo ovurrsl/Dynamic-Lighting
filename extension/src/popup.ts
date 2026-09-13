@@ -47,6 +47,21 @@ document.getElementById('start')?.addEventListener('click', () => {
   })
 })
 
+/**
+ * Runs the engine on a generated picture. No picker, no screen, no board - so
+ * when the strip stays dark this is what separates "the engine is broken" from
+ * "the capture never started".
+ */
+document.getElementById('selftest')?.addEventListener('click', () => {
+  const message: Message = { type: 'ambiflux/selftest', target: 'sw' }
+  chrome.runtime.sendMessage(message, (response: unknown) => {
+    const body = response as { state?: string, error?: string } | undefined
+    say(body?.state === 'running'
+      ? 'Sınama çalışıyor: motor üretilmiş bir resmi işliyor.'
+      : `Sınama başlatılamadı: ${body?.error ?? JSON.stringify(response)}`)
+  })
+})
+
 document.getElementById('stop')?.addEventListener('click', () => {
   const message: Message = { type: 'ambiflux/stop', target: 'sw' }
   chrome.runtime.sendMessage(message, (response: unknown) => say(`Durduruldu: ${JSON.stringify(response)}`))

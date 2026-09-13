@@ -361,7 +361,275 @@ gereken akış bu.
 
 ---
 
-## 9. Kaynak
+## 9. Renk uzayı: iddia kanıtlandı
+
+Bu, tüm kalite farklılaştırmamızın dayandığı nokta, o yüzden kanıtla:
+
+**Hyperion'un LED hattında hiçbir yerde doğrusallaştırma yok.** Ortalama,
+yumuşatma ve düzeltme zincirinin tamamı 8-bit sRGB-kodlu tam sayılar üzerinde
+çalışıyor.
+
+- `ImageToLedsMap.h:419-438` — `calcMeanColor` grabber'dan gelen `uint8_t`
+  değerleri toplayıp sayıya bölüyor. Transfer fonksiyonu yok, float yok.
+- `RgbTransform.cpp:57-79` — "gama" LUT'u `out = 255*(i/255)^gamma`, ve bu
+  **zaten sRGB olan** değere uygulanıyor. Yani ekranın sRGB kodlamasının
+  **üstüne ikinci bir güç fonksiyonu** — çözme değil. Varsayılan 2.2, yani
+  orta gri sRGB 128 → **55**. Kolorimetrik bir işlem değil, bilinçli olarak
+  algısal bir karartma düğmesi.
+- `RgbTransform.cpp:212-217` — renk sıcaklığı sRGB'de düz kanal çarpımı.
+- Tüm depoda sRGB transfer fonksiyonuna dokunan yalnız iki yer var: Okhsv
+  doygunluk/parlaklık kazancı (`ok_color.h:58-66`, ve bu varsayılan olarak
+  kapalı) ve Philips Hue sürücüsü (`LedDevicePhilipsHue.cpp:220-222`, çünkü Hue
+  API'si CIE xy istiyor). **Kod tabanında kolorimetrik olarak doğru tek yer bu
+  ikincisi.**
+
+**Ve `multicolor_mean_squared` modunun varlık sebebi tam olarak bu.** RMS
+(`sqrt(Σr²/N)`) sRGB'de, "doğrusalda ortala sonra yeniden kodla"nın kaba ve ucuz
+bir yaklaşımı — parlak pikselleri fazla ağırlıklıyor. Yani bizim doğrusal
+ortalamamız, Hyperion'un yaklaşık olarak taklit etmeye çalıştığı şeyin
+**prensipli hali.** Aynı işi yapan ikinci bir mod eklemiyoruz; doğrusunu
+yapıyoruz.
+
+---
+
+## 10. Kademe 1 algoritmalarının tam hali
+
+### Yumuşatma — linear modu
+
+`performLinear` (`LinearColorSmoothing.cpp:488-520`). **Sabit süreli bir lerp
+değil**, her çıkış tick'inde yeniden türetilen geometrik bir yaklaşma:
+
+```
+k = 1 - deltaTime / (targetTime - previousWriteTime)      // ∈ [0,1]
+her kanal için: diff = target - prev
+                prev += sign(diff) * ceil(k * |diff|)
+```
+
+`ceil` kritik: `diff != 0` olduğu her tick'te en az ±1 LSB hareket garantiliyor,
+yani 1 birim uzakta asimptotik takılma yok. Bedeli yavaş geçişlerde görünür
+1/255 basamaklanma. `k ≤ 1` olduğu için asla aşmıyor. Linear mod `decay`,
+`interpolationRate` ve `dithering`'i tamamen yok sayıyor.
+
+Girdi uçuş sırasında gelirse hedef değişiyor ve sonraki tick yeniden hesaplıyor
+— bu yüzden bizim "yakalama yalnız hedefi güncelliyor, IIR kendi saatinde
+koşuyor" tasarımı Hyperion'la aynı fikir.
+
+### Yumuşatma — decay modu ve ağırlık fonksiyonu
+
+Kare geçmişi bir deque'te `{zaman, renkler}` olarak tutuluyor. Budama bilinçli
+olarak **pencere başlangıcını kesen kareyi saklıyor** (`p = -1` ile başlıyor),
+böylece pencerenin en eski dilimi her zaman bir renge sahip.
+
+```
+decay == 1 →  w = (frameEnd - frameStart) * invWindow          // saf zaman payı
+decay != 1 →  s = (frameStart - windowStart) * invWindow
+              t = (frameEnd   - windowStart) * invWindow
+              w = (decay + 1) * (t^decay - s^decay)
+```
+
+Yarı ömür: `t_half = (1 - 2^(-1/decay)) * settlingTime`. `decay=1` için
+settling'in %50'si, `decay=8` için ~%8.3'ü.
+
+Bir davranış bilinçli ve taşınırken karar vermek gerekiyor: pencere tam
+dolmadığında `fs < 1` ise **yeniden normalize edilmiyor**, yani açılışta çıkış
+siyahtan içeri soluyor.
+
+### Zamansal dithering — hattın en değerli fikri
+
+`assembleAndDitherFrame` (`cpp:293-326`). Bu, Floyd–Steinberg hata yayılımının
+**uzayda değil zamanda** uygulanmışı, kanal başına bağımsız:
+
+```
+f = mean + residual
+out = clamp(round(f), 0, 255)
+residual = f - out          // yuvarlama hatası sonraki kareye taşınıyor
+```
+
+Hedef 10.4 ise 25 Hz'de 10,10,11,10,10,11… çıkıyor ve göz 10.4 olarak
+integre ediyor. `mean ∈ [0,255]` olduğu için residual ±0.5 civarında sınırlı —
+wind-up yok.
+
+**Bu bizim için önemli bir karar noktası.** Planımızda dither firmware'de
+(sigma-delta). Hyperion host'ta yapıyor. İkisi birbirini dışlamıyor ama **ikisi
+birden yapılırsa çift dither olur.** Karar: firmware 16-bit alıyorsa dither
+orada; 8-bit `Afx`/AWA yolunda host tarafında.
+
+Decay modunda iki **bağımsız saat** var: ortalama `interpolationRate`'te yeniden
+hesaplanıyor, kare `updateFrequency`'de gönderiliyor. Dither açıkken kuantalama
+yazma hızında çalışıyor (her gönderilen kare taze residual taşıyor).
+
+### Siyah kenar algılama — dört modun tam probu
+
+Eşik: `ceil(threshold% * 255)`, varsayılan %5 → **13**. `isBlack` **üç kanalın
+da** eşiğin altında olmasını istiyor. Hepsi genişlik/yüksekliğin ilk **üçte
+birini** tarıyor ve tam tarama değil, birkaç satır örnekliyor — tasarım gereği
+kare başına O(1).
+
+- **`default`** (3 satır, 4 kenar): X için sağ kenar-orta satır, sol kenar-1/3
+  satır, sol kenar-2/3 satır aynı döngüde. Sol ve sağ probu aynı döngüye
+  karıştırmak, işi iki katına çıkarmadan simetri sağlayan hile.
+- **`classic`**: köşegen yürüyüşü, sonra sola ve yukarı genişleme. Ucuz ama
+  sol üst köşedeki karanlık içerik kandırıyor.
+- **`osd`**: X'i `default` gibi bulup, Y'yi **bulunan x'te dört köşede**
+  arıyor — bir köşedeki ekran bilgisi katmanı tek başına kenar değiştiremiyor.
+- **`letterbox`**: yalnız üst/alt, genişliğin %25 ve %75'inde iki yönden, artı
+  **merkez yalnız üstten** — koddaki gerekçesi: *"center will only check top
+  (minimise false detection of captions)"*. Altyazı yanlış pozitifini önlüyor.
+
+Histerezis sabitleri: `unknownFrameCnt` **600**, `borderFrameCnt` **50**,
+`maxInconsistentCnt` **10**, `blurRemoveCnt` **1** piksel.
+
+**Ve bu tasarımın gerçek sebebi, depodaki en iyi yorum**
+(`BlackBorderProcessor.cpp:150-160`): grabber bazen daha küçük siyah kenarlı
+"bozuk" kareler veriyormuş — görüntü donmuş olsa bile birkaç karede bir rastgele
+— ve yazarın notu: *"**dönüştürücünün güç kaynağını değiştirmek sistemimde o
+'rastgele' etkiyi belirgin şekilde artırdı**"*. Yani bir HDMI yakalama kartının
+güç kaynağı artefaktı, tüm histerezis durum makinesinin tasarımını belirlemiş.
+
+Bir de maliyet: kenar değişince **tüm indeks haritası yeniden kuruluyor**
+(`verifyBorder` → `registerProcessingUnit`). Histerezisin bu kadar isteksiz
+olmasının sebebi bu.
+
+Bizim planımızdaki "histerezis kare değil zaman tabanlı olmalı" notu geçerli:
+50 kare Hyperion'un 10 FPS'inde 5 saniye, bizim 120 FPS'imizde **0.42 saniye**.
+
+### Renk düzeltme zinciri — tam sıra
+
+`MultiColorAdjustment::applyAdjustment`, LED başına kare başına:
+
+1. **Okhsv kazancı** — doygunluk ve parlaklık çarpanı, Okhsv uzayında (ve bu
+   uzay sRGB'yi doğru çözüyor). İkisi de varsayılan 1.0, yani **varsayılan
+   olarak atlanıyor.** Zincirdeki algısal olarak doğru tek aşama.
+2. **Gama LUT** — kanal başına 256 girişli, `(i/255)^gamma * 255`.
+3. **Parlaklık bileşenleri** — dönüşüm değil, aşama 5'in kullandığı üç skaler:
+   ```
+   B_in = (brightness < 50) ? (-0.09*brightness + 7.5) : (-0.04*brightness + 5.0)
+   brightness_rgb = ceil(min(255, 255 / B_in))
+   brightness_cmy = ceil(min(255, 255 / (B_in * Fcmy)))
+   brightness_w   = ceil(min(255, 255 / (B_in * Fw)))
+   Fcmy = comp/100 + 1,   Fw = comp*2/100 + 1
+   ```
+   50'de menteşelenen iki elle ayarlanmış doğru parça.
+4. **8 köşe: trilineer ayrıştırma.** Bu, sistemin anlaşılması gereken kısmı —
+   renk RGB küpünün 8 köşesine barycentric ağırlıklarla dağıtılıyor:
+   ```
+   black   = (255-r)(255-g)(255-b) / 255²        white = r·g·b / 255²
+   red     = r(255-g)(255-b) / 255²              yellow = r·g(255-b) / 255²
+   ...                                            (8 ağırlık, toplamı 255)
+   ```
+   Sonra her ağırlık, kullanıcının o köşe için kalibre ettiği rengi seçiyor.
+   **Yani 8 köşe renk, yalnızca küp köşeleri açığa çıkarılmış bir 3-B renk
+   LUT'u** — "benim LED'imin kırmızısı aslında (255,20,5)" diyebiliyorsun ve
+   tüm ara renkler yumuşak takip ediyor. Aynı zamanda RGB/CMY/W'nin farklı güç
+   çekmesini telafi etmenin kancası. **BLACK köşesine bilinçli olarak
+   `brightness=255` geçiliyor**, yani siyah taban asla ölçeklenmiyor.
+5. **Köşe başına parlaklık LUT'u** — `clamp(_adjust.c * brightness * input / 255²)`.
+6. **Yeniden birleştirme** — 8 katkının kanal başına toplamı.
+7. **Renk sıcaklığı** — `c *= tempRGB.c / 255`, Tanner Helland siyah cisim
+   yaklaşımı, 6600 K'de birim (identity).
+8. **Backlight/siyah taban** — `(r+g+b) < 3*low` ise tabana çek. Eşik eğrisi
+   doğrusal değil: `shaped = (2^(2t)-1)/3`, yani %50 → 85.
+   Ve `_backLightEnabled` bir kullanıcı ayarı **değil**: görünen kaynak düz renk
+   ya da efekt olduğunda zorla kapatılıyor, böylece "LED'leri siyah yap"
+   gerçekten siyah oluyor.
+
+### Bir karede üç ayrı hız sınırlayıcı, seri hâlde
+
+Bu, "neden Hyperion 120 Hz veremiyor" sorusunun cevabı:
+
+```
+grabber fps (varsayılan 25, maks 30)
+  → coalescing kapısı: işleme bitmediyse kareyi DÜŞÜR (sayılıyor, %5 üstü uyarı)
+  → yumuşatma çıkış aralığı (varsayılan 25 Hz)
+  → cihaz latchTime kapısı (Adalight'ta 30 ms → ~33 Hz)
+```
+
+Üçü çarpışmıyor, **seri hâlde daralıyor.** Bizim hattımızda bu üç kapıdan
+hiçbiri olmamalı: yakalama 120, yumuşatma 120 tick, seri latch yok.
+
+---
+
+## 11. Hyperion'un hataları — kopyalanmayacaklar
+
+Port ederken bunları taşımamak, aktarımın yarısı kadar değerli.
+
+| # | Nerede | Ne | Sonucu |
+|---|---|---|---|
+| 1 | `ImageToLedsMap.cpp:96` | İndeks adımı `actualWidth`, ama tampon adımı tam `_width` | **Sol/sağ kenar algılandığı anda her satır kayıyor ve örneklenen bölge çapraz sürükleniyor.** Biz `y * fullWidth + x` kullanacağız |
+| 2 | `ImageProcessor.h:144-149` | `case 1` ve `case 2` `mappingTypeToInt` ile **ters** | Arayüzde "mean squared" seçmek aslında uniform mean veriyor. Kullanıcı-görünür hata |
+| 3 | `MultiColorAdjustment.cpp:157-159` | 8 köşe katkısının **clamp'sız `uint8_t` toplamı** | Varsayılan olmayan kalibrasyonda **taşıp sarıyor** — parlak bölge karanlığa dönüyor |
+| 4 | `RgbChannelAdjustment.cpp:65`, `MultiColorAdjustment.cpp:130` | `static_cast<uint8_t>(double)` yuvarlamıyor, **kırpıyor** | Köşe ayrıştırmasında 8/255'e kadar sistematik luminans kaybı |
+| 5 | `ImageToLedsMap.h:508` | `uint_fast32_t` piksel başına 255² topluyor | 32-bit platformda ~66.000 pikselden sonra taşıyor; ayrıca `sqrt`'ten **önce** tam sayı bölmesi |
+| 6 | `ImageToLedsMap.h:671` | k-means'te **iterasyon sınırı yok**, ve yakınsama testi hareketin kendisine değil **hareketteki değişime** bakıyor | Patolojik salınımda sonsuz döngü |
+| 7 | `schema-smoothing.json` | `interpolationRate` şema varsayılanı **1.0**, C++ fallback'i **25** | Yeni kaydedilmiş config ile eski config çok farklı davranıyor |
+| 8 | `schema-color.json` | `brightnessCompensation` şema **0**, kod fallback'i **100** | Aynı sınıf uyumsuzluk |
+| 9 | `utils/hyperion.h:172` | `ledIndexList[i]` olması gereken yerde `[j]` | LED kalibrasyon aralığı ayrıştırmasında yanlış eleman okunuyor |
+| 10 | `ImageToLedsMap.cpp:83-88` | LED bölgesi 1600 pikseli geçince **sessizce her 2. pikseli atlıyor** | Otomatik performans koruması, ama kullanıcı bilmiyor |
+
+---
+
+## 12. Yakalama kalitesi: bizim yolumuz nerede duruyor
+
+Hyperion'un 12 grabber'ı arasında küçültme kalitesi dramatik biçimde değişiyor —
+ve bu, bizim ölçtüğümüz sonucu bağlama oturtuyor.
+
+| Backend | Küçültme | Kalite |
+|---|---|---|
+| **DDA** (Windows) | D2D `DrawBitmap`, `INTERPOLATION_MODE_LINEAR` | **Gerçek filtreli tek backend.** Ama hedef `B8G8R8A8_UNORM`, `_SRGB` değil → filtreleme gama-kodlu değerlerde |
+| DirectX/D3D9 | `D3DXLoadSurfaceFromSurface`, `D3DX_DEFAULT` | Filtreli (üçgen/doğrusal) |
+| X11 | XRender `FilterBilinear` | Filtreli |
+| **XCB** | XRender filtresi `"fast"` | **Nearest.** Aynı ekran, X11'den düşük kalite |
+| **Qt** (taşınabilir yedek) | `QImage::scaled()` argümansız | **`FastTransformation` = nearest neighbour.** 3840→480'de 64 pikselde 1, filtresiz |
+| CPU resampler (V4L2 vb.) | saf **nearest-neighbour nokta örnekleme** | `pixelDecimation=8` varsayılanıyla piksellerin 1/64'ü |
+
+Ve bir sistematik hata: YUV→RGB dönüşümü **her zaman BT.601 limited-range**
+(`ColorSys.cpp:54-64`). Modern 1080p/4K HDMI genelde BT.709, bazen full-range.
+Renk matrisi seçimi kod tabanında hiç yok → video grabber girdisinde sistematik
+ton/doygunluk kayması.
+
+**Bizim ölçtüğümüz `createImageBitmap(VideoFrame, {resizeQuality:'high'})` düz
+127, yayılım 0 verdi — yani doğru alan ortalaması.** Bu, DDA dışındaki her
+Hyperion masaüstü backend'inden iyi; DDA'dan da iyi, çünkü biz doğrusal ışıkta
+çalışıyoruz ve o gama uzayında filtreliyor. Tarayıcı burada bir dezavantaj
+değil, avantaj.
+
+---
+
+## 13. Efekt motorunun API yüzeyi (Kademe 4'ün sözleşmesi)
+
+Efektler gömülü CPython'da çalışan **QThread**'ler. Python'a `PyCapsule` olarak
+veriliyorlar ve üç modül değişkeni enjekte ediliyor: `hyperion.ledCount`,
+`hyperion.latchTime`, `hyperion.args`.
+
+Kritik tasarım detayı: efekt tuvali ekran değil **LED ızgarası** boyutunda
+(`getLedGridSize()`). Yani efektler kaba bir soyut ızgaraya boyuyor, sonra o
+normal görüntü→LED eşlemesinden geçiyor. TS'e taşırken aynısını yapmalıyız.
+
+Yüzey ~20 metot ve özünde küçük bir 2-B çizim API'si:
+
+- **Çıkış:** `setColor(r,g,b)` / `setColor(bytearray)` (tam `3*ledCount`),
+  `setImage(w,h,bytearray)`, `imageShow([idx])`
+- **Çizim:** `imageDrawLine/Point/Rect/Polygon/Pie`, `imageSolidFill`,
+  `imageLinearGradient/ConicalGradient/RadialGradient`, `imageSetPixel/GetPixel`
+- **Dönüşüm:** `imageCRotate`, `imageCOffset`, `imageCShear`, `imageResetT`
+- **Durum:** `imageSave`, `imageStackClear` (iz efektleri için kare hafızası),
+  `imageMinSize`, `imageWidth`, `imageHeight`
+- **Yaşam döngüsü:** `abort()` — efektin durması gerektiğini öğrenmesinin
+  **tek yolu**, kooperatif iptal
+- `getImage(source, crop…, grayscale)` — kaynak/dosya/**URL**'den görsel
+- `lowestUpdateInterval()` — 200 Hz tavan
+
+Bir güvenlik notu: sandbox **yok**. Efekt script'i `QNetworkAccessManager` ile
+ağa çıkabiliyor. TS'e taşırken bu yüzden efektler Worker'da ve ağ erişimi
+olmadan koşmalı.
+
+Bir de bağımlılık tuzağı: LED yerleşimi değişince **çalışan tüm efektler
+durdurulup yeniden başlatılıyor**, çünkü *"effects depend heavily on
+LED-layout"*.
+
+---
+
+## 14. Kaynak
 
 Klon: `hyperion-project/hyperion.ng`, sürüm 2.2.2-beta.1, sığ klon.
 Bu doküman yazılırken inceleme scratchpad'de yapıldı; depoya kopyalanmadı.

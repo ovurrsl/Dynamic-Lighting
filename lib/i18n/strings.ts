@@ -15,6 +15,39 @@ import { FALLBACK_LOCALE, type Locale } from '#lib/i18n/locales'
  */
 
 const en = {
+  'nav.calibration': 'Calibration',
+  'nav.calibration.description': 'Prove the wiring with a test pattern, and find your strip’s channel order.',
+
+  'cal.patterns.title': 'Test patterns',
+  'cal.patterns.description': 'The strip driven by generated colours instead of the screen. Nothing here is smoothed or sampled, so when the strip shows the wrong thing the fault is below the pattern: wiring, channel order, LED count, firmware.',
+  'cal.pattern.walk': 'Walk',
+  'cal.pattern.walkNote': 'One LED at a time, along the wire. Proves the index order and where the physical corners fall - if the light turns a corner in the wrong place, your edge counts are wrong and nothing below can fix it.',
+  'cal.pattern.ramp': 'Grey ramp',
+  'cal.pattern.rampNote': '21 steps from black to white, spread along the strip. A crushed low end, a non-monotonic curve or a dither that is not working all show up as a step you can point at.',
+  'cal.pattern.white': 'Full white',
+  'cal.pattern.whiteNote': 'Every LED at full. This is what makes the firmware’s power limiter visibly engage.',
+  'cal.pattern.flash': 'Flash',
+  'cal.pattern.flashNote': 'The whole strip, on and off once a second. The pattern a 240 fps phone camera films to measure end-to-end latency.',
+  'cal.pattern.off': 'Off',
+  'cal.running': 'Running: {pattern}',
+  'cal.needExtension': 'Test patterns run in the engine, so the extension has to be installed.',
+
+  'cal.order.title': 'Channel order wizard',
+  'cal.order.description': 'WS2812B strips are sold in six channel orders and the packaging rarely says which. Two questions settle it - no datasheet, no guessing through a dropdown.',
+  'cal.order.start': 'Start the wizard',
+  'cal.order.askRed': 'The strip has been sent pure RED. What colour is it actually showing?',
+  'cal.order.askGreen': 'Now it has been sent pure GREEN. What colour is it showing?',
+  'cal.order.red': 'Red',
+  'cal.order.green': 'Green',
+  'cal.order.blue': 'Blue',
+  'cal.order.result': 'Your strip’s channel order is {order}.',
+  'cal.order.apply': 'Apply and save',
+  'cal.order.applied': 'Saved. The engine is using {order}.',
+  'cal.order.failed': 'It could not be saved: {reason}',
+  'cal.order.again': 'Start again',
+  'cal.order.contradiction': 'Both answers were the same colour, so one of them is wrong. Start again and look at the strip rather than the screen.',
+  'cal.order.dark': 'If the strip is dark for both questions, the problem is not the channel order - check the Device page and the wiring.',
+
   'nav.overview': 'Overview',
   'nav.colour': 'Colour',
   'nav.layout': 'LED hardware',
@@ -268,6 +301,39 @@ export const MESSAGE_KEYS = Object.keys(en) as MessageKey[]
 export type Messages = Record<MessageKey, string>
 
 const tr: Messages = {
+  'nav.calibration': 'Kalibrasyon',
+  'nav.calibration.description': 'Kabloyu bir test deseniyle doğrula, ve şeridinin kanal sırasını bul.',
+
+  'cal.patterns.title': 'Test desenleri',
+  'cal.patterns.description': 'Şerit, ekran yerine üretilmiş renklerle sürülüyor. Buradaki hiçbir şey yumuşatılmıyor ve örneklenmiyor; yani şerit yanlış bir şey gösteriyorsa hata desenin altında: kablolama, kanal sırası, LED sayısı, firmware.',
+  'cal.pattern.walk': 'Yürüyüş',
+  'cal.pattern.walkNote': 'Kablo boyunca teker teker bir LED. İndeks sırasını ve fiziksel köşelerin nereye düştüğünü kanıtlıyor — ışık yanlış yerde köşe dönüyorsa kenar sayıların yanlış ve bunu aşağıda hiçbir şey düzeltemez.',
+  'cal.pattern.ramp': 'Gri rampa',
+  'cal.pattern.rampNote': 'Siyahtan beyaza 21 adım, şerit boyunca yayılmış. Ezilmiş alt uç, monoton olmayan eğri ya da çalışmayan dither — üçü de parmakla gösterebileceğin bir adım olarak görünüyor.',
+  'cal.pattern.white': 'Tam beyaz',
+  'cal.pattern.whiteNote': 'Her LED sonuna kadar. Firmware’in güç sınırlayıcısının devreye girdiğini gözle gösteren şey bu.',
+  'cal.pattern.flash': 'Flaş',
+  'cal.pattern.flashNote': 'Tüm şerit, saniyede bir yanıp sönüyor. Uçtan uca gecikmeyi ölçmek için 240 fps telefon kamerasının çektiği desen.',
+  'cal.pattern.off': 'Kapat',
+  'cal.running': 'Çalışan desen: {pattern}',
+  'cal.needExtension': 'Test desenleri motorda çalışıyor, yani eklentinin kurulu olması gerekiyor.',
+
+  'cal.order.title': 'Kanal sırası sihirbazı',
+  'cal.order.description': 'WS2812B şeritleri altı farklı kanal sırasıyla satılıyor ve ambalajı bunu genelde yazmıyor. İki soru meseleyi bitiriyor — datasheet aramadan, açılır listeden tahmin etmeden.',
+  'cal.order.start': 'Sihirbazı başlat',
+  'cal.order.askRed': 'Şeride saf KIRMIZI gönderildi. Şerit gerçekte hangi renkte yanıyor?',
+  'cal.order.askGreen': 'Şimdi saf YEŞİL gönderildi. Hangi renkte yanıyor?',
+  'cal.order.red': 'Kırmızı',
+  'cal.order.green': 'Yeşil',
+  'cal.order.blue': 'Mavi',
+  'cal.order.result': 'Şeridinin kanal sırası {order}.',
+  'cal.order.apply': 'Uygula ve kaydet',
+  'cal.order.applied': 'Kaydedildi. Motor {order} kullanıyor.',
+  'cal.order.failed': 'Kaydedilemedi: {reason}',
+  'cal.order.again': 'Baştan başla',
+  'cal.order.contradiction': 'İki soruya da aynı rengi söyledin, yani biri yanlış. Baştan başla ve ekrana değil şeride bak.',
+  'cal.order.dark': 'Şerit iki soruda da karanlıksa sorun kanal sırası değil — Cihaz sayfasına ve kablolamaya bak.',
+
   'nav.overview': 'Genel bakış',
   'nav.colour': 'Renk',
   'nav.layout': 'LED donanımı',
@@ -527,6 +593,7 @@ const tr: Messages = {
  * every listed language is usable, and the gaps are in the same, explainable place.
  */
 const de: Partial<Messages> = {
+  'nav.calibration': 'Kalibrierung',
   'nav.overview': 'Übersicht',
   'nav.colour': 'Farbe',
   'nav.layout': 'LED-Hardware',
@@ -614,6 +681,7 @@ const de: Partial<Messages> = {
 }
 
 const zhCN: Partial<Messages> = {
+  'nav.calibration': '校准',
   'nav.overview': '概览',
   'nav.colour': '颜色',
   'nav.layout': 'LED 硬件',
@@ -701,6 +769,7 @@ const zhCN: Partial<Messages> = {
 }
 
 const es: Partial<Messages> = {
+  'nav.calibration': 'Calibración',
   'nav.overview': 'Resumen',
   'nav.colour': 'Color',
   'nav.layout': 'Hardware LED',
@@ -788,6 +857,7 @@ const es: Partial<Messages> = {
 }
 
 const fr: Partial<Messages> = {
+  'nav.calibration': 'Étalonnage',
   'nav.overview': 'Vue d’ensemble',
   'nav.colour': 'Couleur',
   'nav.layout': 'Matériel LED',
@@ -875,6 +945,7 @@ const fr: Partial<Messages> = {
 }
 
 const ru: Partial<Messages> = {
+  'nav.calibration': 'Калибровка',
   'nav.overview': 'Обзор',
   'nav.colour': 'Цвет',
   'nav.layout': 'Оборудование',
@@ -962,6 +1033,7 @@ const ru: Partial<Messages> = {
 }
 
 const ptBR: Partial<Messages> = {
+  'nav.calibration': 'Calibração',
   'nav.overview': 'Visão geral',
   'nav.colour': 'Cor',
   'nav.layout': 'Hardware LED',
@@ -1049,6 +1121,7 @@ const ptBR: Partial<Messages> = {
 }
 
 const it: Partial<Messages> = {
+  'nav.calibration': 'Calibrazione',
   'nav.overview': 'Panoramica',
   'nav.colour': 'Colore',
   'nav.layout': 'Hardware LED',
@@ -1136,6 +1209,7 @@ const it: Partial<Messages> = {
 }
 
 const pl: Partial<Messages> = {
+  'nav.calibration': 'Kalibracja',
   'nav.overview': 'Przegląd',
   'nav.colour': 'Kolor',
   'nav.layout': 'Sprzęt LED',
@@ -1223,6 +1297,7 @@ const pl: Partial<Messages> = {
 }
 
 const nl: Partial<Messages> = {
+  'nav.calibration': 'Kalibratie',
   'nav.overview': 'Overzicht',
   'nav.colour': 'Kleur',
   'nav.layout': 'Led-hardware',
@@ -1310,6 +1385,7 @@ const nl: Partial<Messages> = {
 }
 
 const ja: Partial<Messages> = {
+  'nav.calibration': 'キャリブレーション',
   'nav.overview': '概要',
   'nav.colour': '色',
   'nav.layout': 'LED ハードウェア',

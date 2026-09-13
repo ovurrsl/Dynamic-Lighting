@@ -3,6 +3,7 @@ import { createBorderDetector } from '#lib/engine/border'
 import { DEFAULT_ENGINE_CONFIG, parseEngineConfig, resolveLayout, type EngineConfig } from '#lib/engine/config'
 import { allocLinearGrid, createRgbaDecoder } from '#lib/engine/decode'
 import { createColorOrder, type ColorOrderStage } from '#lib/engine/order'
+import { createPattern, parsePatternSpec, type Pattern } from '#lib/engine/patterns'
 import { HEADER_SIZE, encodeAfx, frameSize } from '#lib/engine/protocol'
 import { createSampler, type Sampler } from '#lib/engine/sample'
 import { createLoopbackSink, createSerialWriter, type LoopbackSink, type SerialWriter } from '#lib/engine/serial'
@@ -106,6 +107,9 @@ let tickTimer: ReturnType<typeof setInterval> | null = null
 let reportTimer: ReturnType<typeof setInterval> | null = null
 /** Paints the self-test picture; null unless the synthetic source is running. */
 let testTimer: ReturnType<typeof setInterval> | null = null
+/** The test pattern, and its own timer; null unless one is running. */
+let pattern: Pattern | null = null
+let patternTimer: ReturnType<typeof setInterval> | null = null
 
 // ---------------------------------------------------------------------------
 // The configured stages. Rebuilt together, because they all depend on the LED
@@ -337,6 +341,52 @@ async function startSelfTest (): Promise<void> {
   })
 }
 
+/**
+ * Drives the strip from a generated pattern instead of the screen.
+ *
+ * Deliberately NOT `begin()`: there is no capture, no pump, no smoother and no
+ * channel-order stage. Each of those omissions is the point.
+ *
+ * - No smoother, because a single LED walking the strip through a 90 ms release
+ *   is a smear across four LEDs, and the walk exists precisely to make "which
+ *   LED is index 7" unambiguous.
+ * - No sampler and no border detector, because a pattern that went through them
+ *   would be testing them; when the strip shows the wrong thing here, the fault
+ *   is below the pattern - wiring, channel order, LED count, firmware.
+ * - **No channel-order stage**, and this one is load-bearing rather than tidy:
+ *   the wizard lights pure red and asks the user what colour they saw, and
+ *   `deriveColorOrder` reads that answer assuming the wire carried pure red. Put
+ *   the configured permutation in the way and a GRB strip under a GRB setting
+ *   shows red, the user says "red", and the wizard derives RGB - confidently
+ *   wrong, which is worse than no wizard.
+ */
+function startPattern (spec: unknown): void {
+  const parsed = parsePatternSpec(spec)
+  if (state === 'running' || state === 'starting') stop('restart')
+  lastError = undefined
+  captureLost = false
+  const s = stages
+  pattern = createPattern(parsed, s.leds, clock)
+  state = 'running'
+  void connectSerial()
+  patternTimer = setInterval(emitPattern, Math.round(1000 / OUTPUT_HZ))
+  reportTimer = setInterval(report, REPORT_MS)
+  emitPattern()
+  report()
+}
+
+function emitPattern (): void {
+  const p = pattern
+  if (p === null || state !== 'running') return
+  const s = stages
+  const now = clock()
+  p.render(s.target, now)
+  outputs.mark(now)
+  encodeLinear16(s.target, s.wirePayload)
+  encodeAfx(s.wirePayload, s.wire)
+  writer.send(s.wire)
+}
+
 /** Everything both sources share: start the clocks, the link and the pump. */
 async function begin (open: () => Promise<MediaStreamTrack>): Promise<void> {
   if (state === 'running' || state === 'starting') stop('restart')
@@ -499,10 +549,13 @@ function stop (reason: StopReason = 'user'): void {
   if (reportTimer !== null) clearInterval(reportTimer)
   if (reconnectTimer !== null) clearTimeout(reconnectTimer)
   if (testTimer !== null) clearInterval(testTimer)
+  if (patternTimer !== null) clearInterval(patternTimer)
   tickTimer = null
   reportTimer = null
   reconnectTimer = null
   testTimer = null
+  patternTimer = null
+  pattern = null
   const r = reader
   reader = null
   void r?.cancel().catch(() => { /* already closed */ })
@@ -556,6 +609,7 @@ function report (): void {
     ...(settings !== undefined && settings.width !== undefined && settings.height !== undefined
       ? { source: { width: settings.width, height: settings.height, ...(settings.frameRate !== undefined ? { frameRate: settings.frameRate } : {}) } }
       : {}),
+    ...(pattern !== null ? { pattern: pattern.kind } : {}),
     ...(captureLost ? { lost: true } : {}),
     ...(lastError !== undefined ? { error: lastError } : {})
   }
@@ -572,6 +626,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case 'ambiflux/selftest':
       startSelfTest().then(() => sendResponse({ state, error: lastError }))
       return true
+    case 'ambiflux/pattern':
+      try {
+        startPattern(message.spec)
+        sendResponse({ state, pattern: pattern?.kind })
+      } catch (error) {
+        // A bad spec leaves whatever was running alone: a typo in a wizard must
+        // not black out a strip that is happily following the screen.
+        sendResponse({ state, error: error instanceof Error ? error.message : String(error) })
+      }
+      return false
     case 'ambiflux/stop':
       stop()
       sendResponse({ state })

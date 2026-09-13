@@ -46,6 +46,18 @@ export type Message =
    * "the capture never started" - which look identical from outside.
    */
   | { type: 'ambiflux/selftest'; target: Target }
+  /**
+   * Drives the strip from a generated pattern instead of the screen.
+   *
+   * The bench run, and the thing both calibration wizards are built on: the
+   * walk lights one LED at a known index so corners can be clicked, and a solid
+   * pure channel is what the channel-order wizard asks the user to name.
+   *
+   * `spec` is UNVALIDATED here on purpose - it crosses from the panel, which is
+   * a separately installed program of a possibly different version - so the
+   * engine parses it with `parsePatternSpec` and answers with the error.
+   */
+  | { type: 'ambiflux/pattern'; target: Target; spec: unknown }
   /** Asks the worker for the engine's state and its latest statistics. */
   | { type: 'ambiflux/status'; target: Target }
   | { type: 'ambiflux/status-reply'; version: string; state: EngineState; stats: EngineStats | null }
@@ -139,6 +151,13 @@ export interface EngineStats {
     /** `usbVendorId:usbProductId` in hex when a port is open. */
     port?: string
   }
+  /**
+   * The test pattern running, if one is. Distinct from `state`, which only says
+   * the engine is producing frames: a strip lit by the walk and a strip
+   * following the screen are both "running", and confusing them would have the
+   * panel claim a capture that is not happening.
+   */
+  pattern?: string
   /** The black-border inset currently applied, in grid pixels. */
   border: { unknown: boolean; topBottom: number; leftRight: number }
   /** Capture source size as the track reports it. */

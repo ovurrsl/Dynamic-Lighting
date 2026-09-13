@@ -572,6 +572,7 @@ function handle(message, sendResponse) {
       return true;
     case "ambiflux/start":
     case "ambiflux/selftest":
+    case "ambiflux/pattern":
     case "ambiflux/serial":
       relayToOffscreen({ ...message, target: "offscreen" }).then(sendResponse, (error) => sendResponse({ error: String(error) }));
       return true;

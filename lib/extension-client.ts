@@ -1,5 +1,6 @@
 import { EXTENSION_ID } from '#data/extension'
 import { parseEngineConfig, type EngineConfig } from '#lib/engine/config'
+import type { PatternSpec } from '#lib/engine/patterns'
 import type { EngineStats, EngineState, Message } from '#lib/extension/messages'
 
 /**
@@ -134,6 +135,23 @@ export async function startEngine (): Promise<StartOutcome> {
 export async function selfTestEngine (): Promise<StartOutcome> {
   try {
     return outcome(await send({ type: 'ambiflux/selftest', target: 'sw' }))
+  } catch (error) {
+    return { state: 'error', error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * Lights the strip from a generated pattern instead of the screen.
+ *
+ * The calibration wizards are built on this: the walk lights one LED at a known
+ * index so the user can click the corners, and a pure channel is what the
+ * channel-order wizard asks them to name. It bypasses smoothing, sampling and
+ * the channel-order stage inside the engine - see extension/src/offscreen.ts
+ * startPattern for why the last of those is not optional.
+ */
+export async function runPattern (spec: PatternSpec): Promise<StartOutcome> {
+  try {
+    return outcome(await send({ type: 'ambiflux/pattern', target: 'sw', spec }))
   } catch (error) {
     return { state: 'error', error: error instanceof Error ? error.message : String(error) }
   }

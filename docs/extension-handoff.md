@@ -1,8 +1,13 @@
-# AmbiFlux Chrome eklentisi — devir dokümanı
+# AmbiFlux Chrome eklentisi — mimari ve plan
 
-Bu dosya eklentiyi başka bir ortamda (Antigravity 2.0) geliştirecek olan için
-yazıldı. Amacı tek: **kodu okumadan önce neyin neden böyle olduğunu bilmek**,
-ve daha önce ölçülmüş şeyleri yeniden ölçmemek.
+> **2026-09-13, güncelleme: eklenti geri alındı.** Bu dosya bir süre devir
+> dokümanıydı (Antigravity 2.0'a); eklenti tekrar bu depoda geliştiriliyor.
+> İçerik aynen geçerli — asıl değeri zaten devretmek değil, **neyin neden böyle
+> olduğunu ve daha önce neyin ölçüldüğünü** kayda geçirmekti. §12'nin durumu
+> aşağıda işaretli.
+>
+> Ayrıca: §1'deki "satılacak" ifadesi geçersiz. Uygulama **açık kaynak**;
+> lisans, aktivasyon ve koltuk limiti silindi (bkz. kök `README.md`).
 
 Depoda bu dosyanın kardeşleri: `docs/hyperion-port-plan.md` (motor
 algoritmalarının kaynağı ve Hyperion.NG'den kopyalanmayacak 10 kusur),
@@ -498,9 +503,13 @@ yerel yardımcı uygulamaya dönülür — o yüzden **ilk bu**.
 
 **(b) §9.3'teki işleme süresi.** 1080p'de p50 9.00 ms, bütçe 8.33 ms. Sıra:
 
-1. Önce **nerede geçtiğini ölç**, tahmin etme. `processFrame` içinde
-   `createImageBitmap`, decode, örnekleme ayrı ayrı zamanlanmalı; şu an tek bir
-   `processMs` var. Büyük ihtimalle küçültme, ama ölçmeden dokunma.
+1. Önce **nerede geçtiğini ölç**, tahmin etme. **✅ YAPILDI:** `processFrame`
+   artık dört parçada ölçülüyor ve `stats.stageMs` ile panele geliyor —
+   `downscale` (`createImageBitmap`), `readback` (`drawImage` + `getImageData`),
+   `decode`, `sample`. Cihaz sayfasında ayrı bir kutuda. **Sayıyı gerçek bir
+   makinede okumak kaldı**; buradaki headless ölçüm GPU'suz ve yanıltıcı olur.
+   Dördü işin kendisini toplar; toplamları ile `processMs` p50 arasındaki fark
+   kuyruklama gecikmesi, yani motorun ne kadar geride koştuğu.
 2. Küçültme ise: `createImageBitmap` yerine `OffscreenCanvas` + `drawImage`
    (ikisi de ölçüldü, ikisi de doğru alan ortalaması yapıyor — hangisinin daha
    ucuz olduğu ölçülmedi), ya da WebGPU ile tek geçişte.
@@ -519,19 +528,19 @@ değiştirebilir.
 
 ### 12.2 Arayüz ve kullanım — bunlar ürünü satılabilir yapan kısım
 
-**(e) Yakalamanın kalıcılığı.** `streamId` kalıcı yapılamıyor ama
+**(e) Yakalamanın kalıcılığı. ✅ YAPILDI.** `streamId` kalıcı yapılamıyor ama
 `getDisplayMedia` seçimi Chrome oturumu boyunca yaşıyor. Yapılacak: Chrome
 açılışında motor kendini kurmalı ve **tek bir tıkla** devam edebilmeli.
 `chrome.runtime.onStartup` ile offscreen dokümanı kur, kullanıcıya bildirimle
 "devam et" sun. "OS ile başlar ve hiç sormaz" tarayıcıda mümkün değil — bunu
 arayüzde dürüstçe söyle, gizleme.
 
-**(f) Yakalama koptuğunda kendine gelme.** Çözünürlük değişimi, monitör
+**(f) Yakalama koptuğunda kendine gelme. ✅ YAPILDI.** Çözünürlük değişimi, monitör
 uyku/uyanma, HDR aç/kapa yakalamayı öldürüyor. Şu an `ended` dinleniyor ve
 duruluyor; yapılması gereken **kullanıcıya haber verip tek tıkla yeniden
 başlatmak**. Gerçek makinelerde bu her gün olacak.
 
-**(g) Panelden kontrol.** Bugün panel yalnız durum okuyor ve yapılandırma
+**(g) Panelden kontrol. ✅ YAPILDI.** Bugün panel yalnız durum okuyor ve yapılandırma
 gönderiyor. Başlat/durdur da panelden yapılabilmeli — ama ekran seçici
 kullanıcı tarafında açılacağı için akış: panel → sw → offscreen → seçici.
 
@@ -540,11 +549,11 @@ kullanıcı tarafında açılacağı için akış: panel → sw → offscreen �
 çıkar. Panel tarafında yerleşim editörü ve keystone köşeleri hazır; eksik olan
 şeridi yürüten kaynak.
 
-**(i) Kanal sırası sihirbazı.** `deriveColorOrder` yazıldı ve test edildi ama
+**(i) Kanal sırası sihirbazı. ✅ YAPILDI.** `deriveColorOrder` yazıldı ve test edildi ama
 arayüzü yok: şeridi düz kırmızı/yeşil ile yakıp kullanıcıya "ne gördün" diye
 sormak gerekiyor. (h) ile aynı eksiği paylaşıyor.
 
-**(j) (h) ve (i)'nin ortak önkoşulu: bir test deseni kaynağı.** `PriorityMuxer`
+**(j) (h) ve (i)'nin ortak önkoşulu: bir test deseni kaynağı. ✅ YAPILDI.** `PriorityMuxer`
 var ama onu besleyen yok. `ambiflux/selftest` zaten motoru sentetik bir
 kaynakla besliyor — aynı yol düz renk ve tek-LED yürüyüşü için kullanılmalı.
 **Bu üçünü birlikte yap**, ayrı ayrı değil.
@@ -594,6 +603,26 @@ hazır: `Afx` çerçeveleme 1018 karede sıfır redle doğrulandı.
 **(s) E10: uçtan uca gecikme.** 240 fps telefon kamerası, monitör ve LED'ler
 aynı karede, siyah→beyaz flaş. Firmware gelince, ve **ekran gecikmesi dahil
 tüm zinciri** ölçen tek yöntem bu.
+
+### Durum, 2026-09-13
+
+| | Madde | Durum |
+|---|---|---|
+| (a) | E4 arka plan kısıtlaması | **açık** — senin makinen gerekiyor, mimarinin dayanağı |
+| (b) | İşleme süresi | ölçüm **yapıldı**, optimizasyon gerçek makinede okunacak sayıya bağlı |
+| (c) | E7 aliasing | açık — gerçek GPU gerekiyor |
+| (d) | E8 DRM matrisi | açık — ürün destek dokümanı |
+| (e) | Yakalamanın kalıcılığı | **yapıldı** |
+| (f) | Yakalama koptuğunda | **yapıldı** |
+| (g) | Panelden kontrol | **yapıldı** |
+| (h) | Kalibrasyon sihirbazı | önkoşulu (j) hazır; köşe tıklama arayüzü kaldı |
+| (i) | Kanal sırası sihirbazı | **yapıldı** — panelde Kalibrasyon bölümünde |
+| (j) | Test deseni kaynağı | **yapıldı** — `lib/engine/patterns.ts`, 14 test |
+| (k) | Yumuşatma profilleri | açık |
+| (l) | Renk düzeltme arayüzü | açık |
+| (m) | Kenar algılama modu | açık |
+| (n) | Telemetri paneli | kısmen — sayaçlar ve aşama kırılımı var, grafik yok |
+| (o)-(q) | Dağıtım | açık |
 
 ### Sıra değiştirmek isteyen için
 

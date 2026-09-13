@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Button, Surface, Switch } from '@heroui/react'
 
+import { CalibrationCard } from '#components/CalibrationCard'
 import { ColourCard } from '#components/ColourCard'
 import { DeviceCard } from '#components/DeviceCard'
 import { useEngine } from '#components/Engine'
@@ -44,6 +45,7 @@ function sectionBody (id: SectionId, enabled: boolean) {
     case 'overview': return <OverviewCard />
     case 'colour': return <ColourCard enabled={enabled} />
     case 'layout': return <LayoutSection />
+    case 'calibration': return <CalibrationCard />
     case 'profiles': return <ProfilesSection />
     case 'device': return <DeviceCard />
     case 'guide': return <GuideCard />

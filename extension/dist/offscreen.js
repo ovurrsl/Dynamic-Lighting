@@ -1102,6 +1102,119 @@ function validateSize(width, height) {
   }
 }
 
+// lib/engine/patterns.ts
+var PATTERN_KINDS = ["walk", "solid", "ramp", "flash", "off"];
+function isPatternKind(value) {
+  return typeof value === "string" && PATTERN_KINDS.includes(value);
+}
+var WALK_LEDS_PER_SECOND = 5;
+var FLASH_HZ = 1;
+var RAMP_STEPS = 21;
+function fill(out, count, r, g, b) {
+  for (let i = 0; i < count; i++) {
+    const at = i * 3;
+    out[at] = r;
+    out[at + 1] = g;
+    out[at + 2] = b;
+  }
+}
+function createPattern(spec, count, clock2) {
+  if (!Number.isInteger(count) || count < 1) {
+    throw new RangeError(`patterns: count must be a positive integer, got ${String(count)}`);
+  }
+  if (!isPatternKind(spec.kind)) {
+    throw new RangeError(`patterns: unknown kind ${String(spec.kind)}`);
+  }
+  const started = clock2();
+  const colour = spec.color ?? { r: 1, g: 1, b: 1 };
+  const perSecond = spec.ledsPerSecond ?? WALK_LEDS_PER_SECOND;
+  if (!(perSecond > 0)) {
+    throw new RangeError(`patterns: ledsPerSecond must be positive, got ${String(perSecond)}`);
+  }
+  const hz = spec.hz ?? FLASH_HZ;
+  if (!(hz > 0)) throw new RangeError(`patterns: hz must be positive, got ${String(hz)}`);
+  const ramp = new Float32Array(RAMP_STEPS);
+  for (let i = 0; i < RAMP_STEPS; i++) ramp[i] = srgbToLinear(i / (RAMP_STEPS - 1));
+  const render = (out, now) => {
+    if (out.length < count * 3) {
+      throw new RangeError(`patterns: out holds ${out.length} floats, needs ${count * 3}`);
+    }
+    const elapsed = Math.max(0, now - started) / 1e3;
+    switch (spec.kind) {
+      case "off":
+        fill(out, count, 0, 0, 0);
+        return;
+      case "solid":
+        fill(out, count, colour.r, colour.g, colour.b);
+        return;
+      case "walk": {
+        fill(out, count, 0, 0, 0);
+        const at = Math.floor(elapsed * perSecond) % count;
+        const base = at * 3;
+        out[base] = 1;
+        out[base + 1] = 1;
+        out[base + 2] = 1;
+        return;
+      }
+      case "ramp": {
+        for (let i = 0; i < count; i++) {
+          const step = Math.min(RAMP_STEPS - 1, Math.floor(i / count * RAMP_STEPS));
+          const v = ramp[step] ?? 0;
+          const at = i * 3;
+          out[at] = v;
+          out[at + 1] = v;
+          out[at + 2] = v;
+        }
+        return;
+      }
+      case "flash": {
+        const on = elapsed * hz % 1 < 0.5;
+        const v = on ? 1 : 0;
+        fill(out, count, v, v, v);
+      }
+    }
+  };
+  return { kind: spec.kind, render };
+}
+function parsePatternSpec(value) {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError("patterns: spec must be an object");
+  }
+  const raw = value;
+  if (!isPatternKind(raw.kind)) {
+    throw new RangeError(`patterns: unknown kind ${String(raw.kind)}`);
+  }
+  const spec = { kind: raw.kind };
+  if (raw.color !== void 0) {
+    const colour = raw.color;
+    if (typeof colour !== "object" || colour === null) throw new TypeError("patterns: color must be an object");
+    const channels = ["r", "g", "b"];
+    const parsed = { r: 0, g: 0, b: 0 };
+    for (const channel of channels) {
+      const v = colour[channel];
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 1) {
+        throw new RangeError(`patterns: color.${channel} must be a number in 0..1, got ${String(v)}`);
+      }
+      parsed[channel] = v;
+    }
+    spec.color = parsed;
+  }
+  for (const key of ["ledsPerSecond", "hz"]) {
+    const v = raw[key];
+    if (v === void 0) continue;
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
+      throw new RangeError(`patterns: ${key} must be a positive number, got ${String(v)}`);
+    }
+    spec[key] = v;
+  }
+  return spec;
+}
+var WIZARD_COLORS = Object.freeze({
+  red: Object.freeze({ r: 1, g: 0, b: 0 }),
+  green: Object.freeze({ r: 0, g: 1, b: 0 }),
+  blue: Object.freeze({ r: 0, g: 0, b: 1 })
+});
+
 // lib/engine/protocol.ts
 var HEADER_SIZE = 6;
 var TRAILER_SIZE = 3;
@@ -2297,6 +2410,8 @@ var processing = null;
 var tickTimer = null;
 var reportTimer = null;
 var testTimer = null;
+var pattern = null;
+var patternTimer = null;
 function build(config) {
   const layout = resolveLayout(config);
   const leds = layout.length;
@@ -2449,6 +2564,31 @@ async function startSelfTest() {
     return video;
   });
 }
+function startPattern(spec) {
+  const parsed = parsePatternSpec(spec);
+  if (state === "running" || state === "starting") stop("restart");
+  lastError = void 0;
+  captureLost = false;
+  const s = stages;
+  pattern = createPattern(parsed, s.leds, clock);
+  state = "running";
+  void connectSerial();
+  patternTimer = setInterval(emitPattern, Math.round(1e3 / OUTPUT_HZ));
+  reportTimer = setInterval(report, REPORT_MS);
+  emitPattern();
+  report();
+}
+function emitPattern() {
+  const p = pattern;
+  if (p === null || state !== "running") return;
+  const s = stages;
+  const now = clock();
+  p.render(s.target, now);
+  outputs.mark(now);
+  encodeLinear16(s.target, s.wirePayload);
+  encodeAfx(s.wirePayload, s.wire);
+  writer.send(s.wire);
+}
 async function begin(open) {
   if (state === "running" || state === "starting") stop("restart");
   state = "starting";
@@ -2574,10 +2714,13 @@ function stop(reason = "user") {
   if (reportTimer !== null) clearInterval(reportTimer);
   if (reconnectTimer !== null) clearTimeout(reconnectTimer);
   if (testTimer !== null) clearInterval(testTimer);
+  if (patternTimer !== null) clearInterval(patternTimer);
   tickTimer = null;
   reportTimer = null;
   reconnectTimer = null;
   testTimer = null;
+  patternTimer = null;
+  pattern = null;
   const r = reader;
   reader = null;
   void r?.cancel().catch(() => {
@@ -2627,6 +2770,7 @@ function report() {
     },
     border: { unknown: border2.unknown, topBottom: border2.topBottom, leftRight: border2.leftRight },
     ...settings !== void 0 && settings.width !== void 0 && settings.height !== void 0 ? { source: { width: settings.width, height: settings.height, ...settings.frameRate !== void 0 ? { frameRate: settings.frameRate } : {} } } : {},
+    ...pattern !== null ? { pattern: pattern.kind } : {},
     ...captureLost ? { lost: true } : {},
     ...lastError !== void 0 ? { error: lastError } : {}
   };
@@ -2644,6 +2788,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case "ambiflux/selftest":
       startSelfTest().then(() => sendResponse({ state, error: lastError }));
       return true;
+    case "ambiflux/pattern":
+      try {
+        startPattern(message.spec);
+        sendResponse({ state, pattern: pattern?.kind });
+      } catch (error) {
+        sendResponse({ state, error: error instanceof Error ? error.message : String(error) });
+      }
+      return false;
     case "ambiflux/stop":
       stop();
       sendResponse({ state });

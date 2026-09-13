@@ -27,6 +27,7 @@ Depo kökü **tek bir Next.js uygulaması.** Workspace yok, alt paket yok.
 | `test/` | Panel ve motor testleri; ağ, veritabanı ya da tarayıcı gerektirmez | **çalışıyor** |
 | `docs/hyperion-port-plan.md` | Hyperion.NG'den ne, nasıl, neden aktarılıyor | plan |
 | `docs/hyperion-gap-analysis.md` | Hyperion'un özellik envanteri ve bizdeki karşılıkları | analiz |
+| `docs/hyperion-watch.md` | Hyperion'un yeni commit'leri ve her biri için verilen karar | takip |
 | `docs/extension-handoff.md` | Eklentiyi devralacak için tam brifing: mimari, protokol, ölçülenler, ve §12'de sıradaki işin tamamı | devir |
 | `AmbiFluxNanoR4LampArray/` | Eski HID LampArray firmware'i | ESP32-S3'e yeniden yazılacak |
 
@@ -83,6 +84,10 @@ npm test          # ağ, veritabanı ya da build gerekmez
 npm run typecheck
 npm run dev       # http://localhost:3000
 npm run build
+```
+
+```bash
+npm run hyperion:watch   # hyperion.ng'de son incelemeden beri ne değişti
 ```
 
 Yapılandırılacak ortam değişkeni yok. Panel açılır açılmaz çalışıyor; kaydettiği

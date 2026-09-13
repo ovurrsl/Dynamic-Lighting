@@ -1,0 +1,83 @@
+name: CI
+
+# Until now the only check on a pull request was Vercel's deployment, which
+# says the panel built - not that anything passes. These jobs are what "green"
+# should have meant.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  panel:
+    name: Panel, motor ve eklenti
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+
+      # Two typechecks, because the extension compiles against a different lib:
+      # DOM + chrome + Web Serial rather than Node.
+      - name: Tip kontrolü (panel)
+        run: npm run typecheck
+      - name: Tip kontrolü (eklenti)
+        run: npm run typecheck:extension
+
+      # Node 22's native type stripping: no build step, so this is the source.
+      - name: Testler
+        run: npm test
+
+      - name: Panel derlemesi
+        run: npm run build
+
+      # extension/dist is COMMITTED, because it is what "load unpacked" needs.
+      # That makes staleness possible: edit src, forget to rebuild, and the
+      # repository ships an extension that does not match its own source. This
+      # is the check that makes committing build output safe.
+      - name: Eklenti derlemesi depodakiyle aynı mı
+        run: |
+          npm run build:extension
+          rm -f extension/dist/*.map
+          if ! git diff --quiet -- extension/dist; then
+            echo "::error::extension/dist kaynakla eşleşmiyor. 'npm run build:extension' çalıştırıp commit et."
+            git diff --stat -- extension/dist
+            exit 1
+          fi
+
+  firmware:
+    name: Firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: PlatformIO
+        run: |
+          pip install --quiet platformio rich_click "click<8.2"
+      # The toolchain and the ESP32 platform are hundreds of megabytes; without
+      # this every run downloads them again.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      # The algorithms - parser, dither, interpolation, power limit - run on the
+      # host. A parser only ever exercised on a board is a parser whose resync
+      # rule nobody has tried.
+      - name: Host testleri
+        working-directory: firmware
+        run: pio test -e native
+
+      - name: ESP32-S3 derlemesi
+        working-directory: firmware
+        run: pio run -e nano_esp32

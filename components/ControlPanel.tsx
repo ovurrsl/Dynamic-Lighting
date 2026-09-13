@@ -19,12 +19,12 @@ import {
 } from '@heroui/react'
 
 import { DeviceCard } from '#components/DeviceCard'
+import { LayoutCard } from '#components/LayoutCard'
+import { LedFrame } from '#components/LedFrame'
 import { toHex, toLinear16, toRgb8 } from '#lib/colour'
 import type { LicenceGrant } from '#lib/client-api'
-
-/** Edge layout of the reference rig. Becomes per-user configuration later. */
-const EDGES = { top: 35, right: 19, bottom: 35, left: 19 } as const
-const LED_COUNT = EDGES.top + EDGES.right + EDGES.bottom + EDGES.left
+import { DEFAULT_ENGINE_CONFIG, resolveLayout, type EngineConfig } from '#lib/engine/config'
+import { frameAspect } from '#lib/preview'
 
 const PRESET_COLORS = [
   '#ef4444', '#f97316', '#eab308', '#22c55e',
@@ -32,45 +32,27 @@ const PRESET_COLORS = [
 ]
 
 /**
- * Renders the strip as it is physically wired, so the preview doubles as a
- * wiring check: if the on-screen ring does not match the desk, the layout
- * configuration is wrong.
+ * The strip lit with the chosen colour, in the geometry the CONFIGURED layout
+ * describes - so this doubles as a wiring check: if the on-screen frame does not
+ * match the desk, the layout is wrong, and the layout card above is where to fix
+ * it. The rectangles come from `resolveLayout`, the same call the engine makes.
  */
-function StripPreview ({ color, brightness }: { color: Color, brightness: number }) {
+function StripPreview ({ config, color, brightness }: { config: EngineConfig, color: Color, brightness: number }) {
   const css = useMemo(() => {
     const { r, g, b } = toRgb8(color)
     const scale = brightness / 100
     return `rgb(${Math.round(r * scale)} ${Math.round(g * scale)} ${Math.round(b * scale)})`
   }, [color, brightness])
-
-  const dot = (key: string) => (
-    <span
-      key={key}
-      className="size-1.5 rounded-full"
-      style={{ backgroundColor: css, boxShadow: `0 0 6px ${css}` }}
-    />
-  )
+  const rects = useMemo(() => resolveLayout(config), [config])
 
   return (
-    <div className="flex flex-col gap-2" aria-label={`${LED_COUNT} LED önizlemesi`}>
-      <div className="flex justify-between gap-px">
-        {Array.from({ length: EDGES.top }, (_, i) => dot(`t${i}`))}
-      </div>
-      <div className="flex items-stretch justify-between gap-4">
-        <div className="flex flex-col justify-between gap-px">
-          {Array.from({ length: EDGES.left }, (_, i) => dot(`l${i}`))}
-        </div>
-        <div className="flex-1 rounded-lg bg-background/60 p-4 text-center text-xs text-muted">
-          {LED_COUNT} LED
-        </div>
-        <div className="flex flex-col justify-between gap-px">
-          {Array.from({ length: EDGES.right }, (_, i) => dot(`r${i}`))}
-        </div>
-      </div>
-      <div className="flex justify-between gap-px">
-        {Array.from({ length: EDGES.bottom }, (_, i) => dot(`b${i}`))}
-      </div>
-    </div>
+    <LedFrame
+      aspectRatio={frameAspect(config.layout)}
+      colorAt={() => css}
+      glow
+      label={`${rects.length} LED önizlemesi`}
+      rects={rects}
+    />
   )
 }
 
@@ -98,6 +80,12 @@ export function ControlPanel ({
   const [color, setColor] = useState<Color>(parseColor('#3b82f6'))
   const [brightness, setBrightness] = useState(70)
   const [isEnabled, setIsEnabled] = useState(true)
+  /**
+   * The layout in force, as the layout card reports it: from the extension if it
+   * is installed, else this browser's stored copy, else the reference rig. Held
+   * here because two cards draw it and they must not disagree.
+   */
+  const [config, setConfig] = useState<EngineConfig>(DEFAULT_ENGINE_CONFIG as EngineConfig)
 
   // What would go on the wire. Shown because it is the fastest way to see that
   // the linear decode is doing something: a mid sRGB value lands far lower in
@@ -215,7 +203,7 @@ export function ControlPanel ({
             </Card.Description>
           </Card.Header>
           <Card.Content className="flex flex-col gap-4">
-            <StripPreview brightness={isEnabled ? brightness : 0} color={color} />
+            <StripPreview brightness={isEnabled ? brightness : 0} color={color} config={config} />
             <Surface className="rounded-xl p-3 font-mono text-xs" variant="secondary">
               <div className="flex justify-between">
                 <span className="text-muted">seçilen</span>
@@ -237,6 +225,8 @@ export function ControlPanel ({
           </Card.Content>
         </Card>
       </div>
+
+      <LayoutCard onConfig={setConfig} />
 
       <DeviceCard />
     </div>

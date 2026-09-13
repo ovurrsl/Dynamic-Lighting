@@ -31,12 +31,17 @@ export interface StorageLike {
 
 export type LoadOutcome =
   /** Nothing stored yet: the reference rig, which is what a fresh install runs. */
-  | { config: EngineConfig, source: 'default' }
-  | { config: EngineConfig, source: 'stored' }
+  | { config: EngineConfig, source: 'default', problem?: undefined }
+  | { config: EngineConfig, source: 'stored', problem?: undefined }
   /**
    * Something was stored and could not be used - written by an older version,
    * or hand-edited. The reference rig stands and `problem` says why, so the
    * panel can offer to overwrite instead of silently losing the user's work.
+   *
+   * `problem` is declared on every arm (as `undefined`) rather than only on
+   * this one so a caller can read `outcome.problem` without narrowing first:
+   * an `in` check to find out whether something went wrong is a trap, since
+   * forgetting it compiles on the happy path and fails on the sad one.
    */
   | { config: EngineConfig, source: 'default', problem: string }
 

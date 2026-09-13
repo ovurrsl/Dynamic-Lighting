@@ -1,4 +1,5 @@
 import { EXTENSION_ID } from '#data/extension'
+import { parseEngineConfig, type EngineConfig } from '#lib/engine/config'
 import type { EngineStats, EngineState, Message } from '#lib/extension/messages'
 
 /**
@@ -93,4 +94,44 @@ export async function stopEngine (): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+function isConfigReply (value: unknown): value is Extract<Message, { type: 'ambiflux/config-reply' }> {
+  return typeof value === 'object' && value !== null && (value as { type?: unknown }).type === 'ambiflux/config-reply'
+}
+
+/**
+ * The configuration the engine is actually running, or null when the extension
+ * is not there or answered with something else.
+ *
+ * Parsed rather than trusted even though it came from our own extension: an
+ * older extension is a different program, and the panel's editor would show
+ * nonsense rather than say it could not read it.
+ */
+export async function fetchConfig (): Promise<EngineConfig | null> {
+  try {
+    const reply = await send({ type: 'ambiflux/config-get', target: 'sw' })
+    if (!isConfigReply(reply) || reply.config === null) return null
+    return parseEngineConfig(reply.config)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Sends a configuration to the engine. Returns null when the engine took it,
+ * or the reason it did not - the extension validates independently and its
+ * message names the field, so that message is what the panel shows rather than
+ * a generic failure.
+ */
+export async function saveConfig (config: EngineConfig): Promise<string | null> {
+  let reply: unknown
+  try {
+    reply = await send({ type: 'ambiflux/config', target: 'sw', config })
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+  if (!isConfigReply(reply)) return 'eklenti beklenmeyen bir yanıt verdi'
+  if (reply.error !== undefined) return reply.error
+  return reply.config === null ? 'eklenti yapılandırmayı kabul etmedi' : null
 }

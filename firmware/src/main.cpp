@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <NeoPixelBus.h>
+#include <unistd.h>
 #include <Preferences.h>
 #include <esp_timer.h>
 
@@ -46,7 +47,47 @@ constexpr uint32_t kTelemetryMs = 1000;
  *
  * `CanShow()` tracks the 280 us latch gap internally, so nothing here has to.
  */
-NeoPixelBus<NeoGrbFeature, NeoEsp32Rmt0Ws2812xMethod> strip(kMaxLeds, kDataPin);
+/**
+ * The output method, chosen at build time.
+ *
+ * For 108 LEDs the data time is 3.24 ms against an 8.33 ms budget at 120 Hz, so
+ * there is no throughput problem here at all and the parallel/multi-segment
+ * tricks that HyperSerialESP32 uses for large rigs buy us nothing. The only
+ * thing that matters is whether the peripheral is ever STARVED mid-frame, which
+ * latches a short frame the eye sees as a flicker.
+ *
+ * Two families, and the reason both are here rather than one:
+ *
+ * - RMT generates the bit timing in hardware. Without DMA it is fed by a refill
+ *   interrupt, and recent ESP32 cores are documented to have trouble with that
+ *   interrupt's frequency; the standing community advice is to prefer a
+ *   DMA-fed peripheral for exactly this reason.
+ * - The DMA-fed alternative is fed entirely by DMA, so there is no refill
+ *   interrupt to miss.
+ *
+ * WHICH DMA peripheral is board-specific, and the usual advice is wrong for
+ * this one. The common answer is "use I2S", but NeoPixelBus's `NeoEsp32I2s*`
+ * methods are compiled out on the ESP32-S3 (`!defined(CONFIG_IDF_TARGET_ESP32S3)`
+ * guards the whole header): the S3 replaced that path with the LCD peripheral,
+ * and the S3's methods are `NeoEsp32LcdX8`/`X16`. Those are parallel-only - the
+ * smallest is eight channels - so a single strip uses channel 0 and leaves the
+ * rest idle. That is not waste worth avoiding; it is the only DMA path the S3
+ * offers here.
+ *
+ * Which is actually better on THIS board is a measurement, not a reading, and
+ * the firmware already counts what settles it: `shortFrames` in the telemetry
+ * is the number of times the strip was not ready when the timer fired. Build
+ * one, soak it, read the counter, build the other. RMT stays the default
+ * because it costs one pin and no peripheral-wide constraints;
+ * `-D AMBIFLUX_OUTPUT_DMA` swaps it without touching another line.
+ */
+#if defined(AMBIFLUX_OUTPUT_DMA)
+using AmbifluxMethod = NeoEsp32LcdX8Ws2812xMethod;
+#else
+using AmbifluxMethod = NeoEsp32Rmt0Ws2812xMethod;
+#endif
+
+NeoPixelBus<NeoGrbFeature, AmbifluxMethod> strip(kMaxLeds, kDataPin);
 
 /**
  * Three buffers, not two.
@@ -214,7 +255,21 @@ void serialTask (void *) {
   decltype(parser)::Frame frame;
   for (;;) {
     const int available = Serial.available();
-    if (available <= 0) { vTaskDelay(1); continue; }
+    if (available <= 0) {
+      /*
+       * 100 us, not vTaskDelay(1).
+       *
+       * The FreeRTOS tick is 1 kHz, so vTaskDelay(1) sleeps up to a full
+       * millisecond - which is 12% of a 120 Hz frame period added to the
+       * latency of every frame, for nothing. usleep() here yields the core
+       * without rounding up to a tick.
+       *
+       * Not a busy spin either: this task shares core 0 with the USB stack that
+       * is trying to hand it the very bytes it is waiting for.
+       */
+      usleep(100);
+      continue;
+    }
     const size_t read = Serial.readBytes(chunk, available > static_cast<int>(sizeof(chunk))
                                                   ? sizeof(chunk) : static_cast<size_t>(available));
     for (size_t i = 0; i < read; i++) {
@@ -285,12 +340,32 @@ void render () {
   const float scale = limiter.update(dutySum, ledCount, 1.0f / kOutputHz);
   const uint16_t scale256 = static_cast<uint16_t>(scale * 256.0f + 0.5f);
 
+  /*
+   * Straight into the strip's own buffer rather than through SetPixelColor().
+   *
+   * SetPixelColor is a bounds check, an RgbColor construction and a per-pixel
+   * dispatch; at 108 LEDs and 120 Hz that is thirteen thousand of each per
+   * second, spent producing bytes we already have laid out. Pixels() hands back
+   * the buffer the DMA will read, and the feature's own byte order is what
+   * decides where each channel goes - so this writes GRB because NeoGrbFeature
+   * is what the strip was declared with, and changing that declaration changes
+   * this loop with it.
+   *
+   * Dirty() is what SetPixelColor would have set; without it Show() believes
+   * the buffer is unchanged and sends nothing.
+   */
+  uint8_t *const pixels = strip.Pixels();
   for (uint16_t led = 0; led < ledCount; led++) {
-    strip.SetPixelColor(led, RgbColor(
-        static_cast<uint8_t>(duty[led * 3 + 0] * scale256 >> 8),
-        static_cast<uint8_t>(duty[led * 3 + 1] * scale256 >> 8),
-        static_cast<uint8_t>(duty[led * 3 + 2] * scale256 >> 8)));
+    const uint16_t src = static_cast<uint16_t>(led * 3);
+    const uint16_t dst = static_cast<uint16_t>(led * 3);
+    const uint8_t r = static_cast<uint8_t>(duty[src + 0] * scale256 >> 8);
+    const uint8_t g = static_cast<uint8_t>(duty[src + 1] * scale256 >> 8);
+    const uint8_t b = static_cast<uint8_t>(duty[src + 2] * scale256 >> 8);
+    pixels[dst + 0] = g;
+    pixels[dst + 1] = r;
+    pixels[dst + 2] = b;
   }
+  strip.Dirty();
 
   if (strip.CanShow()) {
     strip.Show();

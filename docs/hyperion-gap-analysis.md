@@ -55,26 +55,37 @@ yazmak bambaşka bir maliyet.
 
 ### (B) Ağ LED cihazları — **18 sürücü, bizde sıfır** ★ ikinci en büyük
 
-Hyperion `WLED`, `PhilipsHue`, `Nanoleaf`, `Yeelight`, `Cololight`, `AtmoOrb`,
-`HomeAssistant`, `Razer`, `ArtNet`, `E1.31`, `DDP`, `TPM2.net` konuşuyor.
+> **2026-09-14 denetimi.** Burada "ArtNet/E1.31/DDP ham UDP istiyor, imkânsız"
+> yazıyordu. İddianın kendisi doğru ama **eksikti**, ve eksik olan kısım
+> yol haritasını değiştiriyor. Tam analiz `docs/firmware-and-devices.md` §4'te.
 
-**Bizim için stratejik olarak en önemli madde**, çünkü kendi firmware'imize
-ihtiyacı ortadan kaldırıyor: elinde WLED'li bir şerit olan biri hiçbir şey
-yakmadan AmbiFlux'u kullanabilir.
+Tarayıcı ham UDP açamıyor — bu ölçüldü (`chrome.sockets` eklentide tanımsız) ve
+tarayıcı platformunda UDP soketi diye bir şey yok. ArtNet (6454), E1.31 (5568),
+DDP (4048), TPM2.net (65506), UDP-RAW ve H801 bu yüzden doğrudan kapalı.
 
-Tarayıcı kısıtı: ham UDP yok. Ama:
+**Ama bir cihazın Hyperion'un kullandığı taşımayı kullanması, tek taşımasının o
+olduğu anlamına gelmiyor.** WLED'in örneği belirleyici: Hyperion'un
+`LedDeviceWled` sınıfı `LedDeviceUdpDdp`/`LedDeviceUdpRaw`'dan türüyor, yani
+UDP. Oysa WLED'in **WebSocket'i var** (`ws://[ip]/ws`, 0.10.2'den beri
+varsayılan açık) ve JSON API'nin LED başına renk verebilen alt kümesini kabul
+ediyor: `{"seg":{"i":["FF0000","00FF00",…]}}`. Yani tarayıcıdan WLED'i sürmek
+mümkün — Hyperion'un hiç kullanmadığı bir kapıyla. Kısıt ağ değil, ESP'de kare
+başına JSON ayrıştırma; **kaç fps olduğu ölçülmedi.**
 
-| Protokol | Tarayıcıda | Nasıl |
+| Cihaz | Hyperion'un taşıması | Tarayıcıdan |
 |---|---|---|
-| **WLED** | **evet** | JSON HTTP API + WebSocket (`/ws`) — ikisi de tarayıcıdan çağrılabilir |
-| **Philips Hue Entertainment** | kısmen | HTTPS + DTLS; DTLS tarayıcıda yok, ama v1 HTTP API düşük hızda çalışır |
-| **Home Assistant** | **evet** | REST + WebSocket |
-| **Nanoleaf** | **evet** | HTTP API (yüksek hızlı akış UDP, düşük hızlı HTTP) |
-| ArtNet / E1.31 / DDP / TPM2.net | **hayır** | Ham UDP; `chrome.sockets` MV3'te yok (§G'de ölçüldü) |
+| **WLED** | DDP / WARLS (UDP) | **✅** JSON over WebSocket |
+| **Home Assistant** | REST | **✅** HTTP + WebSocket |
+| Philips Hue | REST + DTLS-UDP akış | kısmen — REST var, akış yok |
+| Nanoleaf | REST + UDP akış | kısmen — REST var, akış yok |
+| Cololight, AtmoOrb, Yeelight, FadeCandy | UDP / ham TCP | ❌ |
+| ArtNet, E1.31, DDP, TPM2.net, UDP-RAW, H801 | UDP | ❌ |
 
-Not: sayfa HTTPS'te olduğu için yerel ağdaki `http://` cihaza çağrı **mixed
-content**'e takılır. Çözüm zaten elimizde — çağrıyı **eklentinin** yapması;
-eklentinin kendi origin'i var ve `host_permissions` ile yerel ağa çıkabiliyor.
+**Ve asıl cevap:** tarayıcının UDP açamamasını çözmeye çalışmak yanlış soru.
+Firmware bizim. ESP32-S3 bir WebSocket sunucusu koşabiliyor ve **bugün seri
+porttan giden `Afx` karesinin aynısını** taşıyabiliyor — aynı ayrıştırıcı, aynı
+test takımı, üçüncü bir protokol maliyeti yok. iOS'u açan da bu: iPhone'da Web
+Serial, WebUSB, WebHID ve Web Bluetooth'un dördü de yok, tek yol ağ.
 
 ### (C) Ses yakalama (müzik görselleştirici) — bizde yok
 

@@ -1,218 +1,232 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import {
-  Button,
-  Card,
-  ColorArea,
-  ColorField,
-  ColorPicker,
-  ColorSlider,
-  ColorSwatch,
-  ColorSwatchPicker,
-  Label,
-  Slider,
-  Surface,
-  Switch,
-  parseColor,
-  type Color
-} from '@heroui/react'
+import { useEffect, useState } from 'react'
+import { Button, Surface, Switch } from '@heroui/react'
 
+import { ColourCard } from '#components/ColourCard'
 import { DeviceCard } from '#components/DeviceCard'
+import { useEngine } from '#components/Engine'
+import { EngineConfigProvider, useEngineConfig } from '#components/EngineConfig'
 import { GuideCard } from '#components/GuideCard'
 import { LayoutCard } from '#components/LayoutCard'
+import { OverviewCard } from '#components/OverviewCard'
 import { PreferencesMenu } from '#components/PreferencesMenu'
-import { ProfilesCard } from '#components/ProfilesCard'
-import { LedFrame } from '#components/LedFrame'
 import { useTranslate } from '#components/Preferences'
-import { toHex, toLinear16, toRgb8 } from '#lib/colour'
-import { DEFAULT_ENGINE_CONFIG, resolveLayout, type EngineConfig } from '#lib/engine/config'
-import { frameAspect } from '#lib/preview'
-
-const PRESET_COLORS = [
-  '#ef4444', '#f97316', '#eab308', '#22c55e',
-  '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'
-]
+import { ProfilesCard } from '#components/ProfilesCard'
+import { RoadmapCard } from '#components/RoadmapCard'
+import {
+  DEFAULT_SECTION,
+  GROUP_TITLE,
+  SECTION_GROUPS,
+  findSection,
+  hashForSection,
+  sectionFromHash,
+  sectionsInGroup,
+  type SectionId
+} from '#lib/sections'
 
 /**
- * The strip lit with the chosen colour, in the geometry the CONFIGURED layout
- * describes - so this doubles as a wiring check: if the on-screen frame does not
- * match the desk, the layout is wrong, and the layout card above is where to fix
- * it. The rectangles come from `resolveLayout`, the same call the engine makes.
+ * The shell: a sidebar of grouped sections, one section at a time.
+ *
+ * This replaces a single scrolling page, and the reason is what is coming
+ * rather than what is here. Six cards in a column was fine; the roadmap adds an
+ * effect engine, network devices, audio, colour adjustment, smoothing profiles,
+ * border modes and priority layers, and stacking those vertically produces a
+ * page in which nothing can be found. Hyperion's own web interface is built
+ * exactly this way, and for exactly this reason.
+ *
+ * The navigation is data (`lib/sections.ts`), so adding a feature is one entry
+ * plus one component - not another card wedged into an ever-longer column.
  */
-function StripPreview ({ config, color, brightness }: { config: EngineConfig, color: Color, brightness: number }) {
-  const t = useTranslate()
-  const css = useMemo(() => {
-    const { r, g, b } = toRgb8(color)
-    const scale = brightness / 100
-    return `rgb(${Math.round(r * scale)} ${Math.round(g * scale)} ${Math.round(b * scale)})`
-  }, [color, brightness])
-  const rects = useMemo(() => resolveLayout(config), [config])
 
+function sectionBody (id: SectionId, enabled: boolean) {
+  switch (id) {
+    case 'overview': return <OverviewCard />
+    case 'colour': return <ColourCard enabled={enabled} />
+    case 'layout': return <LayoutSection />
+    case 'profiles': return <ProfilesSection />
+    case 'device': return <DeviceCard />
+    case 'guide': return <GuideCard />
+    case 'roadmap': return <RoadmapCard />
+  }
+}
+
+/** Thin wrappers, so the two cards that need shared state do not have to know about the shell. */
+function LayoutSection () {
+  const { loaded, setConfig, setDraft } = useEngineConfig()
+  return <LayoutCard loaded={loaded} onConfig={setConfig} onDraft={setDraft} />
+}
+
+function ProfilesSection () {
+  const { draft, load } = useEngineConfig()
+  return <ProfilesCard current={draft} onLoad={(profile) => load(profile)} />
+}
+
+/**
+ * A live word for the engine, in the sidebar, on every page.
+ *
+ * The point of splitting the panel is that you are usually not on the device
+ * page; the cost is that the device page was where you could see whether
+ * anything was running. This pays that back in one line.
+ */
+function EngineBadge () {
+  const t = useTranslate()
+  const { probe, state, stats } = useEngine()
+  if (probe === null) return null
+  if (!probe.available) {
+    return (
+      <span className="flex items-center gap-2 text-xs">
+        <span aria-hidden className="size-2 rounded-full bg-default" />
+        <span className="text-muted">{t('device.absent')}</span>
+      </span>
+    )
+  }
+  const fps = stats === null ? null : stats.deliveredFps
   return (
-    <LedFrame
-      aspectRatio={frameAspect(config.layout)}
-      colorAt={() => css}
-      glow
-      label={`${t('preview.title')} — ${t('layout.leds', { count: rects.length })}`}
-      rects={rects}
-    />
+    <span className="flex items-center gap-2 text-xs">
+      <span
+        aria-hidden
+        className={`size-2 rounded-full ${
+          state === 'running' ? 'bg-success' : state === 'error' ? 'bg-danger' : 'bg-default'
+        }`}
+      />
+      <span className="text-muted">
+        {t(
+          state === 'running' ? 'device.state.running'
+            : state === 'starting' ? 'device.state.starting'
+              : state === 'error' ? 'device.state.error' : 'device.state.idle'
+        )}
+        {state === 'running' && fps !== null && ` · ${fps.toFixed(0)} fps`}
+      </span>
+    </span>
+  )
+}
+
+function Nav ({ current, onNavigate }: { current: SectionId, onNavigate: (id: SectionId) => void }) {
+  const t = useTranslate()
+  return (
+    <nav aria-label={t('nav.menu')} className="flex flex-col gap-5">
+      {SECTION_GROUPS.map((group) => (
+        <div key={group} className="flex flex-col gap-1">
+          <h2 className="px-3 text-xs font-semibold uppercase tracking-wide text-muted">
+            {t(GROUP_TITLE[group])}
+          </h2>
+          {sectionsInGroup(group).map((section) => {
+            const active = section.id === current
+            return (
+              <a
+                key={section.id}
+                aria-current={active ? 'page' : undefined}
+                className={`flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors ${
+                  active ? 'bg-default/20 font-medium' : 'text-muted hover:bg-default/10'
+                }`}
+                href={hashForSection(section.id)}
+                onClick={() => onNavigate(section.id)}
+              >
+                <span aria-hidden className="w-4 text-center opacity-70">{section.glyph}</span>
+                {t(section.titleKey)}
+              </a>
+            )
+          })}
+        </div>
+      ))}
+    </nav>
   )
 }
 
 export function ControlPanel () {
-  const t = useTranslate()
-  const [color, setColor] = useState<Color>(parseColor('#3b82f6'))
-  const [brightness, setBrightness] = useState(70)
-  const [isEnabled, setIsEnabled] = useState(true)
-  /**
-   * The layout in force, as the layout card reports it: from the extension if it
-   * is installed, else this browser's stored copy, else the reference rig. Held
-   * here because two cards draw it and they must not disagree.
-   */
-  const [config, setConfig] = useState<EngineConfig>(DEFAULT_ENGINE_CONFIG as EngineConfig)
-  /**
-   * A profile the user loaded. It travels to the layout card as a draft rather
-   * than being applied here, so the strip still only changes on Apply.
-   */
-  const [loaded, setLoaded] = useState<{ config: EngineConfig, at: number } | undefined>(undefined)
-  /**
-   * What the layout editor currently shows. Saving a profile saves THIS, not
-   * `config`: someone who tweaks the depth and presses Save means the layout in
-   * front of them, not the one the strip happens to be running.
-   */
-  const [draft, setDraft] = useState<EngineConfig>(DEFAULT_ENGINE_CONFIG as EngineConfig)
+  return (
+    <EngineConfigProvider>
+      <Shell />
+    </EngineConfigProvider>
+  )
+}
 
-  // What would go on the wire. Shown because it is the fastest way to see that
-  // the linear decode is doing something: a mid sRGB value lands far lower in
-  // linear, and that is correct, not a bug.
-  const wire = useMemo(() => toLinear16(color), [color])
-  const srgb = useMemo(() => toRgb8(color), [color])
+function Shell () {
+  const t = useTranslate()
+  const [isEnabled, setIsEnabled] = useState(true)
+  const [menuOpen, setMenuOpen] = useState(false)
+  /**
+   * Starts on the default and is corrected from the hash after mount, for the
+   * same reason the language is: the server cannot see a fragment - browsers
+   * never send it - so rendering the hash's section on the server is not merely
+   * hard, it is impossible.
+   */
+  const [current, setCurrent] = useState<SectionId>(DEFAULT_SECTION)
+
+  useEffect(() => {
+    const read = (): void => setCurrent(sectionFromHash(window.location.hash))
+    read()
+    window.addEventListener('hashchange', read)
+    return () => window.removeEventListener('hashchange', read)
+  }, [])
+
+  const section = findSection(current)
+
+  const go = (id: SectionId): void => {
+    setCurrent(id)
+    setMenuOpen(false)
+  }
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6 p-6">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">AmbiFlux</h1>
-          <p className="text-sm text-muted">{t('app.tagline')}</p>
+    <div className="mx-auto flex min-h-dvh w-full max-w-7xl">
+      {/*
+        Two renders of one nav rather than one repositioned by CSS. A drawer
+        that overlays the page needs a focus trap, an escape key and a scroll
+        lock to be usable with a keyboard; this needs none of them, because on a
+        narrow screen the menu is simply part of the page.
+      */}
+      <aside className="hidden w-60 shrink-0 flex-col gap-6 border-e border-default/30 p-4 lg:flex">
+        <div className="px-3">
+          <h1 className="text-lg font-semibold">AmbiFlux</h1>
+          <p className="text-xs text-muted">{t('app.tagline')}</p>
         </div>
-        <div className="flex flex-wrap items-end gap-4">
-          <PreferencesMenu />
-          <Switch className="pb-2" isSelected={isEnabled} size="md" onChange={setIsEnabled}>
-            <Switch.Content>
-              <Switch.Control>
-                <Switch.Thumb />
-              </Switch.Control>
-              {t('app.lighting')}
-            </Switch.Content>
-          </Switch>
+        <Nav current={current} onNavigate={go} />
+        <div className="mt-auto px-3">
+          <EngineBadge />
         </div>
-      </header>
+      </aside>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card variant="default">
-          <Card.Header>
-            <Card.Title>{t('colour.title')}</Card.Title>
-            <Card.Description>{t('colour.description')}</Card.Description>
-          </Card.Header>
-          <Card.Content className="flex flex-col gap-4">
-            {/*
-              ColorArea, ColorSlider, ColorField and ColorSwatch read the shared
-              colour from ColorPicker's context, so none of them needs its own
-              value/onChange. There is no ColorWheel in HeroUI v3 — a saturation
-              x brightness area plus a hue slider is the supported shape.
-            */}
-            <ColorPicker value={color} onChange={setColor}>
-              <ColorPicker.Trigger>
-                <ColorSwatch size="lg" />
-                <Label>{t('colour.pick')}</Label>
-              </ColorPicker.Trigger>
-              <ColorPicker.Popover className="gap-2">
-                <ColorSwatchPicker className="justify-center pt-2" size="xs">
-                  {PRESET_COLORS.map((preset) => (
-                    <ColorSwatchPicker.Item key={preset} color={preset}>
-                      <ColorSwatchPicker.Swatch />
-                    </ColorSwatchPicker.Item>
-                  ))}
-                </ColorSwatchPicker>
-                <ColorArea
-                  aria-label={t('colour.saturation')}
-                  className="max-w-full"
-                  colorSpace="hsb"
-                  xChannel="saturation"
-                  yChannel="brightness"
-                >
-                  <ColorArea.Thumb />
-                </ColorArea>
-                <ColorSlider aria-label={t('colour.hue')} channel="hue" colorSpace="hsb">
-                  <ColorSlider.Track>
-                    <ColorSlider.Thumb />
-                  </ColorSlider.Track>
-                </ColorSlider>
-                <ColorField aria-label={t('colour.hex')}>
-                  <ColorField.Group variant="secondary">
-                    <ColorField.Prefix>
-                      <ColorSwatch size="xs" />
-                    </ColorField.Prefix>
-                    <ColorField.Input />
-                  </ColorField.Group>
-                </ColorField>
-              </ColorPicker.Popover>
-            </ColorPicker>
-
-            <Slider
-              maxValue={100}
-              minValue={0}
-              step={1}
-              value={brightness}
-              onChange={(value) => setBrightness(value as number)}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex flex-wrap items-end justify-between gap-4 border-b border-default/30 p-4 lg:p-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <Button
+              className="lg:hidden"
+              size="sm"
+              variant="secondary"
+              onPress={() => setMenuOpen((open) => !open)}
             >
-              <Label>{t('colour.brightness')}</Label>
-              <Slider.Output />
-              <Slider.Track>
-                <Slider.Fill />
-                <Slider.Thumb />
-              </Slider.Track>
-            </Slider>
-          </Card.Content>
-        </Card>
+              {t('nav.menu')}
+            </Button>
+            <div className="min-w-0">
+              <h2 className="truncate text-xl font-semibold">{t(section.titleKey)}</h2>
+              <p className="truncate text-sm text-muted">{t(section.descriptionKey)}</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-end gap-4">
+            <PreferencesMenu />
+            <Switch className="pb-2" isSelected={isEnabled} size="md" onChange={setIsEnabled}>
+              <Switch.Content>
+                <Switch.Control>
+                  <Switch.Thumb />
+                </Switch.Control>
+                {t('app.lighting')}
+              </Switch.Content>
+            </Switch>
+          </div>
+        </header>
 
-        <Card variant="default">
-          <Card.Header>
-            <Card.Title>{t('preview.title')}</Card.Title>
-            <Card.Description>{t('preview.description')}</Card.Description>
-          </Card.Header>
-          <Card.Content className="flex flex-col gap-4">
-            <StripPreview brightness={isEnabled ? brightness : 0} color={color} config={config} />
-            <Surface className="rounded-xl p-3 font-mono text-xs" variant="secondary">
-              <div className="flex justify-between">
-                <span className="text-muted">{t('preview.selected')}</span>
-                <span>{toHex(color)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted">{t('preview.srgb')}</span>
-                <span>{srgb.r}, {srgb.g}, {srgb.b}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted">{t('preview.wire')}</span>
-                <span>{wire.r}, {wire.g}, {wire.b}</span>
-              </div>
-            </Surface>
-            <p className="text-xs text-muted">{t('preview.note')}</p>
-          </Card.Content>
-        </Card>
+        {menuOpen && (
+          <Surface className="m-4 rounded-2xl p-4 lg:hidden" variant="secondary">
+            <Nav current={current} onNavigate={go} />
+            <div className="mt-4 px-3">
+              <EngineBadge />
+            </div>
+          </Surface>
+        )}
+
+        <main className="flex-1 p-4 lg:p-6">{sectionBody(current, isEnabled)}</main>
       </div>
-
-      <LayoutCard loaded={loaded} onConfig={setConfig} onDraft={setDraft} />
-
-      <ProfilesCard
-        current={draft}
-        onLoad={(profile) => setLoaded({ config: profile, at: Date.now() })}
-      />
-
-      <DeviceCard />
-
-      <GuideCard />
     </div>
   )
 }

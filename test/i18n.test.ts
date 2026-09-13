@@ -8,7 +8,7 @@ import {
   LOCALES,
   negotiateLocale
 } from '#lib/i18n/locales'
-import { completeness, has, translate } from '#lib/i18n/strings'
+import { completeness, has, MESSAGE_KEYS, translate } from '#lib/i18n/strings'
 import { DEFAULT_THEME, isTheme, resolveTheme, THEMES } from '#lib/theme'
 
 test('the locale list has no duplicates and both special locales are in it', () => {
@@ -129,4 +129,29 @@ test('the default theme follows the system and isTheme guards the stored value',
   assert.ok(!isTheme('Dark'))
   assert.ok(!isTheme(null))
   assert.ok(!isTheme(undefined))
+})
+
+test('no string is double-encoded UTF-8', () => {
+  /*
+   * Mojibake has a shape. UTF-8 bytes read as Latin-1 always come out as a high
+   * Latin letter followed by a character from U+0080-U+00BF: a Turkish dotless
+   * i arrives as U+00C4 U+00B1, an ellipsis as U+00C3 U+00A2 U+00E2 and so on.
+   * Real text in any of these languages never does that, because U+0080-U+009F
+   * are control characters and U+00A0-U+00BF are lone symbols - French
+   * "cable" with a circumflex and German "Ubersicht" with an umlaut are a high
+   * letter followed by an ASCII one, and do not match.
+   *
+   * This is here because it has already happened twice, both times through a
+   * script that generated the table, and both times it reached a screenshot
+   * before anyone saw it. A glance does not catch it in a language you cannot
+   * read; this does.
+   */
+  const MOJIBAKE = /[\u00C0-\u00FF][\u0080-\u00BF]/
+  for (const entry of LOCALES) {
+    for (const key of MESSAGE_KEYS) {
+      if (!has(entry.code, key)) continue
+      const text = translate(entry.code, key)
+      assert.ok(!MOJIBAKE.test(text), `${entry.code} ${key}: ${text}`)
+    }
+  }
 })

@@ -1,0 +1,152 @@
+'use client'
+
+import { useMemo, useState } from 'react'
+import { Button, Card, Surface } from '@heroui/react'
+
+import { useEngine } from '#components/Engine'
+import { useEngineConfig } from '#components/EngineConfig'
+import { LedFrame } from '#components/LedFrame'
+import { useTranslate } from '#components/Preferences'
+import { resolveLayout } from '#lib/engine/config'
+import { frameAspect, wireOrderColor } from '#lib/preview'
+import { hashForSection } from '#lib/sections'
+
+const fmt = (n: number, digits = 1): string => (Number.isFinite(n) ? n.toFixed(digits) : '–')
+
+/**
+ * The landing page: what the engine is doing, and the button that starts it.
+ *
+ * The start button is here rather than only in the extension's popup, and that
+ * is the point of the page. Until now the only way to start a capture was the
+ * toolbar menu - a product whose main control lives in a browser menu is a
+ * product people cannot find. The screen picker still opens in the extension's
+ * engine document, because that is the only place it works; the panel just asks.
+ */
+export function OverviewCard () {
+  const t = useTranslate()
+  const { probe, state, stats, busy, start, selfTest, stop } = useEngine()
+  const { config } = useEngineConfig()
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const rects = useMemo(() => resolveLayout(config), [config])
+  const running = state === 'running'
+  const installed = probe?.available === true
+
+  const act = (call: () => Promise<{ state: string, error?: string }>, pending: string) => {
+    setNotice(pending)
+    void call().then((result) => {
+      setNotice(result.state === 'running' ? null : result.error ?? null)
+    })
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <Card variant="default">
+        <Card.Header>
+          <Card.Title>{t('overview.title')}</Card.Title>
+          <Card.Description>{t('nav.overview.description')}</Card.Description>
+        </Card.Header>
+        <Card.Content className="flex flex-col gap-4">
+          {probe === null && <p className="text-sm text-muted">{t('device.searching')}</p>}
+
+          {probe !== null && !installed && (
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-sm text-muted">{t('overview.needExtension')}</span>
+              <Button
+                size="sm"
+                variant="secondary"
+                onPress={() => { window.location.hash = hashForSection('guide') }}
+              >
+                {t('overview.openGuide')}
+              </Button>
+            </div>
+          )}
+
+          {installed && (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  isDisabled={busy}
+                  onPress={() => act(start, t('overview.picker'))}
+                >
+                  {t(busy ? 'overview.starting' : 'overview.start')}
+                </Button>
+                <Button
+                  isDisabled={!running}
+                  variant="secondary"
+                  onPress={() => { setNotice(null); void stop() }}
+                >
+                  {t('overview.stop')}
+                </Button>
+                <Button
+                  isDisabled={busy}
+                  variant="secondary"
+                  onPress={() => act(selfTest, t('overview.starting'))}
+                >
+                  {t('overview.selftest')}
+                </Button>
+              </div>
+
+              {/*
+                The capture ending on its own is not a failure and must not read
+                like one: a resolution change, HDR toggle or the monitor
+                sleeping all end the stream, and they happen on real desks every
+                day. What the user needs is the sentence telling them so and the
+                button to pick the screen again - both already above.
+              */}
+              {stats?.lost === true && state !== 'running' && (
+                <Surface className="rounded-xl p-3 text-sm" variant="secondary">
+                  {t('overview.lost')}
+                </Surface>
+              )}
+
+              {notice !== null && (
+                <Surface className="rounded-xl p-3 text-sm" variant="secondary">{notice}</Surface>
+              )}
+
+              {stats !== null && (
+                <Surface className="grid grid-cols-2 gap-x-6 gap-y-1 rounded-xl p-3 font-mono text-xs sm:grid-cols-4" variant="secondary">
+                  <Stat label={t('device.stat.delivered')} value={`${fmt(stats.deliveredFps)} fps`} />
+                  <Stat label={t('device.stat.output')} value={`${fmt(stats.outputFps)} fps`} />
+                  <Stat label={t('layout.leds', { count: stats.leds })} value="" />
+                  <Stat
+                    label={t('device.stat.link')}
+                    value={t(stats.link.mode === 'port'
+                      ? 'device.link.port'
+                      : stats.link.mode === 'loopback' ? 'device.link.loopback' : 'device.link.none')}
+                  />
+                </Surface>
+              )}
+            </>
+          )}
+        </Card.Content>
+      </Card>
+
+      <Card variant="default">
+        <Card.Header>
+          <Card.Title>{t('overview.strip')}</Card.Title>
+          <Card.Description>{t('overview.stripNote')}</Card.Description>
+        </Card.Header>
+        <Card.Content>
+          <LedFrame
+            aspectRatio={frameAspect(config.layout)}
+            colorAt={wireOrderColor}
+            glow
+            label={t('layout.regions', { count: rects.length })}
+            outlineFirst
+            rects={rects}
+          />
+        </Card.Content>
+      </Card>
+    </div>
+  )
+}
+
+function Stat ({ label, value }: { label: string, value: string }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <span className="text-muted">{label}</span>
+      <span className="text-right">{value}</span>
+    </div>
+  )
+}

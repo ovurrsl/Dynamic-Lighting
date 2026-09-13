@@ -21,6 +21,7 @@ Depo kökü **tek bir Next.js uygulaması.** Workspace yok, alt paket yok.
 | `lib/extension/` | Panel ile eklentinin ortak mesaj sözleşmesi | **çalışıyor** |
 | `extension/` | Chrome eklentisi (MV3): yakalama + hat + seri port, offscreen document'ta | **derleniyor**, gerçek ekranda henüz ölçülmedi |
 | `components/` | HeroUI v3 ekranları, kullanım kılavuzu dahil | **çalışıyor** |
+| `lib/sections.ts` | Panelin gezinme yapısı — veri olarak, testli | **çalışıyor** |
 | `lib/i18n/` | 12 dil; Türkçe ve İngilizce tam, diğerleri ortak çekirdek + İngilizce yedek | **çalışıyor**, testli |
 | `lib/theme.ts` | Tarayıcı temasını izleyen, kullanıcının ezebildiği açık/koyu | **çalışıyor**, testli |
 | `firmware/` | ESP32-S3 firmware'i, PlatformIO; algoritmalar host'ta test ediliyor | **derleniyor**, kartta ölçülmedi |
@@ -33,6 +34,19 @@ Depo kökü **tek bir Next.js uygulaması.** Workspace yok, alt paket yok.
 
 WinUI 3 masaüstü uygulaması **silindi** — Windows Dynamic Lighting kapsamdan
 çıktı. Git geçmişinde duruyor (`fa622c5` ve öncesi).
+
+## Arayüz: bölümler, tek sayfa değil
+
+Panel bir kenar çubuğu ve aynı anda tek bölüm. Sebep bugün değil yarın: yol
+haritasında efekt motoru, ağ cihazları, ses, renk düzeltme, yumuşatma profilleri,
+kenar modları ve öncelik katmanları var — bunları tek bir sütuna dizmek, içinde
+hiçbir şeyin bulunamadığı bir sayfa üretir. Hyperion'un kendi web arayüzü de tam
+olarak böyle kurulu, ve aynı sebeple.
+
+Gezinme **veri**: `lib/sections.ts`. Yeni bir özellik eklemek bir tablo satırı ve
+bir bileşen — gitgide uzayan bir sütuna sıkıştırılan başka bir kart değil.
+Bölümler adreslenebilir (`#/layout`), geri tuşu çalışıyor, ve dar ekranda kenar
+çubuğu bir menüye dönüşüyor.
 
 ## Dil ve tema
 

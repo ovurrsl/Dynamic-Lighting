@@ -87,6 +87,58 @@ export async function fetchStatus (): Promise<ExtensionStatus | null> {
   }
 }
 
+/**
+ * The engine's answer to a start request.
+ *
+ * `state` rather than a boolean because "did not start" has two very different
+ * meanings: the user closed the screen picker, which is a decision, and the
+ * capture failed, which is a fault. The panel says different things about them.
+ */
+export interface StartOutcome {
+  state: EngineState
+  error?: string
+}
+
+function outcome (reply: unknown): StartOutcome {
+  const body = reply as { state?: unknown, error?: unknown } | undefined
+  const state = typeof body?.state === 'string' ? body.state as EngineState : 'error'
+  const error = typeof body?.error === 'string' ? body.error : undefined
+  return error === undefined ? { state } : { state, error }
+}
+
+/**
+ * Starts a screen capture from the panel.
+ *
+ * The screen picker still opens in the extension's own engine document - that
+ * is the only place it works (see extension/src/offscreen.ts openCapture) - so
+ * this call travels panel -> service worker -> engine and the user sees the
+ * picker without ever opening the extension's popup. That is the whole point:
+ * the popup was the only way to start the engine, and a product whose main
+ * control lives in a toolbar menu is a product people cannot find.
+ */
+export async function startEngine (): Promise<StartOutcome> {
+  try {
+    return outcome(await send({ type: 'ambiflux/start', target: 'sw' }))
+  } catch (error) {
+    return { state: 'error', error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * Runs the engine on a generated picture: no screen, no picker, no board.
+ *
+ * The one thing that separates "the engine is broken" from "the capture never
+ * started" - which look identical from outside, and are the two things a user
+ * with a dark strip is actually choosing between.
+ */
+export async function selfTestEngine (): Promise<StartOutcome> {
+  try {
+    return outcome(await send({ type: 'ambiflux/selftest', target: 'sw' }))
+  } catch (error) {
+    return { state: 'error', error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 export async function stopEngine (): Promise<boolean> {
   try {
     await send({ type: 'ambiflux/stop', target: 'sw' })

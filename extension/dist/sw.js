@@ -594,6 +594,14 @@ function handle(message, sendResponse) {
       return false;
   }
 }
+chrome.runtime.onStartup.addListener(() => {
+  void ensureOffscreen().catch(() => {
+  });
+});
+chrome.runtime.onInstalled.addListener(() => {
+  void ensureOffscreen().catch(() => {
+  });
+});
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => handle(message, sendResponse));
 chrome.runtime.onMessageExternal.addListener((message, _sender, sendResponse) => handle(message, sendResponse));
 function currentStats() {

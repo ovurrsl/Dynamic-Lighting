@@ -102,6 +102,29 @@ export interface EngineStats {
   pipelineDrops: number
   /** Time from frame arrival to smoother target, ms. */
   processMs: { p50: number; p99: number; max: number }
+  /**
+   * Where that time goes, median per stage, ms.
+   *
+   * The whole of `processMs` was one number, and at 1080p its p50 sat at 9.00 ms
+   * against an 8.33 ms budget - which says there is a problem and nothing about
+   * where. The plan's own first instruction for this is "measure where it goes,
+   * do not guess", and the guess (the downscale) is only a guess: the readback
+   * off the GPU is a candidate too, and so is the decode.
+   *
+   * Optional because an older extension answers without it. The panel is a
+   * hosted page and the extension is installed separately, so they are always
+   * two different versions of two different programs.
+   */
+  stageMs?: {
+    /** createImageBitmap: the area-average downscale, on the GPU. */
+    downscale: number
+    /** drawImage + getImageData: pulling the small grid back to the CPU. */
+    readback: number
+    /** sRGB -> linear, over the whole grid. */
+    decode: number
+    /** Border detect, sample, adjust, hand to the smoother. */
+    sample: number
+  }
   /** Frames the smoother emitted per second over the last two seconds. */
   outputFps: number
   link: {
@@ -120,6 +143,17 @@ export interface EngineStats {
   border: { unknown: boolean; topBottom: number; leftRight: number }
   /** Capture source size as the track reports it. */
   source?: { width: number; height: number; frameRate?: number }
+  /**
+   * The capture ended on its own rather than being stopped.
+   *
+   * A resolution change, a refresh-rate change, toggling HDR, or the monitor
+   * sleeping all end the stream, and on a real desk at least one of those
+   * happens every day. It is not an error and must not be shown as one - but it
+   * is also not the same as "idle", because the user did not ask for it and
+   * their strip just went dark. It is the reason the panel can offer one click
+   * to pick the screen again.
+   */
+  lost?: boolean
   error?: string
 }
 

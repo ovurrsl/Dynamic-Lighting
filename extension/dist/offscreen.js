@@ -2281,9 +2281,14 @@ function requireContext(c) {
 var arrivals = createArrivalMeter({ windowMs: 2e3, gapMs: 50 });
 var outputs = createArrivalMeter({ windowMs: 2e3, gapMs: 50 });
 var processTimes = createValueMeter(512);
+var downscaleTimes = createValueMeter(512);
+var readbackTimes = createValueMeter(512);
+var decodeTimes = createValueMeter(512);
+var sampleTimes = createValueMeter(512);
 var captured = 0;
 var pipelineDrops = 0;
 var border2 = NO_BORDER;
+var captureLost = false;
 var state = "idle";
 var lastError;
 var track = null;
@@ -2445,15 +2450,16 @@ async function startSelfTest() {
   });
 }
 async function begin(open) {
-  if (state === "running" || state === "starting") stop();
+  if (state === "running" || state === "starting") stop("restart");
   state = "starting";
   lastError = void 0;
+  captureLost = false;
   report();
   try {
     const video = await open();
     track = video;
     video.addEventListener("ended", () => {
-      stop();
+      stop("lost");
     }, { once: true });
     resetCounters();
     state = "running";
@@ -2472,6 +2478,10 @@ function resetCounters() {
   arrivals.reset();
   outputs.reset();
   processTimes.reset();
+  downscaleTimes.reset();
+  readbackTimes.reset();
+  decodeTimes.reset();
+  sampleTimes.reset();
   captured = 0;
   pipelineDrops = 0;
   border2 = NO_BORDER;
@@ -2517,20 +2527,28 @@ async function pump(video) {
 async function processFrame(frame, arrivedAt) {
   let bitmap = null;
   try {
+    const t0 = clock();
     bitmap = await createImageBitmap(frame, { resizeWidth: GRID_W, resizeHeight: GRID_H, resizeQuality: "high" });
     frame.close();
+    const t1 = clock();
     ctx.drawImage(bitmap, 0, 0);
     bitmap.close();
     bitmap = null;
     const image = ctx.getImageData(0, 0, GRID_W, GRID_H);
+    const t2 = clock();
     decoder.decode(image.data, grid);
-    const now = clock();
+    const t3 = clock();
     const s = stages;
-    border2 = detector.process(grid, now);
+    border2 = detector.process(grid, t3);
     s.sampler.setBorder(border2);
     s.sampler.sample(grid, s.target, "mean");
     s.adjustment.apply(s.target);
-    s.smoother.setTarget(s.target, now);
+    s.smoother.setTarget(s.target, t3);
+    const t4 = clock();
+    downscaleTimes.add(t1 - t0);
+    readbackTimes.add(t2 - t1);
+    decodeTimes.add(t3 - t2);
+    sampleTimes.add(t4 - t3);
     processTimes.add(clock() - arrivedAt);
     tick();
   } finally {
@@ -2550,7 +2568,8 @@ function tick() {
   encodeAfx(s.wirePayload, s.wire);
   writer.send(s.wire);
 }
-function stop() {
+function stop(reason = "user") {
+  if (reason === "lost") captureLost = true;
   if (tickTimer !== null) clearInterval(tickTimer);
   if (reportTimer !== null) clearInterval(reportTimer);
   if (reconnectTimer !== null) clearTimeout(reconnectTimer);
@@ -2590,6 +2609,12 @@ function report() {
     captureGaps: a.gaps,
     pipelineDrops,
     processMs: { p50: p.p50, p99: p.p99, max: p.max },
+    stageMs: {
+      downscale: downscaleTimes.snapshot().p50,
+      readback: readbackTimes.snapshot().p50,
+      decode: decodeTimes.snapshot().p50,
+      sample: sampleTimes.snapshot().p50
+    },
     outputFps: o.fps,
     link: {
       mode: linkMode,
@@ -2602,6 +2627,7 @@ function report() {
     },
     border: { unknown: border2.unknown, topBottom: border2.topBottom, leftRight: border2.leftRight },
     ...settings !== void 0 && settings.width !== void 0 && settings.height !== void 0 ? { source: { width: settings.width, height: settings.height, ...settings.frameRate !== void 0 ? { frameRate: settings.frameRate } : {} } } : {},
+    ...captureLost ? { lost: true } : {},
     ...lastError !== void 0 ? { error: lastError } : {}
   };
   void chrome.runtime.sendMessage({ type: "ambiflux/stats", target: "sw", stats }).catch(() => {

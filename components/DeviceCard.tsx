@@ -1,12 +1,11 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
 import { Button, Card, Surface } from '@heroui/react'
 
+import { useEngine } from '#components/Engine'
 import { useTranslate } from '#components/Preferences'
-import { fetchStatus, probeExtension, stopEngine, type ExtensionProbe } from '#lib/extension-client'
 import type { MessageKey } from '#lib/i18n/strings'
-import type { EngineState, EngineStats } from '#lib/extension/messages'
+import type { EngineState } from '#lib/extension/messages'
 
 /**
  * The state and link names are keys, not text: the engine reports an enum and
@@ -30,45 +29,16 @@ const LINK_KEY = {
 const fmt = (n: number, digits = 1): string => (Number.isFinite(n) ? n.toFixed(digits) : '–')
 
 /**
- * The live view of the engine. Polls the extension once a second while it
- * answers; the numbers are the four counters the plan asks for, shown apart
- * because they fail apart. A missing extension is shown as missing.
+ * The diagnostics page: the four counters, apart, because the stages fail apart.
+ *
+ * It no longer polls. The connection to the engine is shared (components/Engine)
+ * because the sidebar badge and the overview want the same numbers at the same
+ * moment - three pollers would triple the traffic and disagree with each other
+ * by up to a second.
  */
 export function DeviceCard () {
   const t = useTranslate()
-  const [probe, setProbe] = useState<ExtensionProbe | null>(null)
-  const [stats, setStats] = useState<EngineStats | null>(null)
-  const [state, setState] = useState<EngineState>('idle')
-  const [version, setVersion] = useState<string>('')
-
-  const reprobe = useCallback(() => {
-    setProbe(null)
-    void probeExtension().then(setProbe)
-  }, [])
-
-  useEffect(() => { reprobe() }, [reprobe])
-
-  useEffect(() => {
-    if (probe?.available !== true) return
-    let cancelled = false
-    const tick = async (): Promise<void> => {
-      const status = await fetchStatus()
-      if (cancelled) return
-      if (status === null) {
-        setProbe({ available: false, reason: 'not-installed', detail: 'yanıt yok' })
-        return
-      }
-      setStats(status.stats)
-      setState(status.state)
-      setVersion(status.version)
-    }
-    void tick()
-    const id = setInterval(() => { void tick() }, 1000)
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [probe])
+  const { probe, state, stats, version, reprobe, stop } = useEngine()
 
   return (
     <Card variant="default">
@@ -96,7 +66,7 @@ export function DeviceCard () {
               </span>
               <span className="text-xs text-muted">{t('device.version', { version })}</span>
               {state === 'running' && (
-                <Button size="sm" variant="secondary" onPress={() => { void stopEngine() }}>
+                <Button size="sm" variant="secondary" onPress={() => { void stop() }}>
                   {t('device.stop')}
                 </Button>
               )}
@@ -126,6 +96,22 @@ export function DeviceCard () {
                   <Stat label={t('device.stat.source')} value={`${stats.source.width}×${stats.source.height}`} />
                 )}
                 {stats.error !== undefined && <Stat label={t('device.stat.error')} value={stats.error} />}
+              </Surface>
+            )}
+
+            {/*
+              The stage breakdown, kept in its own box rather than mixed into
+              the counters above: those say whether the engine is healthy, this
+              says which line of it to go and fix. Absent from an older
+              extension, which is why it is guarded rather than assumed.
+            */}
+            {stats?.stageMs !== undefined && (
+              <Surface className="rounded-xl p-3 font-mono text-xs" variant="secondary">
+                <Stat
+                  label={t('device.stat.stages')}
+                  value={`${fmt(stats.stageMs.downscale, 2)} / ${fmt(stats.stageMs.readback, 2)} / ${fmt(stats.stageMs.decode, 2)} / ${fmt(stats.stageMs.sample, 2)} ms`}
+                />
+                <p className="mt-2 font-sans text-muted">{t('device.stat.stagesNote')}</p>
               </Surface>
             )}
 

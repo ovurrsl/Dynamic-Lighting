@@ -74,9 +74,28 @@ function requireContext (c: OffscreenCanvas): OffscreenCanvasRenderingContext2D 
 const arrivals = createArrivalMeter({ windowMs: 2000, gapMs: 50 })
 const outputs = createArrivalMeter({ windowMs: 2000, gapMs: 50 })
 const processTimes = createValueMeter(512)
+/**
+ * The same frame, timed in four pieces.
+ *
+ * `processTimes` says the budget is blown at 1080p (p50 9.00 ms against
+ * 8.33 ms) and says nothing about where, which makes it useless for fixing.
+ * The plan's instruction is "measure where it goes, do not guess" - the guess
+ * is the downscale, but the readback off the GPU and the decode over 9216
+ * pixels are candidates too, and only one of the three is worth optimising.
+ */
+const downscaleTimes = createValueMeter(512)
+const readbackTimes = createValueMeter(512)
+const decodeTimes = createValueMeter(512)
+const sampleTimes = createValueMeter(512)
 let captured = 0
 let pipelineDrops = 0
 let border: Readonly<Border> = NO_BORDER
+/**
+ * Set when the capture ended without anyone asking. Cleared on the next start,
+ * never by reading it: the panel polls once a second and a flag cleared by a
+ * reader would be seen by whichever poller got there first and by nobody else.
+ */
+let captureLost = false
 
 let state: EngineState = 'idle'
 let lastError: string | undefined
@@ -320,14 +339,19 @@ async function startSelfTest (): Promise<void> {
 
 /** Everything both sources share: start the clocks, the link and the pump. */
 async function begin (open: () => Promise<MediaStreamTrack>): Promise<void> {
-  if (state === 'running' || state === 'starting') stop()
+  if (state === 'running' || state === 'starting') stop('restart')
   state = 'starting'
   lastError = undefined
+  captureLost = false
   report()
   try {
     const video = await open()
     track = video
-    video.addEventListener('ended', () => { stop() }, { once: true })
+    // `ended` fires for Chrome's own "stop sharing" bar AND for the stream
+    // dying under us; from here they are the same event, so both are reported
+    // as lost. Calling stop() from the panel or the popup never reaches this,
+    // because that path stops the track itself.
+    video.addEventListener('ended', () => { stop('lost') }, { once: true })
 
     resetCounters()
     state = 'running'
@@ -347,6 +371,10 @@ function resetCounters (): void {
   arrivals.reset()
   outputs.reset()
   processTimes.reset()
+  downscaleTimes.reset()
+  readbackTimes.reset()
+  decodeTimes.reset()
+  sampleTimes.reset()
   captured = 0
   pipelineDrops = 0
   border = NO_BORDER
@@ -393,23 +421,37 @@ async function processFrame (frame: VideoFrame, arrivedAt: number): Promise<void
   let bitmap: ImageBitmap | null = null
   try {
     // The one downscale: an area average straight from the VideoFrame.
+    const t0 = clock()
     bitmap = await createImageBitmap(frame, { resizeWidth: GRID_W, resizeHeight: GRID_H, resizeQuality: 'high' })
     frame.close()
+    const t1 = clock()
     ctx.drawImage(bitmap, 0, 0)
     bitmap.close()
     bitmap = null
+    // getImageData is where the GPU work is actually waited on: the drawImage
+    // above only queues, so timing them apart would credit the wrong stage.
     const image = ctx.getImageData(0, 0, GRID_W, GRID_H)
+    const t2 = clock()
     decoder.decode(image.data, grid)
+    const t3 = clock()
 
-    const now = clock()
     // Read `stages` once: a config swap between two of these lines would mix a
     // sampler with another layout's target buffer.
     const s = stages
-    border = detector.process(grid, now)
+    border = detector.process(grid, t3)
     s.sampler.setBorder(border)
     s.sampler.sample(grid, s.target, 'mean')
     s.adjustment.apply(s.target)
-    s.smoother.setTarget(s.target, now)
+    s.smoother.setTarget(s.target, t3)
+    const t4 = clock()
+
+    downscaleTimes.add(t1 - t0)
+    readbackTimes.add(t2 - t1)
+    decodeTimes.add(t3 - t2)
+    sampleTimes.add(t4 - t3)
+    // Still measured from ARRIVAL, not from t0: the four stages above sum to
+    // the work, and the difference between that sum and this is the queueing
+    // delay - which is the number that says whether the engine is behind.
     processTimes.add(clock() - arrivedAt)
     // A frame is the most precise clock edge we get; take an output slot if
     // one is open rather than wait for the 4 ms timer.
@@ -439,7 +481,20 @@ function tick (): void {
   writer.send(s.wire)
 }
 
-function stop (): void {
+/**
+ * Why a capture ended.
+ *
+ * 'user' is a decision; 'lost' is the stream ending underneath us - a
+ * resolution change, an HDR toggle, the monitor sleeping - which happens on
+ * real desks every day and needs a different sentence and a button, not an
+ * error. 'restart' is this file replacing one source with another and must set
+ * neither, or starting the self-test would leave the panel claiming the screen
+ * capture had died.
+ */
+type StopReason = 'user' | 'lost' | 'restart'
+
+function stop (reason: StopReason = 'user'): void {
+  if (reason === 'lost') captureLost = true
   if (tickTimer !== null) clearInterval(tickTimer)
   if (reportTimer !== null) clearInterval(reportTimer)
   if (reconnectTimer !== null) clearTimeout(reconnectTimer)
@@ -481,6 +536,12 @@ function report (): void {
     captureGaps: a.gaps,
     pipelineDrops,
     processMs: { p50: p.p50, p99: p.p99, max: p.max },
+    stageMs: {
+      downscale: downscaleTimes.snapshot().p50,
+      readback: readbackTimes.snapshot().p50,
+      decode: decodeTimes.snapshot().p50,
+      sample: sampleTimes.snapshot().p50
+    },
     outputFps: o.fps,
     link: {
       mode: linkMode,
@@ -495,6 +556,7 @@ function report (): void {
     ...(settings !== undefined && settings.width !== undefined && settings.height !== undefined
       ? { source: { width: settings.width, height: settings.height, ...(settings.frameRate !== undefined ? { frameRate: settings.frameRate } : {}) } }
       : {}),
+    ...(captureLost ? { lost: true } : {}),
     ...(lastError !== undefined ? { error: lastError } : {})
   }
   void chrome.runtime.sendMessage({ type: 'ambiflux/stats', target: 'sw', stats } satisfies Message).catch(() => { /* worker asleep */ })

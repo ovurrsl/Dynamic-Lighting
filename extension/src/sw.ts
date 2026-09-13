@@ -204,6 +204,26 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
   }
 }
 
+/**
+ * Build the engine document when Chrome starts, before anyone asks.
+ *
+ * The screen choice cannot be persisted - a `getDisplayMedia` grant lives and
+ * dies with the browser session, and no amount of engineering changes that - so
+ * "starts with the OS and never asks" is not on offer in a browser. What IS on
+ * offer is that the first click after opening Chrome shows the picker
+ * immediately instead of after a document boot, and that is what this buys.
+ *
+ * The document is blank until something starts a capture: no stream, no timers,
+ * no port. It costs one empty page and saves the wait on every single start.
+ */
+chrome.runtime.onStartup.addListener(() => {
+  void ensureOffscreen().catch(() => { /* built on demand instead */ })
+})
+
+chrome.runtime.onInstalled.addListener(() => {
+  void ensureOffscreen().catch(() => { /* built on demand instead */ })
+})
+
 // Internal traffic: popup and offscreen document.
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => handle(message, sendResponse))
 

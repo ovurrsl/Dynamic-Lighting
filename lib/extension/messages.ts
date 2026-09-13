@@ -9,6 +9,9 @@
  * The `target` field exists because the service worker and the offscreen
  * document share one runtime message bus; without it each would answer the
  * other's traffic.
+ *
+ * This file lives under lib/ rather than extension/ because the panel reads
+ * the same types: it is the one contract both sides compile against.
  */
 
 export type Target = 'sw' | 'offscreen'
@@ -25,29 +28,68 @@ export type Message =
    */
   | { type: 'ambiflux/start'; target: Target; streamId: string }
   | { type: 'ambiflux/stop'; target: Target }
+  /** Asks the worker for the engine's state and its latest statistics. */
+  | { type: 'ambiflux/status'; target: Target }
+  | { type: 'ambiflux/status-reply'; version: string; state: EngineState; stats: EngineStats | null }
+  /**
+   * The popup paired a serial port (navigator.serial.requestPort needs a
+   * gesture); the engine should look again with getPorts() and connect.
+   */
+  | { type: 'ambiflux/serial'; target: Target }
+  /** Offscreen -> worker: the latest statistics, kept for whoever asks next. */
   | { type: 'ambiflux/stats'; target: Target; stats: EngineStats }
   | { type: 'ambiflux/state'; target: Target; state: EngineState }
 
 export type EngineState = 'idle' | 'starting' | 'running' | 'error'
 
+/** How frames leave the engine. */
+export type LinkMode = 'none' | 'loopback' | 'port'
+
 /**
- * Four separate counters, because the stages fail in different ways and a
- * single "FPS" would hide which one. captureGaps: frames the source never
- * delivered. pipelineDrops: frames that arrived while the previous one was
- * still being processed. serialDrops: frames dropped because a write was still
- * in flight (latest-wins, never queue). The firmware's own framesRx-framesShown
- * comes back over the serial feedback channel later.
+ * Separate counters, because the stages fail in different ways and a single
+ * "FPS" would hide which one:
+ *
+ * - captureGaps: inter-arrival gaps in the frames the source delivered.
+ * - pipelineDrops: frames that arrived while the previous one was still being
+ *   processed (latest wins; the processing never queues).
+ * - link.dropped: frames dropped because a serial write was still in flight
+ *   (latest wins; the link never queues).
+ * - link.rejected: frames the loopback's reference parser refused - a framing
+ *   bug, so healthy is exactly 0.
+ *
+ * The firmware's own framesRx - framesShown comes back over the serial
+ * feedback channel later.
  */
 export interface EngineStats {
   state: EngineState
+  /** Frames the capture delivered since start. */
   capturedFrames: number
+  /** Delivered capture rate over the last two seconds; count-based, never getSettings(). */
   deliveredFps: number
+  /** Percentiles of the capture inter-arrival, ms; the mean would hide the stalls. */
+  interArrivalMs: { p50: number; p99: number; max: number }
   captureGaps: number
   pipelineDrops: number
-  serialDrops: number
-  /** p50 / p99 inter-arrival in ms; the mean would hide the stalls. */
-  interArrivalMs: { p50: number; p99: number }
-  serialConnected: boolean
+  /** Time from frame arrival to smoother target, ms. */
+  processMs: { p50: number; p99: number; max: number }
+  /** Frames the smoother emitted per second over the last two seconds. */
+  outputFps: number
+  link: {
+    mode: LinkMode
+    /** Frames whose write resolved. */
+    written: number
+    dropped: number
+    errors: number
+    /** Loopback only: frames the reference parser accepted / refused. */
+    accepted: number
+    rejected: number
+    /** `usbVendorId:usbProductId` in hex when a port is open. */
+    port?: string
+  }
+  /** The black-border inset currently applied, in grid pixels. */
+  border: { unknown: boolean; topBottom: number; leftRight: number }
+  /** Capture source size as the track reports it. */
+  source?: { width: number; height: number; frameRate?: number }
   error?: string
 }
 

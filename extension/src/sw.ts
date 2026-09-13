@@ -1,6 +1,6 @@
 import { APP_VERSION } from '#data/version'
 
-import { isMessage, type Message } from './messages'
+import { isMessage, type Message } from '#lib/extension/messages'
 
 /**
  * The service worker. It owns exactly one thing: the offscreen document's
@@ -50,6 +50,30 @@ async function relayToOffscreen (message: Message): Promise<unknown> {
   return chrome.runtime.sendMessage(message)
 }
 
+async function offscreenExists (): Promise<boolean> {
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
+    documentUrls: [chrome.runtime.getURL(OFFSCREEN_URL)]
+  })
+  return contexts.length > 0
+}
+
+/**
+ * Status is answered from what the offscreen document last pushed, not by
+ * waking it: a page polling once a second must never be the reason the engine
+ * document exists. If the document is gone, so is the engine, whatever the
+ * cache says.
+ */
+async function status (): Promise<Message> {
+  const alive = await offscreenExists()
+  return {
+    type: 'ambiflux/status-reply',
+    version: APP_VERSION,
+    state: alive ? lastState?.state ?? 'idle' : 'idle',
+    stats: alive ? lastStats?.stats ?? null : null
+  }
+}
+
 function handle (message: unknown, sendResponse: (r: unknown) => void): boolean {
   if (!isMessage(message)) return false
   if ('target' in message && message.target !== 'sw') return false
@@ -63,13 +87,21 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
       } satisfies Message)
       return false
 
+    case 'ambiflux/status':
+      status().then(sendResponse, (error: unknown) => sendResponse({ error: String(error) }))
+      return true
+
     case 'ambiflux/start':
+    case 'ambiflux/serial':
       relayToOffscreen({ ...message, target: 'offscreen' })
         .then(sendResponse, (error: unknown) => sendResponse({ error: String(error) }))
       return true // async response
 
     case 'ambiflux/stop':
-      relayToOffscreen({ ...message, target: 'offscreen' })
+      // Nothing to stop if the document does not exist; do not create one to
+      // tell it so.
+      offscreenExists()
+        .then((alive) => alive ? chrome.runtime.sendMessage({ ...message, target: 'offscreen' }) : { state: 'idle' })
         .then(sendResponse, (error: unknown) => sendResponse({ error: String(error) }))
       return true
 

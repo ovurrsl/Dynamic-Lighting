@@ -18,6 +18,7 @@ import {
   type Color
 } from '@heroui/react'
 
+import { DeviceCard } from '#components/DeviceCard'
 import { toHex, toLinear16, toRgb8 } from '#lib/colour'
 import type { LicenceGrant } from '#lib/client-api'
 
@@ -237,25 +238,7 @@ export function ControlPanel ({
         </Card>
       </div>
 
-      <Card variant="default">
-        <Card.Header>
-          <Card.Title>Cihaz</Card.Title>
-          <Card.Description>
-            Yakalama ve seri port tarayıcı eklentisinde çalışıyor.
-          </Card.Description>
-        </Card.Header>
-        <Card.Content className="flex flex-wrap items-center gap-3">
-          {/*
-            Not wired yet on purpose. The extension owns capture and the serial
-            port; showing a fake "connected" state here would be worse than
-            showing none.
-          */}
-          <Button isDisabled variant="secondary">
-            Eklentiye bağlan
-          </Button>
-          <span className="text-sm text-muted">Eklenti henüz yayınlanmadı.</span>
-        </Card.Content>
-      </Card>
+      <DeviceCard />
     </div>
   )
 }

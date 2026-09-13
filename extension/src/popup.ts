@@ -1,4 +1,4 @@
-import type { Message } from './messages'
+import type { Message } from '#lib/extension/messages'
 
 /**
  * The popup is where user gestures happen, and two things in this product are
@@ -19,7 +19,11 @@ document.getElementById('serial')?.addEventListener('click', async () => {
   try {
     const port = await navigator.serial.requestPort()
     const info = port.getInfo()
-    say(`Port eşleşti (VID ${info.usbVendorId?.toString(16) ?? '?'}, PID ${info.usbProductId?.toString(16) ?? '?'}).\nMotor bu portu getPorts() ile bulacak.`)
+    say(`Port eşleşti (VID ${info.usbVendorId?.toString(16) ?? '?'}, PID ${info.usbProductId?.toString(16) ?? '?'}).\nMotor bağlanıyor…`)
+    // The permission now belongs to the extension origin; tell the engine to
+    // look again with getPorts() and open it.
+    const message: Message = { type: 'ambiflux/serial', target: 'sw' }
+    chrome.runtime.sendMessage(message, (response: unknown) => say(`Seri: ${JSON.stringify(response)}`))
   } catch (error) {
     say(`Port seçilmedi: ${error instanceof Error ? error.message : String(error)}`)
   }

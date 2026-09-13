@@ -13,9 +13,13 @@ Depo kökü **tek bir Next.js uygulaması.** Workspace yok, alt paket yok.
 | `app/` | Route handler'lar (API) + kontrol paneli sayfası | **çalışıyor** |
 | `lib/` | Lisans kriptosu, doğrulama, depolama, hız sınırı | **çalışıyor** |
 | `lib/api/` | HTTP mantığı, framework'ten bağımsız | **çalışıyor** |
+| `lib/engine/` | Motor: yerleşim, örnekleme, kenar, düzeltme, yumuşatma, dither, protokol, seri yazıcı — saf TypeScript, tarayıcı API'si yok | **çalışıyor**, testli |
+| `lib/extension/` | Panel ile eklentinin ortak mesaj sözleşmesi | **çalışıyor** |
+| `extension/` | Chrome eklentisi (MV3): yakalama + hat + seri port, offscreen document'ta | **derleniyor**, gerçek ekranda henüz ölçülmedi |
 | `components/` | HeroUI v3 ekranları | **çalışıyor** |
 | `supabase/migrations/` | Şema SQL'i, tek doğru kaynak | **çalışıyor** |
-| `test/` | 31 test, ağ ve veritabanı gerektirmez | **çalışıyor** |
+| `test/` | 205 test, ağ ve veritabanı gerektirmez | **çalışıyor** |
+| `docs/hyperion-port-plan.md` | Hyperion.NG'den ne, nasıl, neden aktarılıyor | plan |
 | `AmbiFluxNanoR4LampArray/` | Eski HID LampArray firmware'i | ESP32-S3'e yeniden yazılacak |
 
 WinUI 3 masaüstü uygulaması **silindi** — Windows Dynamic Lighting kapsamdan
@@ -51,7 +55,7 @@ değişirse mantık yerinde kalıyor.
 
 ```bash
 npm install
-npm test          # 31 test; ağ, veritabanı ya da build gerekmez
+npm test          # 205 test; ağ, veritabanı ya da build gerekmez
 npm run typecheck
 npm run dev       # http://localhost:3000
 npm run build
@@ -70,6 +74,43 @@ curl -X POST localhost:3000/v1/licence/activate \
 > **Tuzak:** `next start` kendisi `NODE_ENV=production` set ediyor, yani
 > derlenmiş bir build'i `STORAGE=memory` ile çalıştıramazsın — config bunu
 > bilerek reddediyor. Bellek içi depolama `npm run dev` içindir.
+
+## Motor: tarayıcı eklentisi
+
+Ekranı takip eden kısım barındırılan sayfada değil, bir Chrome eklentisinde
+çalışıyor. Sebebi tek monitör: sekme arka plana düşünce Chromium render'ı
+durduruyor, oysa eklentinin **offscreen document**'ı hiç render edilmiyor,
+dolayısıyla hiç kısıtlanmıyor. Ölçümü ve alternatiflerin neden kaybettiği
+`docs/hyperion-port-plan.md` §2'de.
+
+```bash
+npm run typecheck:extension   # DOM + chrome + Web Serial tipleriyle
+npm run build:extension       # esbuild → extension/dist
+```
+
+Sonra Chrome'da `chrome://extensions` → **Geliştirici modu** → **Paketlenmemiş
+öğe yükle** → `extension/dist`. Manifest'teki `key` sayesinde eklenti kimliği
+her makinede aynıdır (`data/extension.ts`), panel onu bu kimlikle bulur.
+
+Kullanım, eklenti simgesinden:
+
+1. **Seri portu eşleştir** — Web Serial izni bir kullanıcı hareketi ister; bu
+   yüzden popup'tan verilir, motor portu `getPorts()` ile devralır.
+2. **Yakalamayı başlat** — ekran seçici de aynı sebeple popup'ta. Seçim Chrome
+   oturumu boyunca geçerlidir; kalıcı yapılamaz, bu bir tarayıcı sınırıdır.
+
+Port eşleşmemişse motor **cihazsız (loopback) modda** çalışır: kareler
+üretilir, firmware'in kullanacağı referans ayrıştırıcıdan geçirilir ve sayılır.
+Yani hat, kart gelmeden bugün ölçülebilir. Paneldeki **Cihaz** kartı eklentiden
+saniyede bir okur: teslim edilen FPS, varış p50/p99, dört ayrı düşme sayacı.
+
+İki kısıt tarayıcıdan geliyor ve mühendislikle çözülmüyor: ekran seçimi oturum
+başına bir kez sorulur, ve DRM korumalı içerik (Netflix, Prime, Disney+) siyah
+yakalanır.
+
+Motorun saf kısımları (`lib/engine/`) tarayıcı API'si kullanmaz ve `node --test`
+ile koşar; eklenti onları esbuild ile paketler. Hangi Hyperion.NG algoritmasının
+nasıl ve hangi kusuru dışarıda bırakılarak aktarıldığı her modülün başındadır.
 
 ## API
 

@@ -20,7 +20,7 @@ Depo kökü **tek bir Next.js uygulaması.** Workspace yok, alt paket yok.
 | `supabase/migrations/` | Şema SQL'i, tek doğru kaynak | **çalışıyor** |
 | `test/` | 334 test, ağ ve veritabanı gerektirmez | **çalışıyor** |
 | `docs/hyperion-port-plan.md` | Hyperion.NG'den ne, nasıl, neden aktarılıyor | plan |
-| `docs/extension-handoff.md` | Eklentiyi devralacak için tam brifing: mimari, protokol, ölçülenler, açık hata | devir |
+| `docs/extension-handoff.md` | Eklentiyi devralacak için tam brifing: mimari, protokol, ölçülenler, ve §12'de sıradaki işin tamamı | devir |
 | `AmbiFluxNanoR4LampArray/` | Eski HID LampArray firmware'i | ESP32-S3'e yeniden yazılacak |
 
 WinUI 3 masaüstü uygulaması **silindi** — Windows Dynamic Lighting kapsamdan
@@ -94,13 +94,15 @@ Sonra Chrome'da `chrome://extensions` → **Geliştirici modu** → **Paketlenme
 öğe yükle** → `extension/dist`. Manifest'teki `key` sayesinde eklenti kimliği
 her makinede aynıdır (`data/extension.ts`), panel onu bu kimlikle bulur.
 
-> **`extension/dist` depoda yok** — derleme çıktısı, `.gitignore`'da. Yeni bir
-> klonda önce `npm install && npm run build:extension` çalıştırmak gerekiyor;
-> aksi halde yüklenecek bir şey olmaz. Doğrudan `extension/` klasörünü
-> seçersen Chrome **"Could not load background script 'sw.js'"** der — orada
-> yalnız TypeScript kaynağı var, derlenmiş `sw.js` `dist/` içinde. Başka birine
-> göndermek için `npm run pack:extension`: kaynak haritası içermeyen, açılıp
-> doğrudan yüklenebilen bir zip üretir.
+> **`extension/dist` depoda**, bilinçli olarak: yüklenecek şey o, ve depoda
+> olmaması araç zinciri kurmadan çalışan bir uzantı indirmeyi imkânsız
+> kılıyordu. Depoyu klonla (ya da ZIP olarak indir) ve `extension/dist`
+> klasörünü yükle. Kaynağa dokunduysan önce `npm run build:extension`, sonra
+> commit — çıktı depoda olduğu için güncel tutulması gerekiyor.
+>
+> Doğrudan `extension/` klasörünü seçersen Chrome **"Could not load background
+> script 'sw.js'"** der: orada yalnız TypeScript kaynağı var. Klasör `dist`
+> olmalı. Başka birine tek dosya olarak göndermek için `npm run pack:extension`.
 
 Kullanım, eklenti simgesinden:
 

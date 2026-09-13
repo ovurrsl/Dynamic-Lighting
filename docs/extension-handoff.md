@@ -8,8 +8,9 @@ Depoda bu dosyanın kardeşleri: `docs/hyperion-port-plan.md` (motor
 algoritmalarının kaynağı ve Hyperion.NG'den kopyalanmayacak 10 kusur),
 `docs/deploy.md`, `docs/tooling.md`, ve kök `README.md`.
 
-Son güncelleme: 2026-09-13. Durum: **motor çalışıyor ve ölçüldü** (§9.1), ama
-**ekran yakalama kullanıcının makinesinde başlamıyor** (§9.2).
+Son güncelleme: 2026-09-13. Durum: **motor gerçek ekran yakalamasıyla uçtan uca
+çalışıyor ve ölçüldü** (§9). Bilinen tek performans sorunu 1440p'de işleme
+süresi (§9.3). Bundan sonrası §12'deki plan.
 
 ---
 
@@ -305,7 +306,7 @@ köşesi, `clockwise`, `offset`, `gap`, `overlap`, `edgeGap`, `aspectRatio`,
 
 ---
 
-## 9. Ölçüm ve açık hata
+## 9. Ölçüm
 
 ### 9.1 Motorun kendisi çalışıyor — ölçüldü
 
@@ -349,62 +350,72 @@ Tekrarlamak için: uzantı popup'ında **"Ekransız sına"**. Bu düğme kalıc�
 ürünün parçası — şerit karanlık kaldığında "motor bozuk" ile "yakalama hiç
 başlamadı"yı ayıran tek şey, ve ikisi dışarıdan aynı görünüyor.
 
-### 9.2 AÇIK HATA — ekran yakalama başlamıyor
+### 9.2 Ekran yakalama — neden bir kez bozuktu, ve çözümü
 
-**Belirti** (kullanıcının makinesinde, 2026-09-13):
+Bu bölüm çözülmüş bir hatayı anlatıyor, çünkü **cevabı Chrome'un dokümanından
+okunmuyor** ve aynı yanlışa tekrar düşmek kolay.
+
+**Belirti:** yakalama `AbortError: Error starting tab capture` ile düşüyordu
+(bazı derlemelerde `AbortError: Invalid state`). İsim yanıltıcı: ortada tab
+capture yok.
+
+**İlk hipotez yanlıştı.** `chooseDesktopMedia`'nın verdiği streamId saniyeler
+içinde söner, ve o sırada offscreen doküman sıfırdan yaratılıyordu — makul bir
+şüpheli. Ölçüldü: seçici **9 ms**'de dönüyor, kullanıcının makinesinde 2344 ms.
+Süre değil.
+
+**Yer belirlendi.** Aynı oturumda, aynı id türüyle, sırayla:
 
 ```
-Başlatıldı: {"state":"error","error":"Error starting tab capture"}
+POPUP     ✅ 1280x720
+OFFSCREEN ❌ AbortError: Invalid state
+POPUP     ✅ 1280x720
 ```
 
-Yani uzantı yükleniyor, popup çalışıyor, service worker cevap veriyor, offscreen
-doküman kuruluyor — ama `getUserMedia` reddediyor.
+Aynı uzantı, aynı origin, deterministik. Sebep **bağlam**.
 
-**Bu ortamda üretilemiyor**: ekran yok, Arduino yok. Aşağısı teşhis.
+**Offscreen dokümanın gerçekte sahip oldukları** (yoklandı):
 
-`Error starting tab capture` Chromium'un yakalama yığınından gelen bir dize ve
-adı yanıltıcı: `chromeMediaSourceId` geçersiz ya da **sona ermiş** olduğunda da
-bu çıkabiliyor, çünkü tanınmayan bir masaüstü medya kimliği tab-capture yoluna
-düşüyor.
+```
+chrome.* yüzeyi   : csi, loadTimes, runtime
+chrome.desktopCapture : undefined
+chrome.tabCapture     : undefined
+navigator.mediaDevices.getDisplayMedia : function → 1920x1080 akış verdi
+kullanıcı hareketi : GEREKMİYOR (bayraksız denemede seçici açılıp bekledi)
+```
 
-**En olası sebep ve uygulanan düzeltme.** `chooseDesktopMedia`'nın verdiği
-`streamId` **saniyeler içinde sönüyor**. Eski akışta id üretildikten sonra
-`ambiflux/start` service worker'a gidiyor, worker `chrome.offscreen.createDocument`
-çağırıyor, doküman yükleniyor, modül değerlendiriliyor — ve id bunların hepsini
-bekliyor. Düzeltme: popup açılır açılmaz `ambiflux/prepare` gönderiyor, worker
-dokümanı o anda kuruyor. Kullanıcı ekranı seçtiğinde doküman çoktan var.
+**Sonuç: baştan yanlış API kurulmuştu.** `chrome.desktopCapture` streamId'si
+onu isteyen bağlama bağlı; offscreen doküman o API'yi hiç görmüyor; ve
+`MediaStreamTrack` elden de verilemiyor, çünkü `chrome.runtime` mesajlaşması
+transferable taşımıyor. Offscreen dokümanın **`DISPLAY_MEDIA` gerekçesi tam
+olarak `getDisplayMedia` için var.**
 
-**İkinci düzeltme — iki nedeni ayırt etmek için.** `mandatory` bloğu
-hep-ya-hiç: Chrome bir üyesini onurlandırmazsa tüm isteği reddediyor ve verdiği
-hata kısıt hakkında değil yakalama hakkında oluyor. `openCapture` artık önce
-`maxFrameRate` ile, sonra onsuz deniyor, ve iki hatayı da `name` ile birlikte
-bildiriyor — `DOMException.name` faydalı yarısını taşıyor, `message` tek başına
-ne olursa olsun aynı şeyi diyor.
+**Düzeltme:** popup hiçbir şey seçmiyor, yalnız istiyor; seçiciyi motor
+dokümanı `navigator.mediaDevices.getDisplayMedia()` ile kendisi açıyor.
+`desktopCapture` izni manifest'ten kalktı.
 
-**Bu ikisi yetmezse sıradaki hipotezler**, sırayla:
+> Bunu değiştirmeyi düşünen için: popup'tan seçip id'yi göndermek **çalışmıyor**,
+> ve nedeni yukarıda. Kod yorumunda da yazıyor.
 
-1. **`streamId` çağıran bağlamına bağlı.** `chooseDesktopMedia` popup'tan
-   çağrılıyor, id offscreen dokümanda tüketiliyor. Chrome'un kendi örneği
-   (`sample.tabcapture-recorder`) **tab** yakalama için `getMediaStreamId`'yi
-   service worker'dan çağırıyor. Denenecek: `chooseDesktopMedia`'yı service
-   worker'dan çağırmak (kullanıcı hareketi gerektirmiyor, SW'de mevcut).
-2. **Popup picker açılınca yok ediliyor.** Popup odak kaybedince Chrome
-   dokümanı kapatıyor; callback bağlamı ölürse id iptal olabilir. Kullanıcının
-   raporunda callback çalışmış görünüyor (yanıt geldi), ama `prepare`'in yan
-   faydası bu riski de azaltıyor.
-3. **Track transferi.** Chrome 111+'ta `MediaStreamTrack` transfer edilebilir:
-   `getUserMedia` popup'ta çağrılır, track `postMessage` ile offscreen'e
-   geçirilir. Daha büyük bir değişiklik, ama 1 ve 2'nin ikisini birden
-   kökünden çözer.
+### 9.3 Gerçek yakalamayla ölçüm — ve tek gerçek darboğaz
 
-**Teşhis için gereken** (kullanıcıdan istenecek): `chrome://extensions` →
-AmbiFlux → **"service worker"** bağlantısı ve **offscreen.html** bağlamının
-konsolu. `getUserMedia`'nın attığı `DOMException`'ın **`name`**'i belirleyici:
-`NotAllowedError` izin/bağlam, `InvalidStateError` ölü id, `NotReadableError`
-kaynak meşgul. Yeni popup metni bu adı zaten gösteriyor, ayrıca seçimin kaç ms
-sürdüğünü de yazıyor.
+1920×1080 masaüstü kaynağı, offscreen doküman, loopback:
 
----
+```
+yakalanan 1020 · teslim fps 108.3 · kaynak 1920x1080@120
+varış p50 9.1 ms · düşen 0 · loopback kabul 1018 · RED 0 · kenar 0/2
+işleme p50 9.00 ms · p99 14.10 ms · çıkış fps 108.3
+```
+
+Teslim 108 fps, düşen kare yok, çerçeveleme 1018 karede kusursuz.
+
+**Ama işleme p50 9.00 ms**, 120 Hz'in 8.33 ms bütçesinin üstünde. Sentetik
+640×360 kaynakta 1.70 ms'ti; aradaki fark **küçültmenin maliyeti**. Bu gerçek
+bir darboğaz ve §12'nin ilk maddesi.
+
+Şu an düşen kare üretmiyor çünkü kaynak 108 fps veriyor ve hat latest-wins —
+ama 120 Hz'de her karenin işlenmesi isteniyorsa buraya bakılmalı. Ölçüm için
+gereken sayaç (`processMs` p50/p99) zaten raporda.
 
 ## 10. Ölçülmemiş olanlar
 
@@ -414,7 +425,7 @@ bir kısmı mimariyi değiştirebilir.
 | # | Ne | Neden önemli |
 |---|---|---|
 | ~~E6~~ | Offscreen'de MSTP kare teslim ediyor mu | **KAPANDI, §9.1.** Sentetik kaynakla 605 kare, 57 fps, 0 düşen. Yedek mimariye (kareleri worker'a geçirmek) gerek yok. Arka plan kısıtlaması hâlâ sınanmadı. |
-| **E4** | Teslim edilen FPS: istenen 60 ve 120'de, ön planda **ve** arka planda | Kareleri say, `getSettings().frameRate`'i yok say. p50/p1/p99 varış aralığı bildir — ortalama tam da önemsenen duraklamaları saklıyor. |
+| **E4** | Teslim edilen FPS **arka planda** — ön planda 108 fps ölçüldü (§9.3) | Offscreen dokümanın hiç render edilmediği için kısıtlanmadığı tezi hâlâ sınanmadı. Mimarinin tamamı buna dayanıyor. Kareleri say, `getSettings().frameRate`'i yok say. |
 | **E7** | Aliasing: 1 piksel dama deseni + ince metin | Tek aşamalı küçültme headless'ta doğru çıktı; gerçek GPU'da ve NV12 kaynakta tekrar. |
 | **E8** | İçerik matrisi (DRM): Netflix tarayıcı vs Store, Prime, Disney+, YouTube HDR | Test sonucu değil, **ürün destek dokümanı**. Ne reklam edilebileceğini değiştirebilir. |
 | **E10** | Uçtan uca gecikme: 240 fps telefon kamerası, siyah→beyaz flaş | 4.17 ms çözünürlük, bedava, ve **ekran gecikmesi dahil tüm zinciri** ölçüyor. |
@@ -470,19 +481,123 @@ chargeback ve tek yıldız üretir.
 
 ---
 
-## 12. Sıradaki iş
+## 12. Eklenti için plan — devredilen iş
 
-1. **§9'daki yakalama hatasını kapat.** Her şey buna bağlı; motor bir kare
-   görmeden hiçbir ölçüm yapılamaz.
-2. **E6'yı kapat** — kare geliyorsa mimari doğrulanmış olur, gelmiyorsa worker
-   yedeğine geçilir.
-3. **E4 ve E10'u ölç**, sayaçlarla ve telefon kamerasıyla.
-4. **Firmware** (ESP32-S3, `Afx`, RMT DMA, `esp_timer` pacing, interpolasyon,
-   dither, güç sınırlayıcı). Plan `hyperion-port-plan.md`'de tam.
-5. **Kalibrasyon sihirbazı**: şeridi yürüt, kullanıcı köşeleri tıklasın,
-   yerleşimi çıkar. Farklı monitörü olan birine satılabilir yapan şey bu.
-   Kanal sırası sihirbazı (`deriveColorOrder`) yazıldı ve test edildi ama
-   arayüzü yok: şeridi düz renkle yakacak bir kaynak gerekiyor, `PriorityMuxer`
-   var ama onu besleyen yok.
-6. **Web Store yayını.** `desktopCapture` izni incelemeyi uzatır; gerekçe
-   metni hazırlanmalı.
+Aşağıdakiler benim eklenti için yapmayı planladığım işin tamamı, yapılış
+sırasıyla. Her madde **neden** yapıldığını taşıyor, çünkü sırayı değiştirmek
+isteyen bunu bilmeden karar veremez.
+
+### 12.1 Önce bunlar — ölçüm mimariyi değiştirebilir
+
+**(a) E4: arka plan kısıtlaması.** *Bütün mimari buna dayanıyor* ve hâlâ
+sınanmadı. Offscreen doküman hiç render edilmediği için kısıtlanmıyor olmalı;
+"olmalı" yeterli değil. Ölçüm: yakalamayı başlat, Chrome'u tamamen arka plana
+al (tam ekran başka uygulama), 60 s bekle, `capturedFrames` farkını al. Ön plan
+108 fps ölçüldü (§9.3). Arka planda düşerse ürün tarayıcıda olamaz ve plandaki
+yerel yardımcı uygulamaya dönülür — o yüzden **ilk bu**.
+
+**(b) §9.3'teki işleme süresi.** 1080p'de p50 9.00 ms, bütçe 8.33 ms. Sıra:
+
+1. Önce **nerede geçtiğini ölç**, tahmin etme. `processFrame` içinde
+   `createImageBitmap`, decode, örnekleme ayrı ayrı zamanlanmalı; şu an tek bir
+   `processMs` var. Büyük ihtimalle küçültme, ama ölçmeden dokunma.
+2. Küçültme ise: `createImageBitmap` yerine `OffscreenCanvas` + `drawImage`
+   (ikisi de ölçüldü, ikisi de doğru alan ortalaması yapıyor — hangisinin daha
+   ucuz olduğu ölçülmedi), ya da WebGPU ile tek geçişte.
+3. Izgara 128×72; LED başına ~3.7 yatay hücre. 96×54'e inmek maliyeti üçte bir
+   azaltır ve LED başına hâlâ 2.7 hücre bırakır. **Kalite kaybı ölçülmeden
+   yapılmaz** (E7'nin dama deseni bunun için).
+
+**(c) E7: aliasing.** Tek aşamalı küçültme headless'ta matematiksel olarak
+doğru çıktı (1 piksel dama → düz 127). Gerçek GPU'da ve NV12/I420 kaynakta
+tekrar. Bozuksa iki aşamalı küçültmeye dönülür — plan onu zaten anlatıyor.
+
+**(d) E8: DRM içerik matrisi.** Netflix tarayıcı vs Store uygulaması, Prime,
+Disney+, YouTube HDR, mpv, tam ekran oyun, kenarsız oyun, letterbox'lı film.
+Bu bir test değil **ürün destek dokümanı**, ve ne reklam edilebileceğini
+değiştirebilir.
+
+### 12.2 Arayüz ve kullanım — bunlar ürünü satılabilir yapan kısım
+
+**(e) Yakalamanın kalıcılığı.** `streamId` kalıcı yapılamıyor ama
+`getDisplayMedia` seçimi Chrome oturumu boyunca yaşıyor. Yapılacak: Chrome
+açılışında motor kendini kurmalı ve **tek bir tıkla** devam edebilmeli.
+`chrome.runtime.onStartup` ile offscreen dokümanı kur, kullanıcıya bildirimle
+"devam et" sun. "OS ile başlar ve hiç sormaz" tarayıcıda mümkün değil — bunu
+arayüzde dürüstçe söyle, gizleme.
+
+**(f) Yakalama koptuğunda kendine gelme.** Çözünürlük değişimi, monitör
+uyku/uyanma, HDR aç/kapa yakalamayı öldürüyor. Şu an `ended` dinleniyor ve
+duruluyor; yapılması gereken **kullanıcıya haber verip tek tıkla yeniden
+başlatmak**. Gerçek makinelerde bu her gün olacak.
+
+**(g) Panelden kontrol.** Bugün panel yalnız durum okuyor ve yapılandırma
+gönderiyor. Başlat/durdur da panelden yapılabilmeli — ama ekran seçici
+kullanıcı tarafında açılacağı için akış: panel → sw → offscreen → seçici.
+
+**(h) Kalibrasyon sihirbazı.** *Farklı monitörü olan birine satılabilir yapan
+şey bu.* Şeridi yürüt (tek LED 0→107), kullanıcı köşeleri tıklasın, yerleşimi
+çıkar. Panel tarafında yerleşim editörü ve keystone köşeleri hazır; eksik olan
+şeridi yürüten kaynak.
+
+**(i) Kanal sırası sihirbazı.** `deriveColorOrder` yazıldı ve test edildi ama
+arayüzü yok: şeridi düz kırmızı/yeşil ile yakıp kullanıcıya "ne gördün" diye
+sormak gerekiyor. (h) ile aynı eksiği paylaşıyor.
+
+**(j) (h) ve (i)'nin ortak önkoşulu: bir test deseni kaynağı.** `PriorityMuxer`
+var ama onu besleyen yok. `ambiflux/selftest` zaten motoru sentetik bir
+kaynakla besliyor — aynı yol düz renk ve tek-LED yürüyüşü için kullanılmalı.
+**Bu üçünü birlikte yap**, ayrı ayrı değil.
+
+### 12.3 Kalite — hat zaten çalışırken
+
+**(k) Yumuşatma sabitleri arayüzde.** Üç profil: Cinema 30/120 Hz 40/200 ms,
+Balanced 60/120 Hz 15/90 ms, Competitive 120/120 Hz 6/30 ms. Motor zaten
+asimetrik yumuşatmayı destekliyor; eksik olan yapılandırma ve arayüz.
+`EngineConfig` bu yüzden yumuşatmayı henüz taşımıyor — okunmayan bir alan
+ürünün tutmadığı bir söz olurdu.
+
+**(l) Renk düzeltme arayüzü.** `adjust.ts` 8 aşamalı düzeltme yapıyor
+(beyaz dengesi, doygunluk, parlaklık, Kelvin, taper) ve hiçbiri panelden
+ayarlanamıyor. LED şeritleri yeşil ağırlıklı; beyaz dengesi müşterilerin ilk
+isteyeceği şey.
+
+**(m) Kenar algılama modu.** `border.ts` dört mod destekliyor;
+yapılandırılabilir değil. 2.39:1 film izlerken üst/alt LED'lerin ölmemesi bu
+modülün işi ve ürünün en çok fark edilecek özelliklerinden biri.
+
+**(n) Telemetri paneli.** Dört sayaç panelde gösteriliyor ama grafik yok.
+p50/p99 zaman serisi, hangi aşamanın bozulduğunu anlık gösterir.
+
+### 12.4 Dağıtım
+
+**(o) Web Store yayını.** `desktopCapture` izni kalktı (§9.2), geriye
+`offscreen` ve `storage` kaldı — inceleme için iyi bir yer. Gerekçe metni
+`getDisplayMedia` kullanımını ve **ekran görüntüsünün hiçbir yere
+gönderilmediğini** açıkça söylemeli.
+
+**(p) Sürüm ve güncelleme.** `manifest.json` sürümü `data/version.ts` ile
+elle eşleşiyor; tek kaynaktan türetilmeli. Web Store dışı dağıtım için
+`update_url` gerekir.
+
+**(q) Gizlilik metni.** Ekranını izleyen bir ürün için "ekranını hiç
+görmüyoruz" gerçek bir satış argümanı — ve doğru: kareler yalnız offscreen
+dokümanda yaşıyor, hiçbir ağ isteği yapılmıyor. Bunu ölçülebilir şekilde
+söyle (ağ izinleri manifest'te yok).
+
+### 12.5 Eklentinin dışında ama ona bağlı
+
+**(r) Firmware** (ESP32-S3, `Afx`, RMT DMA, `esp_timer` pacing, interpolasyon,
+dither, güç sınırlayıcı). Tam plan `hyperion-port-plan.md`'de. Eklenti tarafı
+hazır: `Afx` çerçeveleme 1018 karede sıfır redle doğrulandı.
+
+**(s) E10: uçtan uca gecikme.** 240 fps telefon kamerası, monitör ve LED'ler
+aynı karede, siyah→beyaz flaş. Firmware gelince, ve **ekran gecikmesi dahil
+tüm zinciri** ölçen tek yöntem bu.
+
+### Sıra değiştirmek isteyen için
+
+(a) her şeyden önce gelir: sonucu olumsuzsa 12.2 ve 12.3'ün tamamı boşa gider.
+(b) ondan sonra gelir çünkü ölçülebilir bir bütçe aşımı ve gecikmesi ucuz.
+12.2 ürünü satılabilir yapan kısım; 12.3 onu iyi yapan kısım; ikisinin sırası
+değiştirilebilir. (j) kendinden sonraki ikisinin önkoşulu, atlanamaz.

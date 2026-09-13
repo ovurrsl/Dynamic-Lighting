@@ -23,9 +23,9 @@ import {
   type EngineConfig,
   type LayoutConfig
 } from '#lib/engine/config'
-import { CORNERS, LAYOUT_DEFAULTS, type Corner } from '#lib/engine/layout'
+import { CORNERS, LAYOUT_DEFAULTS, NO_KEYSTONE, type Corner, type Keystone } from '#lib/engine/layout'
 import { COLOR_ORDERS, type ColorOrder } from '#lib/engine/order'
-import { frameAspect, wireOrderColor } from '#lib/preview'
+import { CORNER_ORDER, frameAspect, isDefaultKeystone, wireOrderColor } from '#lib/preview'
 import type { LedRect } from '#lib/engine/types'
 import { fetchConfig, saveConfig } from '#lib/extension-client'
 
@@ -137,6 +137,9 @@ export function LayoutCard ({ onConfig }: { onConfig?: (config: EngineConfig) =>
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [advanced, setAdvanced] = useState(false)
+  const [editingCorners, setEditingCorners] = useState(false)
+  const [screen, setScreen] = useState<MediaStream | null>(null)
+  const video = useRef<HTMLVideoElement>(null)
 
   /**
    * Where the starting configuration comes from, in order: the extension, then
@@ -214,6 +217,58 @@ export function LayoutCard ({ onConfig }: { onConfig?: (config: EngineConfig) =>
     setNotice('Varsayılana döndü. Motora göndermek için Uygula.')
   }, [])
 
+  const keystone: Keystone = (layout.kind === 'classic' ? layout.keystone : undefined) ?? NO_KEYSTONE
+
+  const moveCorner = useCallback((corner: (typeof CORNER_ORDER)[number], point: { x: number, y: number }) => {
+    setNotice(null)
+    setDraft((current) => {
+      if (current.layout.kind !== 'classic') return current
+      const from = current.layout.keystone ?? NO_KEYSTONE
+      return { ...current, layout: { ...current.layout, keystone: { ...from, [corner]: point } } }
+    })
+  }, [])
+
+  /**
+   * The screen behind the frame, so the corners can be dragged onto what is
+   * actually on the monitor instead of onto an empty rectangle.
+   *
+   * This capture is the PANEL's, not the engine's: a visible tab may capture
+   * freely, and the throttling that forced the engine into an extension only
+   * bites a continuous background capture. It runs while this card is open and
+   * stops when it is switched off - and DRM-protected video captures black
+   * here for the same reason it does everywhere else.
+   */
+  const showScreen = useCallback(async () => {
+    try {
+      const media = navigator.mediaDevices
+      if (media?.getDisplayMedia === undefined) {
+        setNotice('Bu tarayıcı ekran paylaşımını desteklemiyor.')
+        return
+      }
+      const stream = await media.getDisplayMedia({ video: { frameRate: 10 }, audio: false })
+      // Chrome's own "stop sharing" bar ends the track without telling us
+      // otherwise; without this the button would keep claiming it is on.
+      stream.getVideoTracks()[0]?.addEventListener('ended', () => { setScreen(null) })
+      setScreen(stream)
+    } catch (error) {
+      // Cancelling the picker is a decision, not a failure.
+      const name = error instanceof Error ? error.name : ''
+      if (name !== 'NotAllowedError' && name !== 'AbortError') {
+        setNotice(`Ekran alınamadı: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const element = video.current
+    if (element === null) return
+    element.srcObject = screen
+    if (screen !== null) void element.play().catch(() => {})
+    return () => {
+      if (screen !== null) for (const track of screen.getTracks()) track.stop()
+    }
+  }, [screen])
+
   const aspectRatio = frameAspect(layout)
 
   return (
@@ -227,13 +282,66 @@ export function LayoutCard ({ onConfig }: { onConfig?: (config: EngineConfig) =>
       </Card.Header>
       <Card.Content className="flex flex-col gap-5">
         {shown !== null && (
-          <LedFrame
-            aspectRatio={aspectRatio}
-            colorAt={wireOrderColor}
-            label={`${shown.rects.length} LED'in örnekleme bölgeleri`}
-            outlineFirst
-            rects={shown.rects}
-          />
+          <div className="relative overflow-hidden rounded-lg bg-black/80">
+            <video
+              className={`absolute inset-0 size-full object-fill ${screen === null ? 'hidden' : ''}`}
+              muted
+              playsInline
+              ref={video}
+            />
+            <LedFrame
+              aspectRatio={aspectRatio}
+              colorAt={wireOrderColor}
+              keystone={editingCorners ? keystone : undefined}
+              label={`${shown.rects.length} LED'in örnekleme bölgeleri`}
+              onKeystone={editingCorners ? moveCorner : undefined}
+              outlineFirst
+              rects={shown.rects}
+              transparent
+            />
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            size="sm"
+            variant="secondary"
+            onPress={() => { screen === null ? void showScreen() : setScreen(null) }}
+          >
+            {screen === null ? 'Ekranı göster' : 'Ekranı bırak'}
+          </Button>
+          {layout.kind === 'classic' && (
+            <Switch isSelected={editingCorners} size="sm" onChange={setEditingCorners}>
+              <Switch.Content>
+                <Switch.Control>
+                  <Switch.Thumb />
+                </Switch.Control>
+                Köşeleri düzenle
+              </Switch.Content>
+            </Switch>
+          )}
+          {layout.kind === 'classic' && !isDefaultKeystone(layout.keystone) && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onPress={() => {
+                setNotice(null)
+                setDraft((current) => current.layout.kind === 'classic'
+                  ? { ...current, layout: { ...current.layout, keystone: NO_KEYSTONE } }
+                  : current)
+              }}
+            >
+              Köşeleri sıfırla
+            </Button>
+          )}
+        </div>
+        {editingCorners && (
+          <p className="text-xs text-muted">
+            Köşeleri sürükle, ya da birini seçip ok tuşlarıyla oynat (Shift ile on
+            kat). Şerit monitörün kenarına tam oturmuyorsa — bir tarafta içeride
+            kalıyorsa — çerçeveyi ona göre daralt. Ekranı gösterirsen köşeleri
+            gerçekte ne olduğuna bakarak hizalayabilirsin.
+          </p>
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-3 text-sm">

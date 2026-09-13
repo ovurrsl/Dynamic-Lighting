@@ -16,6 +16,7 @@
     "keygen": "node scripts/keygen.mjs",
     "migrate": "node scripts/migrate.mjs",
     "build:extension": "node scripts/build-extension.mjs",
+    "pack:extension": "node scripts/pack-extension.mjs",
     "typecheck:extension": "tsc -p extension --noEmit"
   },
   "dependencies": {

@@ -40,3 +40,7 @@ extension/dist/
 
 # Scratch tests written while probing a module by hand; never part of the suite that ships.
 test/_probe*
+
+# Extension release package produced by `npm run pack:extension`
+extension/*.zip
+extension/.pack/

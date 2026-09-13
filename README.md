@@ -86,11 +86,20 @@ dolayısıyla hiç kısıtlanmıyor. Ölçümü ve alternatiflerin neden kaybett
 ```bash
 npm run typecheck:extension   # DOM + chrome + Web Serial tipleriyle
 npm run build:extension       # esbuild → extension/dist
+npm run pack:extension        # derler + extension/ambiflux-extension.zip üretir
 ```
 
 Sonra Chrome'da `chrome://extensions` → **Geliştirici modu** → **Paketlenmemiş
 öğe yükle** → `extension/dist`. Manifest'teki `key` sayesinde eklenti kimliği
 her makinede aynıdır (`data/extension.ts`), panel onu bu kimlikle bulur.
+
+> **`extension/dist` depoda yok** — derleme çıktısı, `.gitignore`'da. Yeni bir
+> klonda önce `npm install && npm run build:extension` çalıştırmak gerekiyor;
+> aksi halde yüklenecek bir şey olmaz. Doğrudan `extension/` klasörünü
+> seçersen Chrome **"Could not load background script 'sw.js'"** der — orada
+> yalnız TypeScript kaynağı var, derlenmiş `sw.js` `dist/` içinde. Başka birine
+> göndermek için `npm run pack:extension`: kaynak haritası içermeyen, açılıp
+> doğrudan yüklenebilen bir zip üretir.
 
 Kullanım, eklenti simgesinden:
 

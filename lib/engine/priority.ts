@@ -145,6 +145,8 @@ export class PriorityMuxer {
   private manual: number | null = null
   /** What the last tick() decided; what the LEDs are showing. */
   private winner: Winner | null = null
+  /** True while listeners are being called; a tick() from inside one is refused. */
+  private dispatching = false
   private readonly clock: Clock
 
   // Not a parameter property: Node's type stripping runs the tests without a
@@ -165,7 +167,9 @@ export class PriorityMuxer {
    * priority keeps the previous input and timeout (:199-227, "Reuse input"), so
    * a new effect started on the priority of an old one shows the old effect's
    * last frame until the new one delivers. Here the slot starts clean: the old
-   * input is gone, and `registeredAt` and the duration restart from now.
+   * input is gone, and `registeredAt` and the duration restart from now. The
+   * constraint that buys: re-register and the first setInput() must land in
+   * the same frame, or the next-best source shows for the frame in between.
    */
   register (priority: number, options: SourceOptions): void {
     checkPriority(priority)
@@ -201,6 +205,7 @@ export class PriorityMuxer {
     if (source === undefined) {
       throw new Error(`muxer: setInput on unregistered priority ${priority}; register it first (it may have timed out)`)
     }
+    checkInput(input)
     source.input = input
     source.lastSeen = this.clock()
   }
@@ -208,10 +213,14 @@ export class PriorityMuxer {
   /**
    * Removes one source; returns whether there was one. The background can be
    * removed too, because it is a real source here and not Hyperion's fixed
-   * sentinel (:357 refuses to clear 255). The removal shows at the next tick().
+   * sentinel (:357 refuses to clear 255). The removal shows at the next tick();
+   * a pin on the removed priority is released at once, so that a source
+   * registered at that priority before the next frame does not inherit it.
    */
   clear (priority: number): boolean {
-    return this.inputs.delete(priority)
+    const removed = this.inputs.delete(priority)
+    if (removed && this.manual === priority) this.manual = null
+    return removed
   }
 
   /**
@@ -219,12 +228,14 @@ export class PriorityMuxer {
    * "back to the background", and a capture that survived it would win again
    * on the next frame. Hyperion's non-forced clearAll (:377-385) spares
    * grabbers and its background slot 254 because its grabbers never re-register
-   * on their own; ours are expected to check has() before each frame.
+   * on their own; ours are expected to check has() before each frame. A pin on
+   * anything but the background is released with its source.
    */
   clearAll (): void {
     for (const priority of this.inputs.keys()) {
       if (priority !== BACKGROUND_PRIORITY) this.inputs.delete(priority)
     }
+    if (this.manual !== null && this.manual !== BACKGROUND_PRIORITY) this.manual = null
   }
 
   /**
@@ -235,6 +246,8 @@ export class PriorityMuxer {
    * Once pinned, the pin holds for as long as the source stays registered and
    * is released the moment it is gone (:452-461) - cleared, expired or timed
    * out - so the LEDs never sit dark waiting for a source that will not return.
+   * Pinning the background is allowed and is the one case where 255 beats a
+   * live source: it is how "show me the background" is expressed.
    */
   setManual (priority: number | null): void {
     if (priority === null) {
@@ -288,9 +301,19 @@ export class PriorityMuxer {
    * Order mirrors updatePriorities (:388-484): sweep first, so nothing that has
    * already died can win this frame; honour the pin second; otherwise take the
    * lowest number. `now` defaults to the injected clock and exists so a caller
-   * that already read the clock for this frame can pass the same instant.
+   * that already read the clock for this frame can pass the same instant - it
+   * must be a reading of THAT clock, since `lastSeen` is stamped from it and a
+   * timestamp from another timebase would silently break every deadline. A
+   * non-finite instant is refused: NaN compares false against every deadline
+   * and would keep an overdue source alive for ever, Infinity would sweep
+   * exactly the sources that were promised to be endless.
+   *
+   * Listeners must not tick() from inside a change callback; a re-entrant
+   * tick() throws rather than hand later listeners two edges in the wrong order.
    */
   tick (now: number = this.clock()): Winner | null {
+    if (!Number.isFinite(now)) throw new RangeError(`muxer: tick needs a finite instant, got ${now}`)
+    if (this.dispatching) throw new Error('muxer: tick() called from inside an onChange listener')
     for (const [priority, source] of this.inputs) {
       if (isDead(source, now)) this.inputs.delete(priority)
     }
@@ -317,18 +340,48 @@ export class PriorityMuxer {
     const previous = this.winner
     const next = snapshot(previous, chosen)
     this.winner = next
-    if (!sameWinner(previous, next)) {
-      // Copy first: a listener may unsubscribe, or subscribe another, mid-loop.
-      for (const listener of [...this.listeners]) listener({ previous, current: next })
-    }
+    if (!sameWinner(previous, next)) this.dispatch({ previous, current: next })
     return next
+  }
+
+  /**
+   * Delivers one edge to every listener subscribed when it began. The winner
+   * is already committed, so an edge that fails to reach a listener is never
+   * re-delivered - and for the device layer the null <-> non-null edge is
+   * "switch the LEDs on". Every listener therefore runs even if an earlier one
+   * throws; the first error is rethrown once all of them have seen the edge.
+   */
+  private dispatch (change: WinnerChange): void {
+    // Copy first: a listener may unsubscribe, or subscribe another, mid-loop.
+    const listeners = [...this.listeners]
+    let failure: unknown
+    let failed = false
+    this.dispatching = true
+    try {
+      for (const listener of listeners) {
+        try {
+          listener(change)
+        } catch (error) {
+          if (!failed) {
+            failed = true
+            failure = error
+          }
+        }
+      }
+    } finally {
+      this.dispatching = false
+    }
+    if (failed) throw failure
   }
 }
 
 /**
  * A deadline is the first instant the source is gone, for both kinds of limit,
  * so the two can never disagree at the boundary. Hyperion uses the same
- * inclusive test for its single timeout (:411, `timeoutTime_ms <= now`).
+ * inclusive test for its single timeout (:411, `timeoutTime_ms <= now`). Read
+ * literally, "older than timeoutMs" would be strict and keep the source one
+ * more millisecond; the inclusive rule is chosen deliberately, for that parity
+ * and for one rule shared by both limits.
  *
  * The inactivity limit only starts counting once the source has delivered:
  * silence before the first frame is not a stall, and Hyperion likewise never
@@ -388,13 +441,43 @@ function checkComponent (component: unknown): void {
 }
 
 /**
- * Absent means endless; there is no second spelling of it. Hyperion's port plan
- * lists two defects (section 11, #7 and #8) that are exactly a schema default
- * and a code fallback disagreeing about the same knob.
+ * Absent means endless; there is no second spelling of it, so `Infinity` is
+ * refused rather than accepted as a synonym. A limit is at least one
+ * millisecond: Hyperion's is integer milliseconds (:244), and a positive span
+ * below the clock's resolution (Number.MIN_VALUE passes a `> 0` test) would
+ * make the deadline the instant of the last frame itself, killing the source
+ * on the tick after its own feed.
  */
 function checkSpan (name: string, ms: number | undefined): void {
   if (ms === undefined) return
-  if (!(Number.isFinite(ms) && ms > 0)) {
-    throw new RangeError(`muxer: ${name} must be a positive finite number of milliseconds or absent, got ${ms}`)
+  if (!(Number.isFinite(ms) && ms >= 1)) {
+    throw new RangeError(`muxer: ${name} must be a finite number of milliseconds of at least 1, or absent, got ${ms}`)
   }
+}
+
+/**
+ * Runtime shape check for JavaScript callers, matching what register() does
+ * for its options: an `undefined` input would pass the `!== null` liveness
+ * test and become a Winner the sampler cannot read, a `null` would silently
+ * un-deliver the source, and a wrong `kind` would reach the pipeline as is.
+ */
+function checkInput (input: unknown): void {
+  if (typeof input !== 'object' || input === null) {
+    throw new TypeError(`muxer: input must be a SourceInput object, got ${String(input)}`)
+  }
+  const kind = (input as { kind?: unknown }).kind
+  if (kind === 'grid') {
+    const grid = (input as { grid?: unknown }).grid
+    if (typeof grid !== 'object' || grid === null || !((grid as { data?: unknown }).data instanceof Float32Array)) {
+      throw new TypeError('muxer: a grid input needs a LinearGrid with Float32Array data')
+    }
+    return
+  }
+  if (kind === 'colors') {
+    if (!((input as { colors?: unknown }).colors instanceof Float32Array)) {
+      throw new TypeError('muxer: a colors input needs a Float32Array')
+    }
+    return
+  }
+  throw new TypeError(`muxer: input kind must be 'grid' or 'colors', got ${String(kind)}`)
 }

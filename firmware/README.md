@@ -30,6 +30,7 @@ Host'ta koşuyor, o yüzden test ediliyor:
 | `afx_protocol.h` | Ada/Awa/Afx/AxC ayrıştırıcı, Fletcher, resync | 13 |
 | `afx_render.h` | interpolasyon, sigma-delta dither, güç sınırlayıcı | 17 |
 | `afx_idle.h` | host var/yok, çapraz geçişler, boşta gökkuşağı | 7 |
+| `afx_patterns.h` | tezgâh koşumu: yürüyüş, kanallar, rampa, beyaz, flaş | 8 |
 
 `src/main.cpp` — yalnız kablolama. Test edilemediği için mümkün olduğunca
 karar içermiyor.
@@ -49,6 +50,26 @@ Tasarımın gerekçeleri `../docs/hyperion-port-plan.md`'de. Kısaca:
   bayat kareyi kendiliğinden düşürüyor, yırtmıyor.
 - **LED görevi core 1'de yalnız.** ESP32'de RMT/I2S bozulmasının klasik
   sebebi aynı çekirdeğe düşen başka iş.
+
+## Tezgâh koşumu — kartı yakınca ilk yapılacak şey
+
+Açılışta, herhangi bir host konuşmadan önce şerit beş deseni sırayla gösteriyor.
+Gökkuşağından çok daha iyi bir on beş saniye: yalnız "kart canlı" demiyor,
+kabloyu doğruluyor. Bilgisayara takmak dışında hiçbir şey gerekmiyor.
+
+| Desen | Ne kanıtlıyor |
+|---|---|
+| **Yürüyüş** (tek LED, 0→n-1) | İndeks sırası ve **fiziksel köşe indeksleri**. Işık yanlış yerde köşe dönüyorsa kenar sayıları yanlış ve bunu aşağıda hiçbir şey düzeltemez. |
+| **Kanallar** (düz kırmızı, yeşil, mavi) | Kanal sırası. Kırmızı denince yeşil yanıyorsa şerit GRB; tahmin etmeden öğrenmenin tek yolu. |
+| **Rampa** (21 adım gri) | Ezilmiş alt uç, monoton olmayan eğri, çalışmayan dither. Başka hiçbir yerde görünmüyorlar. |
+| **Beyaz** (tam) | Güç sınırlayıcının devreye girdiği, gözle. 108 LED'de ~6.5 A. |
+| **Flaş** (1 Hz tüm şerit) | 240 fps telefon kamerasıyla uçtan uca gecikme ölçümünün deseni (E10). |
+
+Desenler dither'dan ve interpolasyondan geçmiyor: bunlar bir ölçüm, ve
+yumuşatılmış bir ölçüm yumuşatıcıyı ölçer.
+
+Bir host konuşmaya başladığı an tezgâh koşumu biter. Tekrar çalıştırmak için
+`AxC` kontrol karesi, TLV tipi `0x02`.
 
 ## Kartta ölçülecekler
 

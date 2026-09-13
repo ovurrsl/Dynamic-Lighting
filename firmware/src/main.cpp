@@ -5,6 +5,7 @@
 #include <atomic>
 
 #include "afx_idle.h"
+#include "afx_patterns.h"
 #include "afx_protocol.h"
 #include "afx_render.h"
 
@@ -76,6 +77,21 @@ afx::Dither<kMaxLeds * 3> dither;
 afx::PowerLimiter limiter;
 afx::IdleState idleState;
 
+/**
+ * The bench run, shown once at boot before any host has spoken.
+ *
+ * This replaces the rainbow for the first fifteen seconds, and it is a much
+ * better use of them: the rainbow only says "the board is alive", while this
+ * says the index order is right, the corners are where the layout thinks they
+ * are, the channel order is RGB, the bottom end is not crushed, and the power
+ * limiter engages. All of it with nothing but a USB cable.
+ *
+ * A host taking over cancels it; `ambiflux/AxC` type 0x02 starts it again.
+ */
+afx::Bench bench;
+bool benchRunning = true;
+uint32_t benchStartMs = 0;
+
 struct Telemetry {
   uint32_t framesRx = 0;
   uint32_t framesShown = 0;
@@ -112,6 +128,10 @@ void handleControl (const uint8_t *tlv, size_t length) {
     const uint8_t type = tlv[at];
     const uint8_t size = tlv[at + 1];
     if (at + 2 + size > length) break;
+    if (type == 0x02) {                       // run the bench sequence
+      benchRunning = true;
+      benchStartMs = millis();
+    }
     if (type == 0x01) {                       // version query
       Serial.printf("{\"axc\":\"version\",\"v\":\"%s\",\"maxLeds\":%u}\n",
                     AMBIFLUX_VERSION, static_cast<unsigned>(kMaxLeds));
@@ -187,6 +207,10 @@ void render () {
     interpolator.arrived(nowUs);
   }
 
+  // A host always wins: the moment one is driving, the bench is over.
+  if (benchRunning && idleState.hostActive(nowMs)) benchRunning = false;
+  if (benchRunning && bench.at(nowMs - benchStartMs, ledCount) == afx::Pattern::None) benchRunning = false;
+
   const uint32_t t = interpolator.progress(nowUs);
   const uint16_t mix = idleState.hostMix(nowMs);
 
@@ -194,14 +218,24 @@ void render () {
   static uint8_t duty[kMaxLeds * 3];
   for (uint16_t led = 0; led < ledCount; led++) {
     uint8_t idleR = 0, idleG = 0, idleB = 0;
-    if (mix < 256) idleState.idlePixel(led, ledCount, nowMs, idleR, idleG, idleB);
+    if (!benchRunning && mix < 256) idleState.idlePixel(led, ledCount, nowMs, idleR, idleG, idleB);
+    uint8_t benchR = 0, benchG = 0, benchB = 0;
+    if (benchRunning) bench.pixel(nowMs - benchStartMs, led, ledCount, benchR, benchG, benchB);
+
     for (uint8_t channel = 0; channel < 3; channel++) {
       const uint16_t at = static_cast<uint16_t>(led * 3 + channel);
-      const uint16_t host = afx::glide(current[at], target[at], t);
-      const uint16_t idle = static_cast<uint16_t>((channel == 0 ? idleR : channel == 1 ? idleG : idleB) * 257);
-      const uint16_t blended = static_cast<uint16_t>(
-          (static_cast<uint32_t>(host) * mix + static_cast<uint32_t>(idle) * (256 - mix)) >> 8);
-      const uint8_t byte = dither.step(at, blended);
+      uint8_t byte;
+      if (benchRunning) {
+        // Straight through, no dither and no interpolation: these patterns are
+        // a measurement, and smoothing one is measuring the smoother.
+        byte = channel == 0 ? benchR : channel == 1 ? benchG : benchB;
+      } else {
+        const uint16_t host = afx::glide(current[at], target[at], t);
+        const uint16_t idle = static_cast<uint16_t>((channel == 0 ? idleR : channel == 1 ? idleG : idleB) * 257);
+        const uint16_t blended = static_cast<uint16_t>(
+            (static_cast<uint32_t>(host) * mix + static_cast<uint32_t>(idle) * (256 - mix)) >> 8);
+        byte = dither.step(at, blended);
+      }
       duty[at] = byte;
       dutySum += byte;
     }
@@ -244,6 +278,7 @@ void reportTelemetry (uint32_t nowMs) {
       static_cast<unsigned long>(stats.countMismatch),
       static_cast<double>(limiter.quantised()),
       idleState.hostActive(nowMs) ? 1 : 0,
+      benchRunning ? 1 : 0,
       static_cast<unsigned long>(millis()));
 }
 
@@ -253,6 +288,7 @@ void setup () {
   Serial.begin(921600);
   strip.Begin();
   strip.Show();
+  benchStartMs = millis();
 
   // The serial reader runs on core 0 so core 1 belongs to the LEDs alone.
   xTaskCreatePinnedToCore(serialTask, "afx-serial", 4096, nullptr, 2, nullptr, 0);

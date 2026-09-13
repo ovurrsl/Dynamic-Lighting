@@ -3,17 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Card, Input, Label, Surface, TextField } from '@heroui/react'
 
+import { parseEngineConfig, serialiseEngineConfig, type EngineConfig } from '#lib/engine/config'
 import {
-  ApiError,
-  deletePreset,
-  listPresets,
-  readStoredToken,
-  savePreset
-} from '#lib/client-api'
-import { parseEngineConfig, type EngineConfig } from '#lib/engine/config'
-import {
+  exportProfiles,
+  importProfiles,
   loadProfiles,
-  mergeProfiles,
   profileId,
   removeProfile,
   storeProfiles,
@@ -24,10 +18,10 @@ import {
 /**
  * Named rigs: save the layout you are on, come back to it later.
  *
- * Local first. The panel opens without a licence, so profiles work without one
- * too; what a licence buys is carrying them between machines. Building it the
- * other way - the feature missing until you pay - would make the free panel
- * worse at the thing it is for.
+ * Everything stays in this browser. There is no account to sync to and there
+ * will not be one - AmbiFlux is open source and runs entirely client side, so
+ * the honest way to move a profile between machines is a file you own, not a
+ * row on someone's server. Export writes one; import reads it back.
  *
  * Nothing here applies a profile by itself. Loading one hands it upward and the
  * layout card takes it as a draft, so the same rule holds as everywhere else:
@@ -44,56 +38,17 @@ export function ProfilesCard ({
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [name, setName] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [synced, setSynced] = useState(false)
+  const file = useRef<HTMLInputElement>(null)
 
   const latest = useRef(profiles)
   latest.current = profiles
 
-  /**
-   * Local profiles first so the list is there immediately, then the server's if
-   * there is a licence. Reading storage happens after mount, never during
-   * render: the server has none, and the two would disagree on first paint.
-   */
+  // Read after mount, never during render: the server has no localStorage and
+  // the two would disagree on first paint.
   useEffect(() => {
-    let cancelled = false
-    const local = loadProfiles()
-    setProfiles(local.profiles)
-    if (local.problem !== undefined) setNotice(local.problem)
-
-    const token = readStoredToken()
-    if (token === null) return
-    void listPresets(token).then(
-      (presets) => {
-        if (cancelled) return
-        const remote: Profile[] = []
-        for (const preset of presets) {
-          // The server stores an opaque payload; an older version's is not
-          // ours to trust just because it came back from our own API.
-          try {
-            remote.push({
-              id: preset.id,
-              name: preset.name,
-              config: parseEngineConfig(preset.payload),
-              updatedAt: preset.updatedAt
-            })
-          } catch { /* skipped, like an unreadable local one */ }
-        }
-        const merged = mergeProfiles(latest.current, remote)
-        setProfiles(merged)
-        storeProfiles(merged)
-        setSynced(true)
-      },
-      (error: unknown) => {
-        if (cancelled) return
-        // A licence that the server will not honour is worth saying once; it
-        // is not a reason to hide the local profiles.
-        setNotice(error instanceof ApiError && error.status === 401
-          ? 'Lisans doğrulanamadı; profiller yalnız bu tarayıcıda.'
-          : null)
-      }
-    )
-    return () => { cancelled = true }
+    const stored = loadProfiles()
+    setProfiles(stored.profiles)
+    if (stored.problem !== undefined) setNotice(stored.problem)
   }, [])
 
   const persist = useCallback((next: Profile[]): void => {
@@ -105,42 +60,40 @@ export function ProfilesCard ({
   const save = useCallback(() => {
     const trimmed = name.trim()
     if (trimmed === '') { setNotice('Profile bir ad ver.'); return }
-    setNotice(null)
-    setBusy(true)
-
     const existing = latest.current.find((profile) => profile.name === trimmed)
     const id = existing?.id ?? profileId(trimmed, latest.current.map((profile) => profile.id))
-    const profile: Profile = { id, name: trimmed, config: current, updatedAt: new Date().toISOString() }
-    persist(upsertProfile(latest.current, profile))
+    persist(upsertProfile(latest.current, {
+      id, name: trimmed, config: current, updatedAt: new Date().toISOString()
+    }))
     setName('')
-
-    const token = readStoredToken()
-    if (token === null) {
-      setBusy(false)
-      setNotice(existing === undefined ? 'Kaydedildi (bu tarayıcıda).' : 'Güncellendi (bu tarayıcıda).')
-      return
-    }
-    void savePreset(token, id, trimmed, profile.config as unknown as Record<string, unknown>).then(
-      () => { setBusy(false); setSynced(true); setNotice('Kaydedildi ve hesaba eşitlendi.') },
-      (error: unknown) => {
-        setBusy(false)
-        // The local copy is already saved; only the sync failed.
-        setNotice(`Kaydedildi, ama hesaba eşitlenemedi: ${error instanceof Error ? error.message : String(error)}`)
-      }
-    )
+    setNotice(existing === undefined ? 'Kaydedildi.' : 'Güncellendi.')
   }, [current, name, persist])
 
-  const drop = useCallback((profile: Profile) => {
+  /**
+   * Writes every profile to a file. A blob URL rather than a data: URL because
+   * a rig with many profiles outgrows what some browsers accept in a data URL,
+   * and it is revoked straight after so the blob is not held for the session.
+   */
+  const download = useCallback(() => {
+    const blob = new Blob([exportProfiles(latest.current)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'ambiflux-profiller.json'
+    link.click()
+    URL.revokeObjectURL(url)
+    setNotice(`${latest.current.length} profil dosyaya yazıldı.`)
+  }, [])
+
+  const upload = useCallback(async (chosen: File) => {
     setNotice(null)
-    persist(removeProfile(latest.current, profile.id))
-    const token = readStoredToken()
-    if (token === null) return
-    void deletePreset(token, profile.id).catch((error: unknown) => {
-      // 404 means the server never had it - a local-only profile - which is
-      // not a failure worth showing.
-      if (error instanceof ApiError && error.status === 404) return
-      setNotice(`Silindi, ama hesaptan kaldırılamadı: ${error instanceof Error ? error.message : String(error)}`)
-    })
+    const text = await chosen.text()
+    const outcome = importProfiles(text, latest.current)
+    if (outcome.profiles === null) { setNotice(`Dosya okunamadı: ${outcome.problem}`); return }
+    persist(outcome.profiles)
+    setNotice(outcome.problem === undefined
+      ? `${outcome.added} profil eklendi.`
+      : `${outcome.added} profil eklendi. ${outcome.problem}`)
   }, [persist])
 
   return (
@@ -158,9 +111,7 @@ export function ProfilesCard ({
             <Label>Profil adı</Label>
             <Input placeholder="Masaüstü" />
           </TextField>
-          <Button isDisabled={busy} onPress={save}>
-            {busy ? 'Kaydediliyor…' : 'Şu ankini kaydet'}
-          </Button>
+          <Button onPress={save}>Şu ankini kaydet</Button>
         </div>
 
         {profiles.length === 0
@@ -185,10 +136,23 @@ export function ProfilesCard ({
                       </div>
                     </div>
                     <div className="flex gap-2">
-                      <Button size="sm" variant="secondary" onPress={() => { onLoad(profile.config, profile.name); setNotice(`"${profile.name}" editöre yüklendi. Şeride göndermek için Uygula.`) }}>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onPress={() => {
+                          onLoad(profile.config, profile.name)
+                          setNotice(`"${profile.name}" editöre yüklendi. Şeride göndermek için Uygula.`)
+                        }}
+                      >
                         Yükle
                       </Button>
-                      <Button size="sm" variant="secondary" onPress={() => drop(profile)}>Sil</Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onPress={() => { setNotice(null); persist(removeProfile(latest.current, profile.id)) }}
+                      >
+                        Sil
+                      </Button>
                     </div>
                   </Surface>
                 </li>
@@ -196,14 +160,34 @@ export function ProfilesCard ({
             </ul>
             )}
 
+        <div className="flex flex-wrap gap-2">
+          <Button isDisabled={profiles.length === 0} size="sm" variant="secondary" onPress={download}>
+            Dosyaya aktar
+          </Button>
+          <Button size="sm" variant="secondary" onPress={() => file.current?.click()}>
+            Dosyadan al
+          </Button>
+          <input
+            accept="application/json,.json"
+            className="hidden"
+            ref={file}
+            type="file"
+            onChange={(event) => {
+              const chosen = event.target.files?.[0]
+              // Cleared so choosing the same file twice fires again.
+              event.target.value = ''
+              if (chosen !== undefined) void upload(chosen)
+            }}
+          />
+        </div>
+
         {notice !== null && (
           <Surface className="rounded-xl p-3 text-sm" variant="secondary">{notice}</Surface>
         )}
 
         <p className="text-xs text-muted">
-          {synced
-            ? 'Profiller hesabına eşitleniyor, yani başka bir makinede de duruyorlar.'
-            : 'Profiller bu tarayıcıda saklanıyor. Lisans eklersen hesabına eşitlenir ve başka makinelerde de çıkar.'}
+          Profiller bu tarayıcıda saklanıyor ve hiçbir yere gönderilmiyor. Başka
+          bir makineye taşımak için dosyaya aktar.
         </p>
       </Card.Content>
     </Card>

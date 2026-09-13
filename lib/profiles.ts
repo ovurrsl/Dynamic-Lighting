@@ -12,10 +12,10 @@ import {
  * wants different band depths for films and for games. Without somewhere to
  * put them, every change overwrites the last one.
  *
- * Local first, and that is a product decision rather than a limitation. The
- * panel opens without a licence, so profiles have to work without one too;
- * what a licence buys is carrying them between machines. A feature that is
- * missing until you pay is a worse trade than a feature that syncs when you do.
+ * Everything stays in this browser. There is no account to sync to and there
+ * will not be one: AmbiFlux runs entirely client side, so the honest way to
+ * move a rig between machines is a file its owner holds, not a row on someone
+ * else's server. `exportProfiles` writes one and `importProfiles` reads it.
  *
  * Every access is guarded the same way as lib/config-store.ts: `localStorage`
  * throws outright in a private window with site data blocked, and that is not
@@ -155,12 +155,12 @@ export function removeProfile (profiles: readonly Profile[], id: string): Profil
 }
 
 /**
- * Merges the server's profiles into the local ones, newest wins per id.
+ * Merges imported profiles into the local ones, newest wins per id.
  *
- * Both sides are edited independently - a second machine, an offline session -
- * so neither can simply overwrite the other. `updatedAt` decides, and a
- * missing or unparseable timestamp loses, because a profile that cannot say
- * when it changed cannot claim to be the newer one.
+ * Both sides were edited independently - that is the whole point of carrying a
+ * file between machines - so neither can simply overwrite the other.
+ * `updatedAt` decides, and a missing or unparseable timestamp loses, because a
+ * profile that cannot say when it changed cannot claim to be the newer one.
  */
 export function mergeProfiles (local: readonly Profile[], remote: readonly Profile[]): Profile[] {
   const byId = new Map<string, Profile>()
@@ -181,4 +181,86 @@ function time (value: string): number {
 
 function message (error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+// ---------------------------------------------------------------------------
+// Carrying profiles between machines.
+// ---------------------------------------------------------------------------
+
+/** Bumped when the file's shape changes, so an old file can be recognised. */
+export const PROFILE_FILE_VERSION = 1
+
+/** Every profile as one JSON document, indented because someone will read it. */
+export function exportProfiles (profiles: readonly Profile[]): string {
+  return JSON.stringify({
+    format: 'ambiflux/profiles',
+    version: PROFILE_FILE_VERSION,
+    exportedAt: new Date().toISOString(),
+    profiles: profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      config: JSON.parse(serialiseEngineConfig(profile.config)) as unknown,
+      updatedAt: profile.updatedAt
+    }))
+  }, null, 2)
+}
+
+export interface ImportOutcome {
+  /** Null when the file could not be used at all; `problem` then says why. */
+  profiles: Profile[] | null
+  added: number
+  problem?: string
+}
+
+/**
+ * Reads an exported file and merges it into `existing`.
+ *
+ * A file is a trust boundary like any other - it may have been hand-edited, or
+ * written by a version that is not this one - so every profile in it is parsed
+ * and validated, and an unreadable entry is skipped rather than costing the
+ * rest. A file with nothing usable in it is reported as a failure, because
+ * "imported 0 profiles" reads as success and is not.
+ */
+export function importProfiles (text: string, existing: readonly Profile[] = []): ImportOutcome {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    return { profiles: null, added: 0, problem: `geçerli JSON değil: ${message(error)}` }
+  }
+  const doc = parsed as { format?: unknown, profiles?: unknown }
+  if (doc?.format !== 'ambiflux/profiles' || !Array.isArray(doc.profiles)) {
+    return { profiles: null, added: 0, problem: 'bu bir AmbiFlux profil dosyası değil' }
+  }
+
+  const incoming: Profile[] = []
+  let dropped = 0
+  const taken = existing.map((profile) => profile.id)
+  for (const entry of doc.profiles) {
+    const row = entry as Partial<Record<'id' | 'name' | 'config' | 'updatedAt', unknown>>
+    if (typeof row?.name !== 'string' || row.name === '') { dropped += 1; continue }
+    try {
+      const id = typeof row.id === 'string' && isProfileId(row.id) ? row.id : profileId(row.name, taken)
+      taken.push(id)
+      incoming.push({
+        id,
+        name: row.name,
+        config: deserialiseEngineConfig(
+          typeof row.config === 'string' ? row.config : JSON.stringify(row.config)
+        ),
+        updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : new Date().toISOString()
+      })
+    } catch {
+      dropped += 1
+    }
+  }
+
+  if (incoming.length === 0) {
+    return { profiles: null, added: 0, problem: 'dosyada okunabilir profil yok' }
+  }
+  return {
+    profiles: mergeProfiles(existing, incoming),
+    added: incoming.length,
+    ...(dropped === 0 ? {} : { problem: `${dropped} profil okunamadı ve atlandı.` })
+  }
 }

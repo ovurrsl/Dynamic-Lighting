@@ -1,8 +1,13 @@
 # AmbiFlux
 
-Monitör arkası, ekranı takip eden ambilight. 108 LED'lik WS2812B şerit, ESP32-S3
-üzerinde seri protokol konuşan firmware, ekranı yakalayıp per-LED kare üreten
-tarayıcı eklentisi, ve barındırılan bir kontrol düzlemi.
+Ekranı takip eden ambilight — **tarayıcıda çalışan**, kurulum istemeyen,
+açık kaynak bir Hyperion.NG alternatifi.
+
+Hyperion bir bilgisayara (çoğunlukla bir Raspberry Pi'ye) kurulur. AmbiFlux
+kurulmaz: motor bir Chrome eklentisinin offscreen dokümanında koşuyor, arayüz
+bir web sayfası, ve şeridi süren firmware ESP32-S3 üzerinde seri protokol
+konuşuyor. Yol haritası [hyperion.ng](https://github.com/hyperion-project/hyperion.ng);
+aradaki farkın dökümü `docs/hyperion-gap-analysis.md`'de.
 
 ## Depo yapısı
 
@@ -11,15 +16,15 @@ Depo kökü **tek bir Next.js uygulaması.** Workspace yok, alt paket yok.
 | Yol | Ne | Durum |
 |---|---|---|
 | `app/` | Route handler'lar (API) + kontrol paneli sayfası | **çalışıyor** |
-| `lib/` | Lisans kriptosu, doğrulama, depolama, hız sınırı | **çalışıyor** |
-| `lib/api/` | HTTP mantığı, framework'ten bağımsız | **çalışıyor** |
+| `lib/api/` | Kalan iki uç nokta (`/healthz`, `/v1/version`) | **çalışıyor** |
 | `lib/engine/` | Motor: yerleşim, örnekleme, kenar, düzeltme, yumuşatma, dither, protokol, seri yazıcı — saf TypeScript, tarayıcı API'si yok | **çalışıyor**, testli |
 | `lib/extension/` | Panel ile eklentinin ortak mesaj sözleşmesi | **çalışıyor** |
 | `extension/` | Chrome eklentisi (MV3): yakalama + hat + seri port, offscreen document'ta | **derleniyor**, gerçek ekranda henüz ölçülmedi |
 | `components/` | HeroUI v3 ekranları | **çalışıyor** |
-| `supabase/migrations/` | Şema SQL'i, tek doğru kaynak | **çalışıyor** |
-| `test/` | 334 test, ağ ve veritabanı gerektirmez | **çalışıyor** |
+| `firmware/` | ESP32-S3 firmware'i, PlatformIO; algoritmalar host'ta test ediliyor | **derleniyor**, kartta ölçülmedi |
+| `test/` | Panel ve motor testleri; ağ, veritabanı ya da tarayıcı gerektirmez | **çalışıyor** |
 | `docs/hyperion-port-plan.md` | Hyperion.NG'den ne, nasıl, neden aktarılıyor | plan |
+| `docs/hyperion-gap-analysis.md` | Hyperion'un özellik envanteri ve bizdeki karşılıkları | analiz |
 | `docs/extension-handoff.md` | Eklentiyi devralacak için tam brifing: mimari, protokol, ölçülenler, ve §12'de sıradaki işin tamamı | devir |
 | `AmbiFluxNanoR4LampArray/` | Eski HID LampArray firmware'i | ESP32-S3'e yeniden yazılacak |
 
@@ -28,11 +33,11 @@ WinUI 3 masaüstü uygulaması **silindi** — Windows Dynamic Lighting kapsamda
 
 ## Yığın
 
-**Next.js 16 · React 19 · HeroUI v3 · Tailwind 4 · Zod · Supabase (Postgres)**
+**Next.js 16 · React 19 · HeroUI v3 · Tailwind 4**
 
-Neden Next.js: aynı kod **hem Vercel'de hem Hostinger'da** çalışıyor. Önceki
-Fastify + Vite kurulumu yalnız uzun ömürlü bir Node sürecinde çalışabiliyordu,
-yani Vercel'e geçmek yeniden yazım olurdu.
+Sunucu tarafı bilinçli olarak neredeyse yok: geriye `/healthz` ve `/v1/version`
+kaldı. Uygulamanın tamamı tarayıcıda çalışıyor, hiçbir şey bir hesaba ya da bir
+veritabanına bağlı değil, ve ekran görüntüsü hiçbir yere gönderilmiyor.
 
 **Vite yok.** Frontend'i Next derliyor (Next 16 kendi içinde Turbopack
 kullanıyor), Tailwind'i de `@tailwindcss/vite` değil `@tailwindcss/postcss`
@@ -56,25 +61,14 @@ değişirse mantık yerinde kalıyor.
 
 ```bash
 npm install
-npm test          # 334 test; ağ, veritabanı ya da build gerekmez
+npm test          # ağ, veritabanı ya da build gerekmez
 npm run typecheck
 npm run dev       # http://localhost:3000
 npm run build
 ```
 
-`npm run dev` kalıcı imza anahtarı olmadan çalışır: geçici bir anahtar üretip
-yüksek sesle uyarır ve bellek içi depolamayı bir geliştirme lisansıyla
-(`AF-DEV-0000-0000`) tohumlar. Üretimde ikisi de reddedilir.
-
-```bash
-curl -X POST localhost:3000/v1/licence/activate \
-  -H 'content-type: application/json' \
-  -d '{"licenceKey":"AF-DEV-0000-0000","fingerprint":"fingerprint-demo12345678"}'
-```
-
-> **Tuzak:** `next start` kendisi `NODE_ENV=production` set ediyor, yani
-> derlenmiş bir build'i `STORAGE=memory` ile çalıştıramazsın — config bunu
-> bilerek reddediyor. Bellek içi depolama `npm run dev` içindir.
+Yapılandırılacak ortam değişkeni yok. Panel açılır açılmaz çalışıyor; kaydettiği
+her şey tarayıcının kendi deposunda.
 
 ## Motor: tarayıcı eklentisi
 
@@ -126,51 +120,17 @@ nasıl ve hangi kusuru dışarıda bırakılarak aktarıldığı her modülün b
 
 ## API
 
+Neredeyse yok, ve bu bilinçli. Uygulamanın tamamı tarayıcıda çalışıyor.
+
 | Uç nokta | Ne yapar |
 |---|---|
-| `GET /healthz` | Canlılık. Veritabanına **dokunmaz** — en ucuz ısıtma pingi |
-| `GET /readyz` | Hazırlık. Veritabanını *ve* yapılandırmayı kontrol eder |
-| `GET /v1/version` | Sürüm + lisans **açık anahtarı** |
-| `POST /v1/licence/activate` | Lisans anahtarı + makine parmak izi → imzalı token |
-| `POST /v1/licence/refresh` | Token yenileme. Süresi geçmiş token'ı **kabul eder** |
-| `GET/PUT/DELETE /v1/presets[/:id]` | Monitör profilleri. Token'ın kendisi kimlik bilgisi |
-| `GET /v1/updates/manifest` | Motor ve firmware sürüm bilgisi |
+| `GET /healthz` | Canlılık |
+| `GET /v1/version` | Dağıtılmış sürüm; eklenti kendi derlemesiyle karşılaştırıyor |
 | `* /v1/*` (eşleşmeyen) | JSON 404 — API istemcisi HTML hata sayfası almamalı |
 
-### Lisans tasarımının iki kasıtlı kararı
-
-**Token'lar çevrimdışı doğrulanıyor.** Ed25519 imzalı; istemci gömülü açık
-anahtarla kendi başına doğruluyor. Sunucu yalnızca sıradaki token'ı üretmek için
-gerekiyor — motorun **fail-open** olmasını mümkün kılan şey bu.
-
-**Yetkiler imzanın içinde.** `features` dizisi imzalanan payload'da; istemci
-haklarını yerel bir boolean'dan değil doğrulanmış veriden okuyor. Böylece lisans
-kontrolünü yamalamak premium özellikleri **kapalı** bırakıyor, açık değil.
-
-Dürüst olmak gerekirse: bu korsan kullanımı **engellemiyor.** Yerelde çalışan bir
-ikili her zaman yamalanabilir. Barındırmanın kazandırdığı şeyler iptal edebilme,
-merkezi güncelleme ve sunucuda kalan kodun korunması.
-
-## Veritabanı
-
-Supabase (Postgres 17), `eu-central-1`. Şema `supabase/migrations/` altında.
-
-**Row Level Security açık ve politikası yok.** Bu isteğe bağlı değil: Supabase
-`public` şemasındaki her tabloyu anon anahtarıyla PostgREST üzerinden yayınlıyor
-ve anon anahtarı tasarımı gereği herkese açık. RLS kapalıyken o anahtarı tutan
-herkes `select * from licences` çekip bugüne kadar ürettiğimiz **tüm lisans
-anahtarlarını** alabilirdi. API servis rolüyle bağlandığı için RLS'i atlıyor;
-anon anahtarı sızarsa hiçbir şey okuyamıyor. İki yönden de doğrulandı.
-
-`npm run migrate` şema **oluşturmuyor**, şemayı **doğruluyor** — PostgREST DDL
-çalıştıramıyor, o yüzden şema değişiklikleri migration dosyalarına ait. Script'in
-yaptığı iş asıl faydalı olan yarısı: işaret ettiğin veritabanının kodun beklediği
-şemaya sahip olup olmadığını söylüyor ve olmadığında sıfırdan farklı çıkıyor.
+Hesap yok, oturum yok, veritabanı yok. Profiller `localStorage`'da duruyor ve
+makineler arasında bir **dosyayla** taşınıyor.
 
 ## Dağıtım
 
 Bkz. [`docs/deploy.md`](docs/deploy.md).
-
-## Lisans
-
-Apache-2.0, bkz. `LICENSE.txt`.

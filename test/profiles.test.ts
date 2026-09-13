@@ -4,6 +4,8 @@ import test from 'node:test'
 import { DEFAULT_ENGINE_CONFIG, MATRIX_ENGINE_CONFIG, serialiseEngineConfig, type EngineConfig } from '#lib/engine/config'
 import {
   PROFILES_STORAGE_KEY,
+  exportProfiles,
+  importProfiles,
   isProfileId,
   loadProfiles,
   mergeProfiles,
@@ -117,4 +119,52 @@ test('a profile that cannot say when it changed does not win', () => {
   const remote = [profile('x', 'zamanlı', '2020-01-01T00:00:00Z')]
   assert.equal(mergeProfiles(local, remote)[0]?.name, 'zamanlı')
   assert.equal(mergeProfiles(remote, local)[0]?.name, 'zamanlı')
+})
+
+test('a profile file round-trips through export and import', () => {
+  const edited = { ...JSON.parse(serialiseEngineConfig(DEFAULT_ENGINE_CONFIG)), colorOrder: { order: 'grb' } } as EngineConfig
+  const list = [profile('desk', 'Masaüstü', '2026-09-13T10:00:00Z'), profile('tv', 'TV', '2026-09-12T10:00:00Z', edited)]
+  const outcome = importProfiles(exportProfiles(list), [])
+  assert.equal(outcome.added, 2)
+  assert.equal(outcome.problem, undefined)
+  assert.equal(outcome.profiles?.length, 2)
+  assert.equal(outcome.profiles?.find((p) => p.id === 'tv')?.config.colorOrder.order, 'grb')
+})
+
+test('importing merges rather than replacing, and the newer side wins', () => {
+  const mine = [profile('desk', 'Benim', '2026-09-13T12:00:00Z'), profile('only-mine', 'Yalnız bende', '2026-09-01T00:00:00Z')]
+  const theirs = [profile('desk', 'Onunki', '2026-09-13T09:00:00Z'), profile('only-theirs', 'Yalnız onda', '2026-09-02T00:00:00Z')]
+  const outcome = importProfiles(exportProfiles(theirs), mine)
+  assert.equal(outcome.profiles?.length, 3)
+  assert.equal(outcome.profiles?.find((p) => p.id === 'desk')?.name, 'Benim')
+  assert.ok(outcome.profiles?.some((p) => p.id === 'only-mine'))
+  assert.ok(outcome.profiles?.some((p) => p.id === 'only-theirs'))
+})
+
+test('a file that is not ours, or has nothing usable in it, is a failure not a silent no-op', () => {
+  // "imported 0 profiles" reads as success and is not.
+  for (const bad of ['{not json', '{"format":"something-else","profiles":[]}', '{"format":"ambiflux/profiles","profiles":[]}']) {
+    const outcome = importProfiles(bad, [])
+    assert.equal(outcome.profiles, null, bad)
+    assert.equal(outcome.added, 0, bad)
+    assert.ok((outcome.problem ?? '').length > 0, bad)
+  }
+})
+
+test('one unreadable entry in a file does not cost the rest', () => {
+  const doc = JSON.stringify({
+    format: 'ambiflux/profiles',
+    version: 1,
+    profiles: [
+      { id: 'a', name: 'A', config: JSON.parse(serialiseEngineConfig(DEFAULT_ENGINE_CONFIG)), updatedAt: '2026-01-01T00:00:00Z' },
+      { id: 'bad', name: 'B', config: { layout: { kind: 'spiral' } }, updatedAt: '2026-01-01T00:00:00Z' },
+      { name: 'Adı var kimliği yok', config: JSON.parse(serialiseEngineConfig(MATRIX_ENGINE_CONFIG)), updatedAt: '2026-01-02T00:00:00Z' }
+    ]
+  })
+  const outcome = importProfiles(doc, [])
+  assert.equal(outcome.added, 2)
+  assert.match(outcome.problem ?? '', /1 profil/)
+  // The entry with no id got one derived from its name, and it is API-shaped.
+  const derived = outcome.profiles?.find((p) => p.name === 'Adı var kimliği yok')
+  assert.ok(derived !== undefined && isProfileId(derived.id))
 })

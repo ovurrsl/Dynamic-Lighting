@@ -23,7 +23,6 @@ import { LayoutCard } from '#components/LayoutCard'
 import { ProfilesCard } from '#components/ProfilesCard'
 import { LedFrame } from '#components/LedFrame'
 import { toHex, toLinear16, toRgb8 } from '#lib/colour'
-import type { LicenceGrant } from '#lib/client-api'
 import { DEFAULT_ENGINE_CONFIG, resolveLayout, type EngineConfig } from '#lib/engine/config'
 import { frameAspect } from '#lib/preview'
 
@@ -57,27 +56,7 @@ function StripPreview ({ config, color, brightness }: { config: EngineConfig, co
   )
 }
 
-/**
- * The panel opens without a licence.
- *
- * Be clear about what this does: the wall is gone for EVERYONE, not just for the
- * owner. On a public page there is no way to recognise one person without a
- * credential, and the credential would be the licence key - which is the thing
- * we are trying not to ask for. So the licence stops guarding the door and
- * guards entitlements instead, which is how it was designed: `features` lives
- * inside the signed token and the client reads its rights from verified data.
- *
- * Nothing is weakened by this. No feature is gated in the UI today, and when one
- * is, it will read grant.features - which is null here and therefore grants
- * nothing.
- */
-export function ControlPanel ({
-  grant,
-  onActivate
-}: {
-  grant: LicenceGrant | null
-  onActivate?: () => void
-}) {
+export function ControlPanel () {
   const [color, setColor] = useState<Color>(parseColor('#3b82f6'))
   const [brightness, setBrightness] = useState(70)
   const [isEnabled, setIsEnabled] = useState(true)
@@ -110,22 +89,9 @@ export function ControlPanel ({
       <header className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">AmbiFlux</h1>
-          {grant === null
-            ? (
-              <p className="flex items-center gap-2 text-sm text-muted">
-                <span>Lisanssız</span>
-                {onActivate !== undefined && (
-                  <Button size="sm" variant="secondary" onPress={onActivate}>
-                    Lisans ekle
-                  </Button>
-                )}
-              </p>
-              )
-            : (
-              <p className="text-sm text-muted">
-                {grant.tier} · {grant.seats.used}/{grant.seats.max} cihaz
-              </p>
-              )}
+          <p className="text-sm text-muted">
+            Ekranı takip eden açık kaynak ambilight
+          </p>
         </div>
         <Switch isSelected={isEnabled} size="md" onChange={setIsEnabled}>
           <Switch.Content>

@@ -5,10 +5,34 @@ yok ve olmayacak — eski sketch (`AmbiFluxNanoR4LampArray/`) onu yapıyordu ve
 bu onun yerine geçiyor.
 
 ```bash
+pio test -e native               # 37 test, karta gerek yok
 pio run -e nano_esp32            # derle
 pio run -e nano_esp32 -t upload  # yükle
 pio device monitor -b 921600     # telemetri
 ```
+
+Derleme doğrulandı: **RAM %19.1 (62 740 / 327 680), Flash %12.2
+(384 586 / 3 145 728)**. Davranış doğrulanmadı — burada kart yok.
+
+> **Derleme tuzağı.** `esptool` güncel `click` ile kırılıyor:
+> `TypeError: ParamType.get_metavar() missing 1 required positional argument`.
+> Çözüm `pip install rich_click "click<8.2"`. Kodla ilgisi yok, ama hata
+> mesajı bunu hiç söylemiyor ve bootloader adımında çıktığı için sanki
+> firmware derlenmemiş gibi görünüyor.
+
+## Ne nerede
+
+`lib/afx/` — algoritmaların tamamı, header-only, Arduino bağımlılığı yok.
+Host'ta koşuyor, o yüzden test ediliyor:
+
+| Dosya | Ne | Test |
+|---|---|---|
+| `afx_protocol.h` | Ada/Awa/Afx/AxC ayrıştırıcı, Fletcher, resync | 13 |
+| `afx_render.h` | interpolasyon, sigma-delta dither, güç sınırlayıcı | 17 |
+| `afx_idle.h` | host var/yok, çapraz geçişler, boşta gökkuşağı | 7 |
+
+`src/main.cpp` — yalnız kablolama. Test edilemediği için mümkün olduğunca
+karar içermiyor.
 
 Tasarımın gerekçeleri `../docs/hyperion-port-plan.md`'de. Kısaca:
 
@@ -20,3 +44,15 @@ Tasarımın gerekçeleri `../docs/hyperion-port-plan.md`'de. Kısaca:
 - **Kare hızı `esp_timer` ile.** FreeRTOS tick'i 1000 Hz olduğu için yalnız tam
   milisaniye ifade edebiliyor; 120 Hz = 8.333 ms, yani 8 ms (125 Hz) ya da
   9 ms (111 Hz) ve aralarında duyulur bir vuruş deseni.
+- **Üçlü tampon, kilitsiz, `noInterrupts()` yok.** Seri görevin yazacağı,
+  çıkış görevinin okumadığı bir tampon her zaman var; host çıkışı geçerse
+  bayat kareyi kendiliğinden düşürüyor, yırtmıyor.
+- **LED görevi core 1'de yalnız.** ESP32'de RMT/I2S bozulmasının klasik
+  sebebi aynı çekirdeğe düşen başka iş.
+
+## Kartta ölçülecekler
+
+Buradan yapılamayanlar: RMT vs I2S jitter'ı (E1), bir saatlik 120 Hz soak —
+sıfır checksum hatası, sıfır resync, sıfır reset (E2), seviye çevirici vs
+çıplak 3.3 V hata oranı (E3), ve uçtan uca gecikme (E10). Telemetri satırı
+bunların hepsini saniyede bir raporluyor.

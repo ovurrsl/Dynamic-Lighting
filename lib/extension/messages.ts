@@ -22,22 +22,20 @@ export type Message =
   | { type: 'ambiflux/ping'; target: Target }
   | { type: 'ambiflux/pong'; version: string; engine: EngineState }
   /**
-   * Capture start. `streamId` comes from chrome.desktopCapture.chooseDesktopMedia,
-   * which must be called from a page WITH a user gesture (the popup). The
-   * offscreen document has no gesture and cannot show a picker itself; it can
-   * only consume a streamId handed to it. The id is single-use and expires in
-   * seconds, so this message is sent the moment the picker returns.
+   * Capture start. Carries nothing: the engine document opens the screen picker
+   * itself with `getDisplayMedia`, which is the only thing that works there.
+   * An earlier version passed a `chrome.desktopCapture` streamId chosen in the
+   * popup; such an id is bound to the context that asked for it and fails in
+   * the offscreen document with `AbortError` (see offscreen.ts openCapture).
    */
-  | { type: 'ambiflux/start'; target: Target; streamId: string }
+  | { type: 'ambiflux/start'; target: Target }
   | { type: 'ambiflux/stop'; target: Target }
   /**
    * Build the engine document NOW, before anything needs it.
    *
-   * The streamId from chrome.desktopCapture expires within seconds, and
-   * creating the offscreen document is not instant - so doing it after the
-   * picker returns spends the id's whole lifetime on document startup. The
-   * popup sends this when it opens, which is many seconds before the user has
-   * finished choosing a screen.
+   * Creating the offscreen document is not instant, and it is the thing that
+   * opens the screen picker - so building it when the popup opens means Start
+   * shows the picker at once rather than after a document boot.
    */
   | { type: 'ambiflux/prepare'; target: Target }
   /**

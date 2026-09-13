@@ -1,15 +1,13 @@
 import type { Message } from '#lib/extension/messages'
 
 /**
- * The popup is where user gestures happen, and two things in this product are
- * gated on a gesture that the offscreen document cannot provide:
+ * The popup is the product's controls, and one thing here genuinely needs a
+ * user gesture: pairing the serial port. navigator.serial.requestPort() will
+ * not run without one; once granted, the permission belongs to the extension
+ * origin and the engine picks the same port up with navigator.serial.getPorts().
  *
- * 1. Choosing what to capture. chrome.desktopCapture.chooseDesktopMedia shows
- *    the picker and returns a streamId that is single-use and expires within
- *    seconds - so it is forwarded to the engine immediately, not stored.
- * 2. Pairing the serial port. navigator.serial.requestPort() needs a gesture;
- *    once granted, the permission belongs to the extension origin and the
- *    offscreen document retrieves the same port with navigator.serial.getPorts().
+ * Choosing a screen does NOT happen here. The engine document opens that picker
+ * itself - see offscreen.ts openCapture for why nothing else works.
  */
 
 const status = document.getElementById('status') as HTMLDivElement
@@ -30,20 +28,16 @@ document.getElementById('serial')?.addEventListener('click', async () => {
 })
 
 document.getElementById('start')?.addEventListener('click', () => {
-  const asked = performance.now()
-  chrome.desktopCapture.chooseDesktopMedia(['screen', 'window'], (streamId) => {
-    if (!streamId) { say('Ekran seçilmedi.'); return }
-    // How long the id had been alive when the engine got it. It expires within
-    // seconds, so this number is the first thing to look at when a capture
-    // fails for no apparent reason.
-    const aged = Math.round(performance.now() - asked)
-    const message: Message = { type: 'ambiflux/start', target: 'sw', streamId }
-    chrome.runtime.sendMessage(message, (response: unknown) => {
-      const body = response as { state?: string, error?: string } | undefined
-      say(body?.state === 'running'
-        ? `Yakalama çalışıyor. (seçim ${aged} ms sürdü)`
-        : `Başlatılamadı: ${body?.error ?? JSON.stringify(response)}\n(seçim ${aged} ms sürdü)`)
-    })
+  // The picker is opened by the engine document, not here: a streamId chosen in
+  // this popup cannot be used there (see offscreen.ts startPicked). All this
+  // button does is ask.
+  const message: Message = { type: 'ambiflux/start', target: 'sw' }
+  say('Ekran seçici açılıyor…')
+  chrome.runtime.sendMessage(message, (response: unknown) => {
+    const body = response as { state?: string, error?: string } | undefined
+    say(body?.state === 'running'
+      ? 'Yakalama çalışıyor.'
+      : `Başlatılamadı: ${body?.error ?? JSON.stringify(response)}`)
   })
 })
 
@@ -68,10 +62,8 @@ document.getElementById('stop')?.addEventListener('click', () => {
 })
 
 /**
- * Build the engine document while the popup is merely open. By the time a
- * screen has been chosen it already exists, so the streamId is consumed
- * immediately instead of waiting out the document's startup - and the id only
- * lives for a few seconds.
+ * Build the engine document while the popup is merely open, so pressing Start
+ * shows the screen picker at once instead of after a document boot.
  */
 chrome.runtime.sendMessage({ type: 'ambiflux/prepare', target: 'sw' } satisfies Message, () => {
   // Nothing to do with the answer; the failure path is the start button's.

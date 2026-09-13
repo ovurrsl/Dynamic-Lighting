@@ -35,12 +35,22 @@ server/.data/
 .DS_Store
 Thumbs.db
 
-# Extension build output; load extension/dist unpacked
-extension/dist/
+# Extension build output IS committed: it is what "load unpacked" needs, and
+# keeping it out of the repo made downloading a working extension impossible
+# without a toolchain. Regenerate with `npm run build:extension` before pushing.
+# The source maps are not: four times the size of the code and useless without
+# the sources, which are right here anyway.
+#
+# The un-ignore has to name every level, because git will not descend into a
+# directory it has already excluded - the bare `dist/` at the top of this file
+# would otherwise hide all of this.
+!extension/dist/
+!extension/dist/*
+extension/dist/*.map
 
 # Scratch tests written while probing a module by hand; never part of the suite that ships.
 test/_probe*
 
-# Extension release package produced by `npm run pack:extension`
+# Packaging scratch. The zip itself is a release asset, not a tracked file.
 extension/*.zip
 extension/.pack/

@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AmbiFlux</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 0; padding: 14px; width: 260px; background: #111; color: #eee; }
+  button { width: 100%; padding: 10px; margin-top: 8px; border: 0; border-radius: 8px; font: inherit; cursor: pointer; }
+  #start { background: #3b82f6; color: #fff; }
+  #stop { background: #333; color: #eee; }
+  #serial, #selftest { background: #222; color: #eee; }
+  #status { color: #9a9a9a; margin-top: 10px; font-size: 12px; white-space: pre-line; }
+</style>
+<strong>AmbiFlux</strong>
+<button id="serial">Seri portu eşleştir</button>
+<button id="start">Yakalamayı başlat</button>
+<button id="stop">Durdur</button>
+<button id="selftest">Ekransız sına</button>
+<div id="status">…</div>
+<script type="module" src="popup.js"></script>

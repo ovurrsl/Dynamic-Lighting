@@ -224,50 +224,55 @@ function scheduleReconnect (): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Opens the capture the picker chose.
+ * Starts a screen capture.
  *
- * The streamId from chrome.desktopCapture is consumed through getUserMedia with
- * Chromium's legacy `mandatory` constraints; this is the documented offscreen
- * pattern and the only way a document with no user gesture can start a screen
- * capture.
+ * `getDisplayMedia`, called HERE, is the whole design - and it replaces a
+ * `chrome.desktopCapture` streamId chosen in the popup, which does not work and
+ * cannot be made to. Measured on Chromium, deterministically:
  *
- * It is tried twice on purpose. `maxFrameRate` is a legacy constraint, and a
- * `mandatory` block is all-or-nothing: if Chrome does not honour one member it
- * rejects the whole request, and the error it gives is about the capture rather
- * than about the constraint. Dropping the rate and trying again separates the
- * two causes that otherwise look identical - a rejected constraint from a
- * streamId that has already expired - and the rate is a ceiling we can live
- * without (the pipeline is latest-wins, so an over-fast source costs drops,
- * not correctness).
+ * - The offscreen document's `chrome.*` surface is `runtime` and nothing else.
+ *   `chrome.desktopCapture` is not defined here, so this document cannot open
+ *   that picker at all.
+ * - A streamId picked in the popup opens fine IN the popup and fails here with
+ *   `AbortError: Invalid state` - some builds word it "Error starting tab
+ *   capture", which names an API that is not involved. The id is bound to the
+ *   context that asked for it, and a `MediaStreamTrack` cannot be handed over
+ *   either: `chrome.runtime` messaging carries no transferables.
+ * - `getDisplayMedia` here returns a real stream, and with no user gesture: the
+ *   picker simply opens and waits. That is what the offscreen document's
+ *   `DISPLAY_MEDIA` reason exists for.
+ *
+ * So the popup does not choose anything; it asks, and this document opens the
+ * picker itself. `chrome.desktopCapture` is gone from the manifest with it.
  */
-async function openCapture (streamId: string): Promise<MediaStream> {
-  const base = { chromeMediaSource: 'desktop', chromeMediaSourceId: streamId }
-  const attempt = async (mandatory: Record<string, unknown>): Promise<MediaStream> =>
-    navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory } } as unknown as MediaStreamConstraints)
-  try {
-    return await attempt({ ...base, maxFrameRate: OUTPUT_HZ })
-  } catch (first) {
-    try {
-      return await attempt(base)
-    } catch (second) {
-      // Both messages, because which one appeared tells you which cause it was.
-      throw new Error(`${describeCaptureError(second)} (kare hızı sınırıyla: ${describeCaptureError(first)})`)
-    }
-  }
+async function openCapture (): Promise<MediaStream> {
+  return await navigator.mediaDevices.getDisplayMedia({
+    audio: false,
+    // A ceiling, not a demand: the pipeline is latest-wins, so a source faster
+    // than the engine costs drops rather than correctness.
+    video: { frameRate: { max: OUTPUT_HZ } }
+  })
 }
 
 function describeCaptureError (error: unknown): string {
   if (!(error instanceof Error)) return String(error)
-  // DOMException carries the useful half in `name`; `message` alone reads as
-  // "Error starting tab capture" whatever actually went wrong.
+  // DOMException carries the useful half in `name`; the message alone reads the
+  // same whatever actually went wrong.
   return error.name === '' || error.name === 'Error' ? error.message : `${error.name}: ${error.message}`
 }
 
-async function start (streamId: string): Promise<void> {
+async function startPicked (): Promise<void> {
   await begin(async () => {
-    const stream = await openCapture(streamId)
+    let stream: MediaStream
+    try {
+      stream = await openCapture()
+    } catch (error) {
+      // Cancelling the picker is a decision, not a failure.
+      const name = error instanceof Error ? error.name : ''
+      throw new Error(name === 'NotAllowedError' ? 'Ekran seçilmedi.' : describeCaptureError(error))
+    }
     const video = stream.getVideoTracks()[0]
-    if (video === undefined) throw new Error('no video track')
+    if (video === undefined) throw new Error('yakalama video izi vermedi')
     return video
   })
 }
@@ -500,7 +505,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!isMessage(message) || !('target' in message) || message.target !== 'offscreen') return false
   switch (message.type) {
     case 'ambiflux/start':
-      start(message.streamId).then(() => sendResponse({ state, error: lastError }))
+      startPicked().then(() => sendResponse({ state, error: lastError }))
       return true
     case 'ambiflux/selftest':
       startSelfTest().then(() => sendResponse({ state, error: lastError }))

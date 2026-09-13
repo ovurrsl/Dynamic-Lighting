@@ -205,6 +205,55 @@ void test_awa_calibrated_magic_is_not_a_stray_A (void) {
   TEST_ASSERT_EQUAL_UINT32(0, p.stats.resyncs);
 }
 
+void test_a_control_frame_carries_bytes_not_pixels (void) {
+  // AxC is TLV. Its header counts BYTES, because multiplying by three would
+  // tie a control message's length to a pixel format it does not use and
+  // would refuse every TLV whose length is not a multiple of three.
+  const uint8_t tlv[] = {0x01, 0x00, 0x02, 0x02, 0x6c, 0x00};   // 6 bytes
+  uint8_t wire[6 + sizeof(tlv) + 3];
+  wire[0] = 'A'; wire[1] = 'x'; wire[2] = 'C';
+  wire[3] = 0;
+  wire[4] = static_cast<uint8_t>(sizeof(tlv) - 1);
+  wire[5] = static_cast<uint8_t>(wire[3] ^ wire[4] ^ afx::kHeaderXor);
+  memcpy(wire + 6, tlv, sizeof(tlv));
+  afx::fletcher(tlv, sizeof(tlv), wire + 6 + sizeof(tlv));
+
+  Parser p;
+  Parser::Frame frame;
+  TEST_ASSERT_TRUE(feed(p, wire, sizeof(wire), frame));
+  TEST_ASSERT_TRUE(frame.kind == Kind::Axc);
+  TEST_ASSERT_EQUAL_UINT32(sizeof(tlv), frame.length);      // 6, not 18
+  TEST_ASSERT_EQUAL_UINT8(0x01, frame.payload[0]);
+  TEST_ASSERT_EQUAL_UINT32(0, p.stats.resyncs);
+}
+
+void test_a_control_frame_between_pictures_does_not_disturb_them (void) {
+  fillPayload();
+  static uint8_t wire[657 + 15 + 657];
+  const size_t one = buildAfx(wire);
+  const uint8_t tlv[] = {0x01, 0x00, 0x02, 0x02, 0x6c, 0x00};
+  uint8_t *ctrl = wire + one;
+  ctrl[0] = 'A'; ctrl[1] = 'x'; ctrl[2] = 'C';
+  ctrl[3] = 0; ctrl[4] = static_cast<uint8_t>(sizeof(tlv) - 1);
+  ctrl[5] = static_cast<uint8_t>(ctrl[3] ^ ctrl[4] ^ afx::kHeaderXor);
+  memcpy(ctrl + 6, tlv, sizeof(tlv));
+  afx::fletcher(tlv, sizeof(tlv), ctrl + 6 + sizeof(tlv));
+  const size_t ctrlSize = 6 + sizeof(tlv) + 3;
+  buildAfx(wire + one + ctrlSize);
+
+  Parser p;
+  Parser::Frame frame;
+  unsigned pictures = 0, controls = 0;
+  for (size_t i = 0; i < one * 2 + ctrlSize; i++) {
+    if (p.push(wire[i], frame)) {
+      if (frame.kind == Kind::Axc) controls++; else pictures++;
+    }
+  }
+  TEST_ASSERT_EQUAL_UINT32(2, pictures);
+  TEST_ASSERT_EQUAL_UINT32(1, controls);
+  TEST_ASSERT_EQUAL_UINT32(0, p.stats.resyncs);
+}
+
 void test_a_frame_split_across_reads_parses (void) {
   // The port hands over whatever it has; a frame arrives in pieces.
   fillPayload();
@@ -231,6 +280,8 @@ int main (int, char **) {
   RUN_TEST(test_a_header_larger_than_this_strip_is_refused);
   RUN_TEST(test_ada_has_no_trailer);
   RUN_TEST(test_awa_calibrated_magic_is_not_a_stray_A);
+  RUN_TEST(test_a_control_frame_carries_bytes_not_pixels);
+  RUN_TEST(test_a_control_frame_between_pictures_does_not_disturb_them);
   RUN_TEST(test_a_frame_split_across_reads_parses);
   return UNITY_END();
 }

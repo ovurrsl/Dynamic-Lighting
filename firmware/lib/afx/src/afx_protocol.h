@@ -38,6 +38,18 @@ inline constexpr size_t bytesPerLed (Kind kind) {
   return kind == Kind::Afx ? 6 : 3;
 }
 
+/**
+ * Payload bytes a header announces.
+ *
+ * For the three pixel kinds the header counts LEDs. For AxC it counts BYTES:
+ * the body is TLV, not pixels, so multiplying by three would make a control
+ * message's length depend on a pixel format it does not use - and would refuse
+ * every TLV whose length is not a multiple of three.
+ */
+inline constexpr size_t payloadBytes (Kind kind, uint32_t announced) {
+  return kind == Kind::Axc ? announced : announced * bytesPerLed(kind);
+}
+
 struct Stats {
   uint32_t frames = 0;
   /**
@@ -102,6 +114,7 @@ class FrameParser {
  public:
   struct Frame {
     Kind kind;
+    /** LEDs for a picture; for AxC the TLV body's length in bytes. */
     uint16_t count;
     bool calibrated;
     const uint8_t *payload;
@@ -159,7 +172,7 @@ class FrameParser {
           return false;
         }
         const uint32_t count = (static_cast<uint32_t>(hi_) << 8 | lo_) + 1;
-        const uint32_t payload = count * bytesPerLed(kind_);
+        const uint32_t payload = payloadBytes(kind_, count);
         need_ = payload + (calibrated_ ? kCalibrationSize : 0);
         if (need_ > Capacity) {
           stats.countMismatch++;

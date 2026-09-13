@@ -94,8 +94,38 @@ volatile bool outputDue = false;
  */
 void IRAM_ATTR onOutputTimer (void *) { outputDue = true; }
 
+/**
+ * The control channel: version, configuration, and whatever else the host asks
+ * that is not a picture.
+ *
+ * It exists as a separate magic so a control message can never be mistaken for
+ * pixels - which is exactly what would happen without this branch, since an
+ * AxC frame's TLV body is the same bytes as a short 8-bit frame and would be
+ * pushed straight onto the strip.
+ */
+void handleControl (const uint8_t *tlv, size_t length) {
+  // TLV: [type][length][value...]. Only the version query is defined so far;
+  // an unknown type is skipped rather than refused, so an older board stays
+  // usable with a newer host.
+  size_t at = 0;
+  while (at + 2 <= length) {
+    const uint8_t type = tlv[at];
+    const uint8_t size = tlv[at + 1];
+    if (at + 2 + size > length) break;
+    if (type == 0x01) {                       // version query
+      Serial.printf("{\"axc\":\"version\",\"v\":\"%s\",\"maxLeds\":%u}\n",
+                    AMBIFLUX_VERSION, static_cast<unsigned>(kMaxLeds));
+    }
+    at += 2 + size;
+  }
+}
+
 /** Publishes a parsed frame for the output task. Runs on the serial task. */
 void publish (const afx::FrameParser<kMaxLeds * 6 + afx::kCalibrationSize>::Frame &frame) {
+  if (frame.kind == afx::Kind::Axc) {
+    handleControl(frame.payload, frame.length);
+    return;                                   // not a picture; nothing to show
+  }
   if (frame.count == 0 || frame.count > kMaxLeds) return;
   Keyframe &slot = buffers[writeSlot];
   slot.count = frame.count;
@@ -132,7 +162,9 @@ void serialTask (void *) {
     for (size_t i = 0; i < read; i++) {
       if (parser.push(chunk[i], frame)) {
         publish(frame);
-        idleState.frameArrived(millis());
+        // A control message is not a picture: it must not keep the idle
+        // animation away while nothing is actually lighting the strip.
+        if (frame.kind != afx::Kind::Axc) idleState.frameArrived(millis());
       }
     }
   }

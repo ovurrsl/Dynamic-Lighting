@@ -19,6 +19,13 @@ function encodeLinear16(colors, out) {
   }
   return bytes;
 }
+function encodeLinear8(colors, out) {
+  const bytes = out ?? new Uint8Array(colors.length);
+  for (let i = 0; i < colors.length; i++) {
+    bytes[i] = Math.round(clamp01(colors[i] ?? 0) * 255);
+  }
+  return bytes;
+}
 
 // lib/engine/adjust.ts
 var CUBE_CORNERS = Object.freeze(
@@ -316,17 +323,17 @@ function bordersEqual(a, b) {
 function linearBlackThreshold(threshold) {
   return Math.fround(srgbToLinear(threshold));
 }
-function detectBorder(grid2, mode, linearThreshold) {
-  validateGrid(grid2);
+function detectBorder(grid, mode, linearThreshold) {
+  validateGrid(grid);
   switch (mode) {
     case "default":
-      return detectDefault(grid2, linearThreshold);
+      return detectDefault(grid, linearThreshold);
     case "classic":
-      return detectClassic(grid2, linearThreshold);
+      return detectClassic(grid, linearThreshold);
     case "osd":
-      return detectOsd(grid2, linearThreshold);
+      return detectOsd(grid, linearThreshold);
     case "letterbox":
-      return detectLetterbox(grid2, linearThreshold);
+      return detectLetterbox(grid, linearThreshold);
     default:
       throw new RangeError(`border: unknown mode ${String(mode)}`);
   }
@@ -334,67 +341,67 @@ function detectBorder(grid2, mode, linearThreshold) {
 function createBorderDetector(options, clock2) {
   return new BorderProcessor(options, clock2);
 }
-function isBlack(grid2, t, x, y) {
-  const i = (y * grid2.width + x) * 3;
-  const d = grid2.data;
+function isBlack(grid, t, x, y) {
+  const i = (y * grid.width + x) * 3;
+  const d = grid.data;
   return d[i] < t && d[i + 1] < t && d[i + 2] < t;
 }
 function border(leftRight, topBottom) {
   if (leftRight < 0 || topBottom < 0) return UNKNOWN_BORDER;
   return { unknown: false, topBottom, leftRight };
 }
-function findLeftRight(grid2, t) {
-  const { width: w, height: h } = grid2;
+function findLeftRight(grid, t) {
+  const { width: w, height: h } = grid;
   const w3 = Math.floor(w / 3);
   const h3 = Math.floor(h / 3);
   const h66 = h3 * 2;
   const yCenter = Math.floor(h / 2);
   const lastX = w - 1;
   for (let x = 0; x < w3; x++) {
-    if (!isBlack(grid2, t, lastX - x, yCenter) || !isBlack(grid2, t, x, h3) || !isBlack(grid2, t, x, h66)) return x;
+    if (!isBlack(grid, t, lastX - x, yCenter) || !isBlack(grid, t, x, h3) || !isBlack(grid, t, x, h66)) return x;
   }
   return -1;
 }
-function detectDefault(grid2, t) {
-  const { width: w, height: h } = grid2;
+function detectDefault(grid, t) {
+  const { width: w, height: h } = grid;
   const w3 = Math.floor(w / 3);
   const w66 = w3 * 2;
   const h3 = Math.floor(h / 3);
   const xCenter = Math.floor(w / 2);
   const lastY = h - 1;
-  const leftRight = findLeftRight(grid2, t);
+  const leftRight = findLeftRight(grid, t);
   let topBottom = -1;
   for (let y = 0; y < h3; y++) {
-    if (!isBlack(grid2, t, xCenter, lastY - y) || !isBlack(grid2, t, w3, y) || !isBlack(grid2, t, w66, y)) {
+    if (!isBlack(grid, t, xCenter, lastY - y) || !isBlack(grid, t, w3, y) || !isBlack(grid, t, w66, y)) {
       topBottom = y;
       break;
     }
   }
   return border(leftRight, topBottom);
 }
-function detectClassic(grid2, t) {
-  const w3 = Math.floor(grid2.width / 3);
-  const h3 = Math.floor(grid2.height / 3);
+function detectClassic(grid, t) {
+  const w3 = Math.floor(grid.width / 3);
+  const h3 = Math.floor(grid.height / 3);
   const maxSize = Math.max(w3, h3);
   let x = -1;
   let y = -1;
   for (let i = 0; i < maxSize; i++) {
     const px = Math.min(i, w3);
     const py = Math.min(i, h3);
-    if (!isBlack(grid2, t, px, py)) {
+    if (!isBlack(grid, t, px, py)) {
       x = px;
       y = py;
       break;
     }
   }
-  for (; x > 0; x--) if (isBlack(grid2, t, x - 1, y)) break;
-  for (; y > 0; y--) if (isBlack(grid2, t, x, y - 1)) break;
+  for (; x > 0; x--) if (isBlack(grid, t, x - 1, y)) break;
+  for (; y > 0; y--) if (isBlack(grid, t, x, y - 1)) break;
   return border(x, y);
 }
-function detectOsd(grid2, t) {
-  const leftRight = findLeftRight(grid2, t);
+function detectOsd(grid, t) {
+  const leftRight = findLeftRight(grid, t);
   if (leftRight < 0) return UNKNOWN_BORDER;
-  const { width: w, height: h } = grid2;
+  const { width: w, height: h } = grid;
   const h3 = Math.floor(h / 3);
   const lastX = w - 1;
   const lastY = h - 1;
@@ -402,15 +409,15 @@ function detectOsd(grid2, t) {
   const mirrorX = lastX - leftRight;
   let topBottom = -1;
   for (let y = 0; y < h3; y++) {
-    if (!isBlack(grid2, t, x, y) || !isBlack(grid2, t, x, lastY - y) || !isBlack(grid2, t, mirrorX, y) || !isBlack(grid2, t, mirrorX, lastY - y)) {
+    if (!isBlack(grid, t, x, y) || !isBlack(grid, t, x, lastY - y) || !isBlack(grid, t, mirrorX, y) || !isBlack(grid, t, mirrorX, lastY - y)) {
       topBottom = y;
       break;
     }
   }
   return border(leftRight, topBottom);
 }
-function detectLetterbox(grid2, t) {
-  const { width: w, height: h } = grid2;
+function detectLetterbox(grid, t) {
+  const { width: w, height: h } = grid;
   const w25 = Math.floor(w / 4);
   const w75 = w25 * 3;
   const h3 = Math.floor(h / 3);
@@ -418,15 +425,15 @@ function detectLetterbox(grid2, t) {
   const lastY = h - 1;
   let topBottom = -1;
   for (let y = 0; y < h3; y++) {
-    if (!isBlack(grid2, t, xCenter, y) || !isBlack(grid2, t, w25, y) || !isBlack(grid2, t, w75, y) || !isBlack(grid2, t, w25, lastY - y) || !isBlack(grid2, t, w75, lastY - y)) {
+    if (!isBlack(grid, t, xCenter, y) || !isBlack(grid, t, w25, y) || !isBlack(grid, t, w75, y) || !isBlack(grid, t, w25, lastY - y) || !isBlack(grid, t, w75, lastY - y)) {
       topBottom = y;
       break;
     }
   }
   return border(0, topBottom);
 }
-function validateGrid(grid2) {
-  const { width, height, data } = grid2;
+function validateGrid(grid) {
+  const { width, height, data } = grid;
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
     throw new RangeError(`border: grid must be at least 1x1, got ${width}x${height}`);
   }
@@ -434,10 +441,10 @@ function validateGrid(grid2) {
     throw new RangeError(`border: grid data holds ${data.length} floats, ${width}x${height} needs ${width * height * 3}`);
   }
 }
-function withBlurRemoved(detected, px, grid2) {
+function withBlurRemoved(detected, px, grid) {
   if (detected.unknown || px === 0) return detected;
-  const maxTopBottom = Math.floor((grid2.height - 1) / 2);
-  const maxLeftRight = Math.floor((grid2.width - 1) / 2);
+  const maxTopBottom = Math.floor((grid.height - 1) / 2);
+  const maxLeftRight = Math.floor((grid.width - 1) / 2);
   return {
     unknown: false,
     topBottom: detected.topBottom > 0 ? Math.min(detected.topBottom + px, maxTopBottom) : 0,
@@ -482,10 +489,10 @@ var BorderProcessor = class {
     this.maxInconsistentMs = requireDuration("maxInconsistentMs", options.maxInconsistentMs ?? BORDER_DEFAULTS.maxInconsistentMs);
     this.userEnabled = options.enabled ?? BORDER_DEFAULTS.enabled;
   }
-  detect(grid2) {
-    return detectBorder(grid2, this.mode, this.linearThreshold);
+  detect(grid) {
+    return detectBorder(grid, this.mode, this.linearThreshold);
   }
-  process(grid2, now = this.clock()) {
+  process(grid, now = this.clock()) {
     if (!this.active()) return NO_BORDER;
     if (!Number.isFinite(now)) throw new RangeError(`border: frame time must be finite, got ${now}`);
     if (this.resumePending) {
@@ -498,7 +505,7 @@ var BorderProcessor = class {
         }
       }
     }
-    this.update(withBlurRemoved(this.detect(grid2), this.blurRemovePx, grid2), now);
+    this.update(withBlurRemoved(this.detect(grid), this.blurRemovePx, grid), now);
     this.lastSeen = now;
     return this.currentBorder;
   }
@@ -872,10 +879,25 @@ function requireOrder(order) {
 }
 
 // lib/engine/config.ts
+var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
+var DEFAULT_OUTPUT = Object.freeze({ format: "Afx" });
+var DEFAULT_CAPTURE = Object.freeze({
+  gridWidth: 128,
+  gridHeight: 72,
+  fps: 60,
+  crop: Object.freeze({ left: 0, right: 0, top: 0, bottom: 0 })
+});
+var GRID_MIN = 16;
+var GRID_MAX = 480;
+var FPS_MIN = 1;
+var FPS_MAX = 240;
+var CROP_MAX = 0.45;
 var DEFAULT_ENGINE_CONFIG = Object.freeze({
   layout: Object.freeze({ kind: "classic", ...REFERENCE_LAYOUT }),
   blacklist: Object.freeze([]),
-  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER })
+  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
+  output: DEFAULT_OUTPUT,
+  capture: DEFAULT_CAPTURE
 });
 function resolveLayout(config) {
   const layout = config.layout;
@@ -905,6 +927,18 @@ function integer(value, path, min, max = Number.MAX_SAFE_INTEGER) {
 function fraction(value, path) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new ConfigError(path, `must be a finite number, got ${describe(value)}`);
+  }
+  return value;
+}
+function boundedFraction(value, path, min, max, fallback) {
+  if (value === void 0) return fallback;
+  const n = fraction(value, path);
+  if (n < min || n > max) throw new ConfigError(path, `must be in ${min}..${max}, got ${describe(value)}`);
+  return n;
+}
+function readWireFormat(value, path) {
+  if (typeof value !== "string" || !WIRE_FORMATS.includes(value)) {
+    throw new ConfigError(path, `must be one of ${WIRE_FORMATS.join(", ")}, got ${describe(value)}`);
   }
   return value;
 }
@@ -1036,7 +1070,44 @@ function parseEngineConfig(value) {
     }
     colorOrder.overrides = overrides;
   }
-  const config = { layout, blacklist, colorOrder };
+  const outputRaw = raw.output === void 0 ? {} : object(raw.output, "config.output");
+  const format = outputRaw.format === void 0 ? DEFAULT_OUTPUT.format : readWireFormat(outputRaw.format, "output.format");
+  const output = { format };
+  if (outputRaw.calibration !== void 0) {
+    if (format !== "Awa") {
+      throw new ConfigError("output.calibration", `is only carried by the Awa format, not ${format}`);
+    }
+    const cal = object(outputRaw.calibration, "output.calibration");
+    output.calibration = {
+      // Named as the protocol names them rather than as the UI might: one
+      // vocabulary for the four bytes, so nothing has to translate between two.
+      limit: integer(cal.limit, "output.calibration.limit", 0, 255),
+      red: integer(cal.red, "output.calibration.red", 0, 255),
+      green: integer(cal.green, "output.calibration.green", 0, 255),
+      blue: integer(cal.blue, "output.calibration.blue", 0, 255)
+    };
+  }
+  const captureRaw = raw.capture === void 0 ? {} : object(raw.capture, "config.capture");
+  const cropRaw = captureRaw.crop === void 0 ? {} : object(captureRaw.crop, "config.capture.crop");
+  const crop = {
+    left: boundedFraction(cropRaw.left, "capture.crop.left", 0, CROP_MAX, DEFAULT_CAPTURE.crop.left),
+    right: boundedFraction(cropRaw.right, "capture.crop.right", 0, CROP_MAX, DEFAULT_CAPTURE.crop.right),
+    top: boundedFraction(cropRaw.top, "capture.crop.top", 0, CROP_MAX, DEFAULT_CAPTURE.crop.top),
+    bottom: boundedFraction(cropRaw.bottom, "capture.crop.bottom", 0, CROP_MAX, DEFAULT_CAPTURE.crop.bottom)
+  };
+  if (crop.left + crop.right > 0.9) {
+    throw new ConfigError("capture.crop", `left and right crop leave ${(1 - crop.left - crop.right).toFixed(2)} of the width`);
+  }
+  if (crop.top + crop.bottom > 0.9) {
+    throw new ConfigError("capture.crop", `top and bottom crop leave ${(1 - crop.top - crop.bottom).toFixed(2)} of the height`);
+  }
+  const capture = {
+    gridWidth: integer(captureRaw.gridWidth ?? DEFAULT_CAPTURE.gridWidth, "capture.gridWidth", GRID_MIN, GRID_MAX),
+    gridHeight: integer(captureRaw.gridHeight ?? DEFAULT_CAPTURE.gridHeight, "capture.gridHeight", GRID_MIN, GRID_MAX),
+    fps: integer(captureRaw.fps ?? DEFAULT_CAPTURE.fps, "capture.fps", FPS_MIN, FPS_MAX),
+    crop
+  };
+  const config = { layout, blacklist, colorOrder, output, capture };
   let rects;
   try {
     rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
@@ -1058,7 +1129,9 @@ function parseEngineConfig(value) {
 var MATRIX_ENGINE_CONFIG = Object.freeze({
   layout: Object.freeze({ kind: "matrix", ...MATRIX_REFERENCE }),
   blacklist: Object.freeze([]),
-  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER })
+  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
+  output: DEFAULT_OUTPUT,
+  capture: DEFAULT_CAPTURE
 });
 
 // lib/engine/decode.ts
@@ -1259,6 +1332,31 @@ function frameSize(kind, count, calibrated = false) {
       return body + TRAILER_SIZE;
   }
 }
+function encodeAda(rgb8, out) {
+  const count = validatePayload("Ada", rgb8);
+  const frame = prepareOut("Ada", out, frameSize("Ada", count));
+  placePayload(frame, rgb8);
+  writeHeader(frame, MAGIC_ADA_1, MAGIC_ADA_2, count);
+  return frame;
+}
+function encodeAwa(rgb8, calibration, out) {
+  const count = validatePayload("Awa", rgb8);
+  const calibrated = calibration !== void 0;
+  if (calibrated) validateCalibration(calibration);
+  const frame = prepareOut("Awa", out, frameSize("Awa", count, calibrated));
+  placePayload(frame, rgb8);
+  writeHeader(frame, MAGIC_AWA_1, calibrated ? MAGIC_AWA_2_CALIBRATED : MAGIC_AWA_2, count);
+  let end = HEADER_SIZE + rgb8.length;
+  if (calibrated) {
+    frame[end] = calibration.limit;
+    frame[end + 1] = calibration.red;
+    frame[end + 2] = calibration.green;
+    frame[end + 3] = calibration.blue;
+    end += CALIBRATION_SIZE;
+  }
+  fletcherInto(frame, HEADER_SIZE, end, frame, end);
+  return frame;
+}
 function encodeAfx(linear16be, out) {
   const count = validatePayload("Afx", linear16be);
   const frame = prepareOut("Afx", out, frameSize("Afx", count));
@@ -1291,6 +1389,14 @@ function validatePayload(kind, payload) {
   const count = payload.length / stride;
   if (count > MAX_LEDS) throw new RangeError(`protocol: ${kind} carries at most ${MAX_LEDS} LEDs, got ${count}`);
   return count;
+}
+function validateCalibration(calibration) {
+  for (const key of ["limit", "red", "green", "blue"]) {
+    const v = calibration[key];
+    if (!Number.isInteger(v) || v < 0 || v > 255) {
+      throw new RangeError(`protocol: calibration ${key} must be an integer in 0..255, got ${v}`);
+    }
+  }
 }
 function prepareOut(kind, out, size) {
   if (out === void 0) return new Uint8Array(size);
@@ -1566,16 +1672,16 @@ var LedSampler = class {
     if (!Number.isInteger(led) || led < 0 || led >= this.count) throw new RangeError(`sample: no LED ${led} in a layout of ${this.count}`);
     return this.indices.subarray(this.starts[led], this.starts[led + 1]);
   }
-  sample(grid2, out, mode) {
+  sample(grid, out, mode) {
     const { width, height, count } = this;
-    if (grid2.width !== width || grid2.height !== height) {
-      throw new RangeError(`sample: grid is ${grid2.width}x${grid2.height}, the map was built for ${width}x${height}`);
+    if (grid.width !== width || grid.height !== height) {
+      throw new RangeError(`sample: grid is ${grid.width}x${grid.height}, the map was built for ${width}x${height}`);
     }
-    if (grid2.data.length < width * height * 3) {
-      throw new RangeError(`sample: grid data holds ${grid2.data.length} floats, ${width}x${height} needs ${width * height * 3}`);
+    if (grid.data.length < width * height * 3) {
+      throw new RangeError(`sample: grid data holds ${grid.data.length} floats, ${width}x${height} needs ${width * height * 3}`);
     }
     if (out.length < count * 3) throw new RangeError(`sample: out holds ${out.length} floats, ${count} LEDs need ${count * 3}`);
-    const data = grid2.data;
+    const data = grid.data;
     const starts = this.starts;
     const indices = this.indices;
     switch (mode) {
@@ -2373,19 +2479,13 @@ function isMessage(value) {
 }
 
 // extension/src/offscreen.ts
-var GRID_W = 128;
-var GRID_H = 72;
 var OUTPUT_HZ = 120;
 var TICK_MS = 4;
 var REPORT_MS = 1e3;
 var BAUD_RATE = 921600;
 var RECONNECT_MS = 3e3;
 var clock = () => performance.now();
-var decoder = createRgbaDecoder(GRID_W, GRID_H);
-var grid = allocLinearGrid(GRID_W, GRID_H);
 var detector = createBorderDetector({}, clock);
-var canvas = new OffscreenCanvas(GRID_W, GRID_H);
-var ctx = requireContext(canvas);
 function requireContext(c) {
   const context = c.getContext("2d", { willReadFrequently: true });
   if (context === null) throw new Error("offscreen: no 2D context");
@@ -2415,11 +2515,22 @@ var patternTimer = null;
 function build(config) {
   const layout = resolveLayout(config);
   const leds = layout.length;
-  const wire = new Uint8Array(frameSize("Afx", leds));
+  const { gridWidth, gridHeight } = config.capture;
+  const format = config.output.format;
+  const calibrated = format === "Awa" && config.output.calibration !== void 0;
+  const wire = new Uint8Array(frameSize(format, leds, calibrated));
+  const payloadBytes = leds * (format === "Afx" ? 6 : 3);
+  const canvas = new OffscreenCanvas(gridWidth, gridHeight);
   return {
     config,
     leds,
-    sampler: createSampler({ layout, width: GRID_W, height: GRID_H }),
+    gridWidth,
+    gridHeight,
+    decoder: createRgbaDecoder(gridWidth, gridHeight),
+    grid: allocLinearGrid(gridWidth, gridHeight),
+    canvas,
+    ctx: requireContext(canvas),
+    sampler: createSampler({ layout, width: gridWidth, height: gridHeight }),
     adjustment: createAdjustment([{ leds: "*" }], leds),
     order: createColorOrder(leds, {
       order: config.colorOrder.order,
@@ -2428,7 +2539,7 @@ function build(config) {
     smoother: createSmoother({ mode: "asymmetric", count: leds, outputHz: OUTPUT_HZ }, clock),
     target: allocLedColors(leds),
     wire,
-    wirePayload: wire.subarray(HEADER_SIZE, HEADER_SIZE + leds * 6)
+    wirePayload: wire.subarray(HEADER_SIZE, HEADER_SIZE + payloadBytes)
   };
 }
 var stages = build(DEFAULT_ENGINE_CONFIG);
@@ -2519,8 +2630,10 @@ async function openCapture() {
   return await navigator.mediaDevices.getDisplayMedia({
     audio: false,
     // A ceiling, not a demand: the pipeline is latest-wins, so a source faster
-    // than the engine costs drops rather than correctness.
-    video: { frameRate: { max: OUTPUT_HZ } }
+    // than the engine costs drops rather than correctness. Configurable because
+    // halving it is the cheapest way to halve the engine's cost, and content is
+    // overwhelmingly 24, 30 or 60 fps anyway.
+    video: { frameRate: { max: stages.config.capture.fps } }
   });
 }
 function describeCaptureError(error) {
@@ -2543,23 +2656,23 @@ async function startPicked() {
 }
 async function startSelfTest() {
   await begin(async () => {
-    const canvas2 = document.createElement("canvas");
-    canvas2.width = 640;
-    canvas2.height = 360;
-    const paint = canvas2.getContext("2d");
+    const canvas = document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 360;
+    const paint = canvas.getContext("2d");
     if (paint === null) throw new Error("2d context yok");
     let frame = 0;
     testTimer = setInterval(() => {
       const t = frame++ / 120;
-      const grad = paint.createLinearGradient(0, 0, canvas2.width, canvas2.height);
+      const grad = paint.createLinearGradient(0, 0, canvas.width, canvas.height);
       grad.addColorStop(0, `hsl(${t * 120 % 360} 90% 50%)`);
       grad.addColorStop(1, `hsl(${(t * 120 + 180) % 360} 90% 50%)`);
       paint.fillStyle = grad;
-      paint.fillRect(0, 0, canvas2.width, canvas2.height);
+      paint.fillRect(0, 0, canvas.width, canvas.height);
       paint.fillStyle = "#000";
-      paint.fillRect(canvas2.width * 0.2, canvas2.height * 0.2, canvas2.width * 0.6, canvas2.height * 0.6);
+      paint.fillRect(canvas.width * 0.2, canvas.height * 0.2, canvas.width * 0.6, canvas.height * 0.6);
     }, Math.round(1e3 / 60));
-    const video = canvas2.captureStream(OUTPUT_HZ).getVideoTracks()[0];
+    const video = canvas.captureStream(OUTPUT_HZ).getVideoTracks()[0];
     if (video === void 0) throw new Error("captureStream video vermedi");
     return video;
   });
@@ -2585,9 +2698,7 @@ function emitPattern() {
   const now = clock();
   p.render(s.target, now);
   outputs.mark(now);
-  encodeLinear16(s.target, s.wirePayload);
-  encodeAfx(s.wirePayload, s.wire);
-  writer.send(s.wire);
+  writer.send(encodeFrame(s, s.target));
 }
 async function begin(open) {
   if (state === "running" || state === "starting") stop("restart");
@@ -2666,22 +2777,28 @@ async function pump(video) {
 }
 async function processFrame(frame, arrivedAt) {
   let bitmap = null;
+  const s = stages;
   try {
     const t0 = clock();
-    bitmap = await createImageBitmap(frame, { resizeWidth: GRID_W, resizeHeight: GRID_H, resizeQuality: "high" });
+    const crop = s.config.capture.crop;
+    const sx = Math.round(frame.displayWidth * crop.left);
+    const sy = Math.round(frame.displayHeight * crop.top);
+    const sw = Math.max(1, Math.round(frame.displayWidth * (1 - crop.left - crop.right)));
+    const sh = Math.max(1, Math.round(frame.displayHeight * (1 - crop.top - crop.bottom)));
+    const options = { resizeWidth: s.gridWidth, resizeHeight: s.gridHeight, resizeQuality: "high" };
+    bitmap = sx === 0 && sy === 0 && sw === frame.displayWidth && sh === frame.displayHeight ? await createImageBitmap(frame, options) : await createImageBitmap(frame, sx, sy, sw, sh, options);
     frame.close();
     const t1 = clock();
-    ctx.drawImage(bitmap, 0, 0);
+    s.ctx.drawImage(bitmap, 0, 0);
     bitmap.close();
     bitmap = null;
-    const image = ctx.getImageData(0, 0, GRID_W, GRID_H);
+    const image = s.ctx.getImageData(0, 0, s.gridWidth, s.gridHeight);
     const t2 = clock();
-    decoder.decode(image.data, grid);
+    s.decoder.decode(image.data, s.grid);
     const t3 = clock();
-    const s = stages;
-    border2 = detector.process(grid, t3);
+    border2 = detector.process(s.grid, t3);
     s.sampler.setBorder(border2);
-    s.sampler.sample(grid, s.target, "mean");
+    s.sampler.sample(s.grid, s.target, "mean");
     s.adjustment.apply(s.target);
     s.smoother.setTarget(s.target, t3);
     const t4 = clock();
@@ -2704,9 +2821,20 @@ function tick() {
   if (out === null) return;
   outputs.mark(now);
   s.order.apply(out);
-  encodeLinear16(out, s.wirePayload);
-  encodeAfx(s.wirePayload, s.wire);
-  writer.send(s.wire);
+  writer.send(encodeFrame(s, out));
+}
+function encodeFrame(s, colors) {
+  switch (s.config.output.format) {
+    case "Afx":
+      encodeLinear16(colors, s.wirePayload);
+      return encodeAfx(s.wirePayload, s.wire);
+    case "Awa":
+      encodeLinear8(colors, s.wirePayload);
+      return encodeAwa(s.wirePayload, s.config.output.calibration, s.wire);
+    case "Ada":
+      encodeLinear8(colors, s.wirePayload);
+      return encodeAda(s.wirePayload, s.wire);
+  }
 }
 function stop(reason = "user") {
   if (reason === "lost") captureLost = true;
@@ -2731,8 +2859,7 @@ function stop(reason = "user") {
   if (linkMode === "port") {
     const s = stages;
     s.wirePayload.fill(0);
-    encodeAfx(s.wirePayload, s.wire);
-    writer.send(s.wire);
+    writer.send(encodeFrame(s, s.target.fill(0)));
   }
   report();
 }

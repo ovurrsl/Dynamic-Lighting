@@ -270,10 +270,25 @@ var PERMUTATIONS = Object.freeze({
 });
 
 // lib/engine/config.ts
+var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
+var DEFAULT_OUTPUT = Object.freeze({ format: "Afx" });
+var DEFAULT_CAPTURE = Object.freeze({
+  gridWidth: 128,
+  gridHeight: 72,
+  fps: 60,
+  crop: Object.freeze({ left: 0, right: 0, top: 0, bottom: 0 })
+});
+var GRID_MIN = 16;
+var GRID_MAX = 480;
+var FPS_MIN = 1;
+var FPS_MAX = 240;
+var CROP_MAX = 0.45;
 var DEFAULT_ENGINE_CONFIG = Object.freeze({
   layout: Object.freeze({ kind: "classic", ...REFERENCE_LAYOUT }),
   blacklist: Object.freeze([]),
-  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER })
+  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
+  output: DEFAULT_OUTPUT,
+  capture: DEFAULT_CAPTURE
 });
 var ConfigError = class extends Error {
   path;
@@ -298,6 +313,18 @@ function integer(value, path, min, max = Number.MAX_SAFE_INTEGER) {
 function fraction(value, path) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new ConfigError(path, `must be a finite number, got ${describe(value)}`);
+  }
+  return value;
+}
+function boundedFraction(value, path, min, max, fallback) {
+  if (value === void 0) return fallback;
+  const n = fraction(value, path);
+  if (n < min || n > max) throw new ConfigError(path, `must be in ${min}..${max}, got ${describe(value)}`);
+  return n;
+}
+function readWireFormat(value, path) {
+  if (typeof value !== "string" || !WIRE_FORMATS.includes(value)) {
+    throw new ConfigError(path, `must be one of ${WIRE_FORMATS.join(", ")}, got ${describe(value)}`);
   }
   return value;
 }
@@ -429,7 +456,44 @@ function parseEngineConfig(value) {
     }
     colorOrder.overrides = overrides;
   }
-  const config2 = { layout, blacklist, colorOrder };
+  const outputRaw = raw.output === void 0 ? {} : object(raw.output, "config.output");
+  const format = outputRaw.format === void 0 ? DEFAULT_OUTPUT.format : readWireFormat(outputRaw.format, "output.format");
+  const output = { format };
+  if (outputRaw.calibration !== void 0) {
+    if (format !== "Awa") {
+      throw new ConfigError("output.calibration", `is only carried by the Awa format, not ${format}`);
+    }
+    const cal = object(outputRaw.calibration, "output.calibration");
+    output.calibration = {
+      // Named as the protocol names them rather than as the UI might: one
+      // vocabulary for the four bytes, so nothing has to translate between two.
+      limit: integer(cal.limit, "output.calibration.limit", 0, 255),
+      red: integer(cal.red, "output.calibration.red", 0, 255),
+      green: integer(cal.green, "output.calibration.green", 0, 255),
+      blue: integer(cal.blue, "output.calibration.blue", 0, 255)
+    };
+  }
+  const captureRaw = raw.capture === void 0 ? {} : object(raw.capture, "config.capture");
+  const cropRaw = captureRaw.crop === void 0 ? {} : object(captureRaw.crop, "config.capture.crop");
+  const crop = {
+    left: boundedFraction(cropRaw.left, "capture.crop.left", 0, CROP_MAX, DEFAULT_CAPTURE.crop.left),
+    right: boundedFraction(cropRaw.right, "capture.crop.right", 0, CROP_MAX, DEFAULT_CAPTURE.crop.right),
+    top: boundedFraction(cropRaw.top, "capture.crop.top", 0, CROP_MAX, DEFAULT_CAPTURE.crop.top),
+    bottom: boundedFraction(cropRaw.bottom, "capture.crop.bottom", 0, CROP_MAX, DEFAULT_CAPTURE.crop.bottom)
+  };
+  if (crop.left + crop.right > 0.9) {
+    throw new ConfigError("capture.crop", `left and right crop leave ${(1 - crop.left - crop.right).toFixed(2)} of the width`);
+  }
+  if (crop.top + crop.bottom > 0.9) {
+    throw new ConfigError("capture.crop", `top and bottom crop leave ${(1 - crop.top - crop.bottom).toFixed(2)} of the height`);
+  }
+  const capture = {
+    gridWidth: integer(captureRaw.gridWidth ?? DEFAULT_CAPTURE.gridWidth, "capture.gridWidth", GRID_MIN, GRID_MAX),
+    gridHeight: integer(captureRaw.gridHeight ?? DEFAULT_CAPTURE.gridHeight, "capture.gridHeight", GRID_MIN, GRID_MAX),
+    fps: integer(captureRaw.fps ?? DEFAULT_CAPTURE.fps, "capture.fps", FPS_MIN, FPS_MAX),
+    crop
+  };
+  const config2 = { layout, blacklist, colorOrder, output, capture };
   let rects;
   try {
     rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
@@ -451,7 +515,9 @@ function parseEngineConfig(value) {
 var MATRIX_ENGINE_CONFIG = Object.freeze({
   layout: Object.freeze({ kind: "matrix", ...MATRIX_REFERENCE }),
   blacklist: Object.freeze([]),
-  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER })
+  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
+  output: DEFAULT_OUTPUT,
+  capture: DEFAULT_CAPTURE
 });
 
 // lib/extension/messages.ts

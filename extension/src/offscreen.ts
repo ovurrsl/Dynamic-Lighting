@@ -4,14 +4,14 @@ import { DEFAULT_ENGINE_CONFIG, parseEngineConfig, resolveLayout, type EngineCon
 import { allocLinearGrid, createRgbaDecoder } from '#lib/engine/decode'
 import { createColorOrder, type ColorOrderStage } from '#lib/engine/order'
 import { createPattern, parsePatternSpec, type Pattern } from '#lib/engine/patterns'
-import { HEADER_SIZE, encodeAfx, frameSize } from '#lib/engine/protocol'
+import { HEADER_SIZE, encodeAda, encodeAfx, encodeAwa, frameSize } from '#lib/engine/protocol'
 import { createSampler, type Sampler } from '#lib/engine/sample'
 import { createLoopbackSink, createSerialWriter, type LoopbackSink, type SerialWriter } from '#lib/engine/serial'
 import { createSmoother, type Smoother } from '#lib/engine/smooth'
 import { createArrivalMeter, createValueMeter } from '#lib/engine/stats'
 import { NO_BORDER, allocLedColors, type Border, type LedColors } from '#lib/engine/types'
 import { isMessage, type EngineState, type EngineStats, type LinkMode, type Message } from '#lib/extension/messages'
-import { encodeLinear16 } from '#lib/light'
+import { encodeLinear16, encodeLinear8 } from '#lib/light'
 
 /**
  * The engine host: the whole pipeline, in the one document Chrome never
@@ -46,8 +46,16 @@ import { encodeLinear16 } from '#lib/light'
  * across a rebuild: a layout edit should not cost the user their screen pick.
  */
 
-const GRID_W = 128
-const GRID_H = 72
+/**
+ * The analysis grid and the capture rate used to be constants here. They are
+ * configuration now, because Hyperion makes every one of them a setting and is
+ * right to: the grid size is the first knob to reach for against the measured
+ * downscale cost, and the crop is what saves anyone whose screen includes a
+ * taskbar or a second monitor.
+ *
+ * The output rate stays a constant. It is a property of the strip and the
+ * firmware's interpolation, not of what the user is capturing.
+ */
 const OUTPUT_HZ = 120
 /** Output timer period. Chrome clamps nested timers to 4 ms; the smoother's cadence does the real pacing. */
 const TICK_MS = 4
@@ -58,12 +66,7 @@ const RECONNECT_MS = 3000
 
 const clock = (): number => performance.now()
 
-const decoder = createRgbaDecoder(GRID_W, GRID_H)
-const grid = allocLinearGrid(GRID_W, GRID_H)
 const detector = createBorderDetector({}, clock)
-
-const canvas = new OffscreenCanvas(GRID_W, GRID_H)
-const ctx = requireContext(canvas)
 
 function requireContext (c: OffscreenCanvas): OffscreenCanvasRenderingContext2D {
   const context = c.getContext('2d', { willReadFrequently: true })
@@ -119,6 +122,13 @@ let patternTimer: ReturnType<typeof setInterval> | null = null
 interface Stages {
   config: EngineConfig
   leds: number
+  /** The analysis grid, and everything sized to it. */
+  gridWidth: number
+  gridHeight: number
+  decoder: ReturnType<typeof createRgbaDecoder>
+  grid: ReturnType<typeof allocLinearGrid>
+  canvas: OffscreenCanvas
+  ctx: OffscreenCanvasRenderingContext2D
   sampler: Sampler
   adjustment: Adjustment
   order: ColorOrderStage
@@ -132,11 +142,25 @@ interface Stages {
 function build (config: EngineConfig): Stages {
   const layout = resolveLayout(config)
   const leds = layout.length
-  const wire = new Uint8Array(frameSize('Afx', leds))
+  const { gridWidth, gridHeight } = config.capture
+  const format = config.output.format
+  const calibrated = format === 'Awa' && config.output.calibration !== undefined
+  const wire = new Uint8Array(frameSize(format, leds, calibrated))
+  // Afx carries six bytes per LED, Ada and Awa three. The payload view is sized
+  // to the format so `encodeLinear16`/`encodeLinear8` write in place and the
+  // 120 Hz path stays allocation-free whichever format is chosen.
+  const payloadBytes = leds * (format === 'Afx' ? 6 : 3)
+  const canvas = new OffscreenCanvas(gridWidth, gridHeight)
   return {
     config,
     leds,
-    sampler: createSampler({ layout, width: GRID_W, height: GRID_H }),
+    gridWidth,
+    gridHeight,
+    decoder: createRgbaDecoder(gridWidth, gridHeight),
+    grid: allocLinearGrid(gridWidth, gridHeight),
+    canvas,
+    ctx: requireContext(canvas),
+    sampler: createSampler({ layout, width: gridWidth, height: gridHeight }),
     adjustment: createAdjustment([{ leds: '*' }], leds),
     order: createColorOrder(leds, {
       order: config.colorOrder.order,
@@ -145,7 +169,7 @@ function build (config: EngineConfig): Stages {
     smoother: createSmoother({ mode: 'asymmetric', count: leds, outputHz: OUTPUT_HZ }, clock),
     target: allocLedColors(leds),
     wire,
-    wirePayload: wire.subarray(HEADER_SIZE, HEADER_SIZE + leds * 6)
+    wirePayload: wire.subarray(HEADER_SIZE, HEADER_SIZE + payloadBytes)
   }
 }
 
@@ -272,8 +296,10 @@ async function openCapture (): Promise<MediaStream> {
   return await navigator.mediaDevices.getDisplayMedia({
     audio: false,
     // A ceiling, not a demand: the pipeline is latest-wins, so a source faster
-    // than the engine costs drops rather than correctness.
-    video: { frameRate: { max: OUTPUT_HZ } }
+    // than the engine costs drops rather than correctness. Configurable because
+    // halving it is the cheapest way to halve the engine's cost, and content is
+    // overwhelmingly 24, 30 or 60 fps anyway.
+    video: { frameRate: { max: stages.config.capture.fps } }
   })
 }
 
@@ -382,9 +408,7 @@ function emitPattern (): void {
   const now = clock()
   p.render(s.target, now)
   outputs.mark(now)
-  encodeLinear16(s.target, s.wirePayload)
-  encodeAfx(s.wirePayload, s.wire)
-  writer.send(s.wire)
+  writer.send(encodeFrame(s, s.target))
 }
 
 /** Everything both sources share: start the clocks, the link and the pump. */
@@ -469,28 +493,41 @@ async function pump (video: MediaStreamTrack): Promise<void> {
 
 async function processFrame (frame: VideoFrame, arrivedAt: number): Promise<void> {
   let bitmap: ImageBitmap | null = null
+  // Read `stages` ONCE for the whole frame. A config swap between two of these
+  // lines would mix a grid of one size with a decoder built for another, which
+  // is now a real hazard rather than a theoretical one: the grid is
+  // configuration and can change under a frame in flight.
+  const s = stages
   try {
-    // The one downscale: an area average straight from the VideoFrame.
+    // The one downscale: an area average straight from the VideoFrame, and the
+    // crop happens HERE, as the source rectangle. Cropping later would mean
+    // downscaling pixels that are about to be thrown away, and cropping the
+    // grid would quantise the crop to whole grid cells.
     const t0 = clock()
-    bitmap = await createImageBitmap(frame, { resizeWidth: GRID_W, resizeHeight: GRID_H, resizeQuality: 'high' })
+    const crop = s.config.capture.crop
+    const sx = Math.round(frame.displayWidth * crop.left)
+    const sy = Math.round(frame.displayHeight * crop.top)
+    const sw = Math.max(1, Math.round(frame.displayWidth * (1 - crop.left - crop.right)))
+    const sh = Math.max(1, Math.round(frame.displayHeight * (1 - crop.top - crop.bottom)))
+    const options = { resizeWidth: s.gridWidth, resizeHeight: s.gridHeight, resizeQuality: 'high' } as const
+    bitmap = sx === 0 && sy === 0 && sw === frame.displayWidth && sh === frame.displayHeight
+      ? await createImageBitmap(frame, options)
+      : await createImageBitmap(frame, sx, sy, sw, sh, options)
     frame.close()
     const t1 = clock()
-    ctx.drawImage(bitmap, 0, 0)
+    s.ctx.drawImage(bitmap, 0, 0)
     bitmap.close()
     bitmap = null
     // getImageData is where the GPU work is actually waited on: the drawImage
     // above only queues, so timing them apart would credit the wrong stage.
-    const image = ctx.getImageData(0, 0, GRID_W, GRID_H)
+    const image = s.ctx.getImageData(0, 0, s.gridWidth, s.gridHeight)
     const t2 = clock()
-    decoder.decode(image.data, grid)
+    s.decoder.decode(image.data, s.grid)
     const t3 = clock()
 
-    // Read `stages` once: a config swap between two of these lines would mix a
-    // sampler with another layout's target buffer.
-    const s = stages
-    border = detector.process(grid, t3)
+    border = detector.process(s.grid, t3)
     s.sampler.setBorder(border)
-    s.sampler.sample(grid, s.target, 'mean')
+    s.sampler.sample(s.grid, s.target, 'mean')
     s.adjustment.apply(s.target)
     s.smoother.setTarget(s.target, t3)
     const t4 = clock()
@@ -526,9 +563,36 @@ function tick (): void {
   // The channel order is the last thing before the bytes: everything above it,
   // the corner calibration included, works in real colours.
   s.order.apply(out)
-  encodeLinear16(out, s.wirePayload)
-  encodeAfx(s.wirePayload, s.wire)
-  writer.send(s.wire)
+  writer.send(encodeFrame(s, out))
+}
+
+/**
+ * Colours to a frame on the wire, in whichever format is configured.
+ *
+ * 'Afx' is ours and the only one that carries the 16-bit linear precision the
+ * engine works in. The other two exist so AmbiFlux drives hardware somebody
+ * already owns: 'Awa' and 'Ada' are Adalight, which is what HyperSerialESP32,
+ * HyperSerialWLED and every stock Adalight FastLED sketch speak. That is the
+ * difference between "works with your strip" and "reflash your board first".
+ *
+ * Linear 8-bit rather than sRGB 8-bit for those two, deliberately: an Adalight
+ * sketch writes the byte straight to the LED library, and a WS2812's brightness
+ * follows PWM duty, which follows the byte. Gamma-encoding here would be applied
+ * a second time by the physics and come out roughly squared - the same mistake
+ * the port plan catalogues in Hyperion's own pipeline.
+ */
+function encodeFrame (s: Stages, colors: LedColors): Uint8Array {
+  switch (s.config.output.format) {
+    case 'Afx':
+      encodeLinear16(colors, s.wirePayload)
+      return encodeAfx(s.wirePayload, s.wire)
+    case 'Awa':
+      encodeLinear8(colors, s.wirePayload)
+      return encodeAwa(s.wirePayload, s.config.output.calibration, s.wire)
+    case 'Ada':
+      encodeLinear8(colors, s.wirePayload)
+      return encodeAda(s.wirePayload, s.wire)
+  }
 }
 
 /**
@@ -567,8 +631,10 @@ function stop (reason: StopReason = 'user'): void {
   if (linkMode === 'port') {
     const s = stages
     s.wirePayload.fill(0)
-    encodeAfx(s.wirePayload, s.wire)
-    writer.send(s.wire)
+    // Through the same encoder as every other frame: a black frame in the wrong
+    // format is a frame the strip ignores, and the strip then holds the last
+    // picture - which is exactly what this line exists to prevent.
+    writer.send(encodeFrame(s, s.target.fill(0)))
   }
   report()
 }

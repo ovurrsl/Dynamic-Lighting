@@ -18,11 +18,13 @@ import { useTranslate } from '#components/Preferences'
 import { clearStoredConfig, loadStoredConfig, storeConfig } from '#lib/config-store'
 import {
   DEFAULT_ENGINE_CONFIG,
+  WIRE_FORMATS,
   MATRIX_ENGINE_CONFIG,
   parseEngineConfig,
   resolveLayout,
   type EngineConfig,
-  type LayoutConfig
+  type LayoutConfig,
+  type WireFormat
 } from '#lib/engine/config'
 import { CORNERS, LAYOUT_DEFAULTS, NO_KEYSTONE, type Corner, type Keystone } from '#lib/engine/layout'
 import { COLOR_ORDERS, type ColorOrder } from '#lib/engine/order'
@@ -704,6 +706,52 @@ export function LayoutCard ({
           </Select.Popover>
         </Select>
         <p className="text-xs text-muted">{t('layout.orderNote')}</p>
+
+        {/*
+          The wire format sits with the channel order because both describe how
+          the DEVICE is spoken to rather than what the screen looks like. Afx is
+          ours; the other two are Adalight, which is what HyperSerialESP32,
+          HyperSerialWLED and every stock Adalight FastLED sketch already speak -
+          the difference between "works with the strip you already own" and
+          "reflash your board first".
+        */}
+        <Select
+          className="w-80"
+          value={draft.output.format}
+          onChange={(value) => {
+            setNotice(null)
+            setDraft((current) => ({
+              ...current,
+              // The calibration bytes only exist on Awa; carrying them onto
+              // another format is refused by the parser, so they are dropped
+              // here rather than turned into an error the user cannot act on.
+              // Awa is the only format that carries the four calibration bytes, so
+              // switching TO it keeps them and switching away drops them. Keeping
+              // `current.output` wholesale would keep the old FORMAT too, which
+              // is the bug this line replaces.
+              output: value === 'Awa'
+                ? { ...current.output, format: 'Awa' }
+                : { format: value as WireFormat }
+            }))
+          }}
+        >
+          <Label>{t('output.format')}</Label>
+          <Select.Trigger>
+            <Select.Value />
+            <Select.Indicator />
+          </Select.Trigger>
+          <Select.Popover>
+            <ListBox>
+              {WIRE_FORMATS.map((format) => (
+                <ListBox.Item id={format} key={format} textValue={t(`output.format.${format}`)}>
+                  {t(`output.format.${format}`)}
+                  <ListBox.ItemIndicator />
+                </ListBox.Item>
+              ))}
+            </ListBox>
+          </Select.Popover>
+        </Select>
+        <p className="text-xs text-muted">{t(`output.note.${draft.output.format}`)}</p>
 
         {!resolved.ok && (
           <Surface className="rounded-xl p-3 text-sm text-danger" variant="secondary">

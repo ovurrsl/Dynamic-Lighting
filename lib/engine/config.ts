@@ -14,6 +14,7 @@ import {
   type MatrixLayoutSpec
 } from '#lib/engine/layout'
 import { COLOR_ORDERS, DEFAULT_COLOR_ORDER, type ColorOrder } from '#lib/engine/order'
+import type { Calibration } from '#lib/engine/protocol'
 import type { LedRect } from '#lib/engine/types'
 
 /**
@@ -44,18 +45,105 @@ export interface ColorOrderConfig {
   overrides?: Record<number, ColorOrder>
 }
 
+/**
+ * What goes on the wire, and the reason this is configurable at all.
+ *
+ * 'Afx' is our own: 16-bit linear with a Fletcher trailer, and the only one
+ * that carries the precision the engine works in. It needs our firmware.
+ *
+ * 'Awa' and 'Ada' are Adalight, which is what everyone else already speaks -
+ * HyperSerialESP32, HyperSerialWLED, the stock Adalight FastLED sketch, a
+ * dozen forks. Supporting them is the difference between "works with the strip
+ * you already own" and "reflash your board first", and the encoders have
+ * existed and been tested since the protocol module was written; only the
+ * choice was missing.
+ *
+ * 'Ada' has NO integrity check of any kind - a flipped bit is shown as colour.
+ * It is here because some old sketches accept nothing else, and it is never the
+ * default.
+ */
+export type WireFormat = 'Afx' | 'Awa' | 'Ada'
+
+export const WIRE_FORMATS: readonly WireFormat[] = Object.freeze(['Afx', 'Awa', 'Ada'])
+
+export interface OutputConfig {
+  format: WireFormat
+  /**
+   * 'Awa' only: the four white-balance bytes HyperHDR's calibrated 'AwA' frame
+   * carries. Absent means the plain 'Awa' magic, which is what a stock
+   * Adalight sketch expects.
+   */
+  calibration?: Calibration
+}
+
+/**
+ * The capture side, which until now was three constants in the engine.
+ *
+ * Hyperion makes every one of these a setting (schema-framegrabber.json), and
+ * it is right to: `pixelDecimation` alone is the difference between a Pi that
+ * keeps up and one that does not, and the crop is what saves anyone whose
+ * capture includes a taskbar or a second monitor.
+ */
+export interface CaptureConfig {
+  /**
+   * The analysis grid. Not the capture resolution - the source is whatever the
+   * screen is - but the size everything downstream sees.
+   *
+   * 128x72 is the default because it gives about 3.7 horizontal cells per LED
+   * on a 35-LED top edge, which is comfortable. Lower is cheaper and the
+   * downscale is the measured bottleneck (p50 9.00 ms at 1080p against an
+   * 8.33 ms budget), so this is the first knob to reach for - and the reason
+   * it is a knob rather than a smaller constant is that the quality cost has
+   * not been measured yet.
+   */
+  gridWidth: number
+  gridHeight: number
+  /** Capture rate ceiling. A ceiling, not a demand: the pipeline is latest-wins. */
+  fps: number
+  /**
+   * Fractions of the source cut away before anything looks at it, 0..0.45 each.
+   *
+   * Hyperion counts these in source pixels; fractions here, because the source
+   * size changes under us - a resolution change ends the stream and the next
+   * one may be a different size, and a crop in pixels would then mean
+   * something different without anyone touching it.
+   */
+  crop: { left: number, right: number, top: number, bottom: number }
+}
+
 export interface EngineConfig {
   layout: LayoutConfig
   /** LEDs that are wired but must never light. */
   blacklist: BlacklistRange[]
   colorOrder: ColorOrderConfig
+  output: OutputConfig
+  capture: CaptureConfig
 }
+
+export const DEFAULT_OUTPUT: Readonly<OutputConfig> = Object.freeze({ format: 'Afx' as WireFormat })
+
+export const DEFAULT_CAPTURE: Readonly<CaptureConfig> = Object.freeze({
+  gridWidth: 128,
+  gridHeight: 72,
+  fps: 60,
+  crop: Object.freeze({ left: 0, right: 0, top: 0, bottom: 0 })
+})
+
+/** Grid bounds. The low end is where a 35-LED edge starts sharing cells between LEDs. */
+export const GRID_MIN = 16
+export const GRID_MAX = 480
+export const FPS_MIN = 1
+export const FPS_MAX = 240
+/** Per side. Two opposite crops must still leave something, which is checked separately. */
+export const CROP_MAX = 0.45
 
 /** The reference rig: the 108-LED frame on the 27" panel, wired rgb. */
 export const DEFAULT_ENGINE_CONFIG: Readonly<EngineConfig> = Object.freeze({
   layout: Object.freeze({ kind: 'classic', ...REFERENCE_LAYOUT }),
   blacklist: Object.freeze([]) as unknown as BlacklistRange[],
-  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER })
+  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
+  output: DEFAULT_OUTPUT,
+  capture: DEFAULT_CAPTURE
 })
 
 /** Number of LEDs the layout describes, before the blacklist (which keeps the count). */
@@ -115,6 +203,21 @@ function fraction (value: unknown, path: string): number {
     throw new ConfigError(path, `must be a finite number, got ${describe(value)}`)
   }
   return value
+}
+
+/** A fraction with bounds and a default, for the knobs that may be omitted. */
+function boundedFraction (value: unknown, path: string, min: number, max: number, fallback: number): number {
+  if (value === undefined) return fallback
+  const n = fraction(value, path)
+  if (n < min || n > max) throw new ConfigError(path, `must be in ${min}..${max}, got ${describe(value)}`)
+  return n
+}
+
+function readWireFormat (value: unknown, path: string): WireFormat {
+  if (typeof value !== 'string' || !WIRE_FORMATS.includes(value as WireFormat)) {
+    throw new ConfigError(path, `must be one of ${WIRE_FORMATS.join(', ')}, got ${describe(value)}`)
+  }
+  return value as WireFormat
 }
 
 function boolean (value: unknown, path: string): boolean {
@@ -265,7 +368,52 @@ export function parseEngineConfig (value: unknown): EngineConfig {
     colorOrder.overrides = overrides
   }
 
-  const config: EngineConfig = { layout, blacklist, colorOrder }
+  const outputRaw = raw.output === undefined ? {} : object(raw.output, 'config.output')
+  const format = outputRaw.format === undefined
+    ? DEFAULT_OUTPUT.format
+    : readWireFormat(outputRaw.format, 'output.format')
+  const output: OutputConfig = { format }
+  if (outputRaw.calibration !== undefined) {
+    if (format !== 'Awa') {
+      // Silently dropping it would leave someone staring at a white balance
+      // that does nothing, which is worse than being told.
+      throw new ConfigError('output.calibration', `is only carried by the Awa format, not ${format}`)
+    }
+    const cal = object(outputRaw.calibration, 'output.calibration')
+    output.calibration = {
+      // Named as the protocol names them rather than as the UI might: one
+      // vocabulary for the four bytes, so nothing has to translate between two.
+      limit: integer(cal.limit, 'output.calibration.limit', 0, 255),
+      red: integer(cal.red, 'output.calibration.red', 0, 255),
+      green: integer(cal.green, 'output.calibration.green', 0, 255),
+      blue: integer(cal.blue, 'output.calibration.blue', 0, 255)
+    }
+  }
+
+  const captureRaw = raw.capture === undefined ? {} : object(raw.capture, 'config.capture')
+  const cropRaw = captureRaw.crop === undefined ? {} : object(captureRaw.crop, 'config.capture.crop')
+  const crop = {
+    left: boundedFraction(cropRaw.left, 'capture.crop.left', 0, CROP_MAX, DEFAULT_CAPTURE.crop.left),
+    right: boundedFraction(cropRaw.right, 'capture.crop.right', 0, CROP_MAX, DEFAULT_CAPTURE.crop.right),
+    top: boundedFraction(cropRaw.top, 'capture.crop.top', 0, CROP_MAX, DEFAULT_CAPTURE.crop.top),
+    bottom: boundedFraction(cropRaw.bottom, 'capture.crop.bottom', 0, CROP_MAX, DEFAULT_CAPTURE.crop.bottom)
+  }
+  // Each side is capped at 0.45, but 0.45 + 0.45 leaves a tenth of the screen
+  // and 0.5 + 0.5 leaves nothing at all. The pair is what has to be checked.
+  if (crop.left + crop.right > 0.9) {
+    throw new ConfigError('capture.crop', `left and right crop leave ${(1 - crop.left - crop.right).toFixed(2)} of the width`)
+  }
+  if (crop.top + crop.bottom > 0.9) {
+    throw new ConfigError('capture.crop', `top and bottom crop leave ${(1 - crop.top - crop.bottom).toFixed(2)} of the height`)
+  }
+  const capture: CaptureConfig = {
+    gridWidth: integer(captureRaw.gridWidth ?? DEFAULT_CAPTURE.gridWidth, 'capture.gridWidth', GRID_MIN, GRID_MAX),
+    gridHeight: integer(captureRaw.gridHeight ?? DEFAULT_CAPTURE.gridHeight, 'capture.gridHeight', GRID_MIN, GRID_MAX),
+    fps: integer(captureRaw.fps ?? DEFAULT_CAPTURE.fps, 'capture.fps', FPS_MIN, FPS_MAX),
+    crop
+  }
+
+  const config: EngineConfig = { layout, blacklist, colorOrder, output, capture }
 
   // The generators own their rules; ask them. A layout that cannot be built is
   // a config error with the generator's own message, which names the knob.
@@ -308,5 +456,7 @@ export function deserialiseEngineConfig (json: string): EngineConfig {
 export const MATRIX_ENGINE_CONFIG: Readonly<EngineConfig> = Object.freeze({
   layout: Object.freeze({ kind: 'matrix', ...MATRIX_REFERENCE }),
   blacklist: Object.freeze([]) as unknown as BlacklistRange[],
-  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER })
+  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
+  output: DEFAULT_OUTPUT,
+  capture: DEFAULT_CAPTURE
 })

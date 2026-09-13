@@ -15,6 +15,39 @@ import { FALLBACK_LOCALE, type Locale } from '#lib/i18n/locales'
  */
 
 const en = {
+  'nav.capture': 'Capture',
+  'nav.capture.description': 'How much of the screen is read, how often, and at what resolution.',
+  'capture.grid.title': 'Analysis grid',
+  'capture.grid.description': 'Not the capture resolution — the source is whatever your screen is — but the size everything downstream sees. This is the first knob to reach for when the engine is behind: the downscale is the measured bottleneck.',
+  'capture.gridWidth': 'Grid width',
+  'capture.gridHeight': 'Grid height',
+  'capture.cells': '{cells} horizontal cells per LED on the longest edge',
+  'capture.cellsTight': 'Below about 2 cells per LED, neighbouring LEDs start sharing pixels.',
+  'capture.fps': 'Capture rate',
+  'capture.fps.note': 'A ceiling, not a demand: the pipeline is latest-wins, so a faster source costs dropped frames rather than correctness. Content is overwhelmingly 24, 30 or 60 fps, and halving this halves the engine’s cost.',
+  'capture.crop.title': 'Crop',
+  'capture.crop.description': 'Cut away before anything looks at it — a taskbar, a letterbox you would rather set by hand, a second monitor caught in the capture. Given as fractions because a resolution change ends the stream and the next one may be a different size; a crop in pixels would then quietly mean something else.',
+  'capture.crop.left': 'Left',
+  'capture.crop.right': 'Right',
+  'capture.crop.top': 'Top',
+  'capture.crop.bottom': 'Bottom',
+  'capture.remaining': '{percent}% of the screen remains',
+  'capture.apply': 'Apply',
+  'capture.applied': 'Applied and saved.',
+  'capture.failed': 'It could not be applied: {reason}',
+  'capture.restart': 'A grid or crop change takes effect on the next frame. A capture-rate change needs the capture restarted.',
+  'capture.needExtension': 'These are engine settings, so the extension has to be installed.',
+
+  'output.title': 'Wire format',
+  'output.description': 'What goes on the wire. Afx is ours and the only one carrying the 16-bit linear precision the engine works in — but it needs our firmware. The other two are Adalight, which is what HyperSerialESP32, HyperSerialWLED and every stock Adalight FastLED sketch already speak.',
+  'output.format': 'Format',
+  'output.format.Afx': 'Afx — 16-bit linear, our firmware',
+  'output.format.Awa': 'Awa — Adalight with an integrity check',
+  'output.format.Ada': 'Ada — plain Adalight, no integrity check',
+  'output.note.Afx': 'Six bytes per LED, a Fletcher trailer, and a control channel. Needs the firmware in firmware/.',
+  'output.note.Awa': 'Three bytes per LED plus a Fletcher trailer. HyperHDR’s format: works with HyperSerialESP32, HyperSerialWLED and anything else speaking AWA.',
+  'output.note.Ada': 'Three bytes per LED and no check of any kind — a flipped bit is shown as colour. Here only because some older sketches accept nothing else.',
+
   'caps.title': 'What this browser can do',
   'caps.description': 'Asked of your browser, not of a compatibility table. The tables have been wrong about this project three times, each time in a way that changed the design — so the panel asks, and shows the answer.',
   'caps.yes': 'yes',
@@ -332,6 +365,39 @@ export const MESSAGE_KEYS = Object.keys(en) as MessageKey[]
 export type Messages = Record<MessageKey, string>
 
 const tr: Messages = {
+  'nav.capture': 'Yakalama',
+  'nav.capture.description': 'Ekranın ne kadarının, hangi sıklıkta ve hangi çözünürlükte okunduğu.',
+  'capture.grid.title': 'Analiz ızgarası',
+  'capture.grid.description': 'Yakalama çözünürlüğü değil — kaynak ekranın neyse o — ama aşağıdaki her şeyin gördüğü boyut. Motor geride kalıyorsa ilk uzanılacak düğme bu: ölçülen darboğaz küçültme.',
+  'capture.gridWidth': 'Izgara genişliği',
+  'capture.gridHeight': 'Izgara yüksekliği',
+  'capture.cells': 'En uzun kenarda LED başına {cells} yatay hücre',
+  'capture.cellsTight': 'LED başına yaklaşık 2 hücrenin altında komşu LED’ler piksel paylaşmaya başlıyor.',
+  'capture.fps': 'Yakalama hızı',
+  'capture.fps.note': 'Talep değil tavan: hat en-son-kazanır, yani daha hızlı bir kaynak doğruluğa değil düşen karelere mal oluyor. İçerik ezici çoğunlukla 24, 30 ya da 60 fps, ve bunu yarıya indirmek motorun maliyetini yarıya indiriyor.',
+  'capture.crop.title': 'Kırpma',
+  'capture.crop.description': 'Hiçbir şey bakmadan önce kesilip atılıyor — görev çubuğu, elle ayarlamayı tercih ettiğin bir letterbox, yakalamaya karışan ikinci bir monitör. Oran olarak veriliyor çünkü çözünürlük değişimi akışı bitiriyor ve bir sonraki farklı boyutta olabilir; piksel cinsinden bir kırpma o zaman sessizce başka bir şey demek olurdu.',
+  'capture.crop.left': 'Sol',
+  'capture.crop.right': 'Sağ',
+  'capture.crop.top': 'Üst',
+  'capture.crop.bottom': 'Alt',
+  'capture.remaining': 'Ekranın %{percent}’i kalıyor',
+  'capture.apply': 'Uygula',
+  'capture.applied': 'Uygulandı ve kaydedildi.',
+  'capture.failed': 'Uygulanamadı: {reason}',
+  'capture.restart': 'Izgara ve kırpma değişikliği sonraki karede geçerli. Yakalama hızı değişikliği için yakalamanın yeniden başlatılması gerekiyor.',
+  'capture.needExtension': 'Bunlar motor ayarları, yani eklentinin kurulu olması gerekiyor.',
+
+  'output.title': 'Tel formatı',
+  'output.description': 'Kabloya ne gidiyor. Afx bizim ve motorun çalıştığı 16-bit doğrusal hassasiyeti taşıyan tek format — ama bizim firmware’imizi istiyor. Diğer ikisi Adalight, yani HyperSerialESP32’nin, HyperSerialWLED’in ve her standart Adalight FastLED sketch’inin zaten konuştuğu dil.',
+  'output.format': 'Format',
+  'output.format.Afx': 'Afx — 16-bit doğrusal, bizim firmware',
+  'output.format.Awa': 'Awa — bütünlük kontrollü Adalight',
+  'output.format.Ada': 'Ada — düz Adalight, bütünlük kontrolü yok',
+  'output.note.Afx': 'LED başına altı bayt, Fletcher trailer, ve bir kontrol kanalı. firmware/ içindeki firmware’i istiyor.',
+  'output.note.Awa': 'LED başına üç bayt artı Fletcher trailer. HyperHDR’ın formatı: HyperSerialESP32, HyperSerialWLED ve AWA konuşan her şeyle çalışıyor.',
+  'output.note.Ada': 'LED başına üç bayt ve hiçbir kontrol yok — ters dönen bir bit renk olarak gösteriliyor. Burada olma sebebi sadece bazı eski sketch’lerin başka bir şey kabul etmemesi.',
+
   'caps.title': 'Bu tarayıcı ne yapabiliyor',
   'caps.description': 'Uyumluluk tablosuna değil, senin tarayıcına soruldu. Tablolar bu projede üç kez yanıldı ve her seferinde tasarımı değiştiren bir konuda — o yüzden panel soruyor ve cevabı gösteriyor.',
   'caps.yes': 'var',
@@ -655,6 +721,7 @@ const tr: Messages = {
  * every listed language is usable, and the gaps are in the same, explainable place.
  */
 const de: Partial<Messages> = {
+  'nav.capture': 'Aufnahme',
   'nav.calibration': 'Kalibrierung',
   'nav.overview': 'Übersicht',
   'nav.colour': 'Farbe',
@@ -743,6 +810,7 @@ const de: Partial<Messages> = {
 }
 
 const zhCN: Partial<Messages> = {
+  'nav.capture': '采集',
   'nav.calibration': '校准',
   'nav.overview': '概览',
   'nav.colour': '颜色',
@@ -831,6 +899,7 @@ const zhCN: Partial<Messages> = {
 }
 
 const es: Partial<Messages> = {
+  'nav.capture': 'Captura',
   'nav.calibration': 'Calibración',
   'nav.overview': 'Resumen',
   'nav.colour': 'Color',
@@ -919,6 +988,7 @@ const es: Partial<Messages> = {
 }
 
 const fr: Partial<Messages> = {
+  'nav.capture': 'Capture',
   'nav.calibration': 'Étalonnage',
   'nav.overview': 'Vue d’ensemble',
   'nav.colour': 'Couleur',
@@ -1007,6 +1077,7 @@ const fr: Partial<Messages> = {
 }
 
 const ru: Partial<Messages> = {
+  'nav.capture': 'Захват',
   'nav.calibration': 'Калибровка',
   'nav.overview': 'Обзор',
   'nav.colour': 'Цвет',
@@ -1095,6 +1166,7 @@ const ru: Partial<Messages> = {
 }
 
 const ptBR: Partial<Messages> = {
+  'nav.capture': 'Captura',
   'nav.calibration': 'Calibração',
   'nav.overview': 'Visão geral',
   'nav.colour': 'Cor',
@@ -1183,6 +1255,7 @@ const ptBR: Partial<Messages> = {
 }
 
 const it: Partial<Messages> = {
+  'nav.capture': 'Acquisizione',
   'nav.calibration': 'Calibrazione',
   'nav.overview': 'Panoramica',
   'nav.colour': 'Colore',
@@ -1271,6 +1344,7 @@ const it: Partial<Messages> = {
 }
 
 const pl: Partial<Messages> = {
+  'nav.capture': 'Przechwytywanie',
   'nav.calibration': 'Kalibracja',
   'nav.overview': 'Przegląd',
   'nav.colour': 'Kolor',
@@ -1359,6 +1433,7 @@ const pl: Partial<Messages> = {
 }
 
 const nl: Partial<Messages> = {
+  'nav.capture': 'Opname',
   'nav.calibration': 'Kalibratie',
   'nav.overview': 'Overzicht',
   'nav.colour': 'Kleur',
@@ -1447,6 +1522,7 @@ const nl: Partial<Messages> = {
 }
 
 const ja: Partial<Messages> = {
+  'nav.capture': 'キャプチャ',
   'nav.calibration': 'キャリブレーション',
   'nav.overview': '概要',
   'nav.colour': '色',

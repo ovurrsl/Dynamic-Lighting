@@ -1,17 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import {
-  ConfigError,
-  DEFAULT_ENGINE_CONFIG,
-  MATRIX_ENGINE_CONFIG,
-  configLedCount,
-  deserialiseEngineConfig,
-  parseEngineConfig,
-  resolveLayout,
-  serialiseEngineConfig,
-  type EngineConfig
-} from '#lib/engine/config'
+import { ConfigError, DEFAULT_CAPTURE, DEFAULT_ENGINE_CONFIG, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, type EngineConfig } from '#lib/engine/config'
 import { DARK_RECT, REFERENCE_LAYOUT, classicLayout, matrixLayout } from '#lib/engine/layout'
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
@@ -158,4 +148,83 @@ test('parsing does not keep a reference to the caller\'s object', () => {
   raw.blacklist.push({ start: 0, length: 1 })
   assert.equal((config.layout as { top: number }).top, 35, 'the parsed config is its own')
   assert.deepEqual(config.blacklist, [])
+})
+
+test('the wire format defaults to Afx and only accepts the three it can encode', () => {
+  // Afx is ours and the only one carrying 16-bit linear. The other two exist so
+  // AmbiFlux drives hardware somebody already owns, which is the whole point of
+  // the setting.
+  assert.equal(parseEngineConfig(DEFAULT_ENGINE_CONFIG).output.format, 'Afx')
+  for (const format of WIRE_FORMATS) {
+    const config = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format } })
+    assert.equal(config.output.format, format)
+  }
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Tpm2' } }),
+    /output.format/
+  )
+})
+
+test('AWA calibration is accepted for Awa and refused for the formats that cannot carry it', () => {
+  const calibration = { limit: 255, red: 255, green: 240, blue: 220 }
+  const ok = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Awa', calibration } })
+  assert.deepEqual(ok.output.calibration, calibration)
+  // Silently dropping it would leave someone staring at a white balance that
+  // does nothing, which is worse than being told.
+  for (const format of ['Afx', 'Ada'] as const) {
+    assert.throws(
+      () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format, calibration } }),
+      /only carried by the Awa format/
+    )
+  }
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Awa', calibration: { ...calibration, red: 256 } } }),
+    /calibration.red/
+  )
+})
+
+test('capture settings default to the reference grid and are bounded', () => {
+  const config = parseEngineConfig(DEFAULT_ENGINE_CONFIG)
+  assert.deepEqual(config.capture, DEFAULT_CAPTURE)
+
+  const custom = parseEngineConfig({
+    ...DEFAULT_ENGINE_CONFIG,
+    capture: { gridWidth: 96, gridHeight: 54, fps: 30, crop: { left: 0.1, right: 0, top: 0, bottom: 0.2 } }
+  })
+  assert.equal(custom.capture.gridWidth, 96)
+  assert.equal(custom.capture.fps, 30)
+  assert.equal(custom.capture.crop.bottom, 0.2)
+
+  for (const bad of [
+    { gridWidth: GRID_MIN - 1 }, { gridWidth: GRID_MAX + 1 }, { gridHeight: 0 },
+    { fps: 0 }, { fps: FPS_MAX + 1 }, { gridWidth: 100.5 }
+  ]) {
+    assert.throws(
+      () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, capture: { ...DEFAULT_CAPTURE, ...bad } }),
+      /capture\./,
+      JSON.stringify(bad)
+    )
+  }
+})
+
+test('a crop that would leave nothing on screen is refused as a pair, not per side', () => {
+  // Each side is capped at 0.45, and 0.45 + 0.45 is legal per side while
+  // leaving a tenth of the screen. The pair is what has to be checked.
+  const crop = (over: Record<string, number>) =>
+    parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, capture: { ...DEFAULT_CAPTURE, crop: { left: 0, right: 0, top: 0, bottom: 0, ...over } } })
+
+  assert.doesNotThrow(() => crop({ left: 0.45, right: 0.45 }))
+  assert.throws(() => crop({ left: 0.45, right: 0.46 }), /capture.crop.right/)
+  assert.throws(() => crop({ left: 0.5 }), /capture.crop.left/)
+  assert.throws(() => crop({ top: -0.1 }), /capture.crop.top/)
+})
+
+test('an old stored config with neither section still loads', () => {
+  // The extension stores a config that an older version wrote, and a user whose
+  // stored layout suddenly failed to parse would lose their rig to an upgrade.
+  const old = { layout: DEFAULT_ENGINE_CONFIG.layout, blacklist: [], colorOrder: { order: 'grb' } }
+  const config = parseEngineConfig(old)
+  assert.equal(config.output.format, 'Afx')
+  assert.deepEqual(config.capture, DEFAULT_CAPTURE)
+  assert.equal(config.colorOrder.order, 'grb')
 })

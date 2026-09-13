@@ -3,21 +3,29 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Card, Surface } from '@heroui/react'
 
+import { useTranslate } from '#components/Preferences'
 import { fetchStatus, probeExtension, stopEngine, type ExtensionProbe } from '#lib/extension-client'
+import type { MessageKey } from '#lib/i18n/strings'
 import type { EngineState, EngineStats } from '#lib/extension/messages'
 
-const STATE_LABEL: Record<EngineState, string> = {
-  idle: 'Beklemede',
-  starting: 'Başlıyor',
-  running: 'Çalışıyor',
-  error: 'Hata'
+/**
+ * The state and link names are keys, not text: the engine reports an enum and
+ * the panel has to be able to say it in whatever language is chosen. Mapping to
+ * keys here rather than to strings keeps the compiler checking that every enum
+ * member has one.
+ */
+const STATE_KEY: Record<EngineState, MessageKey> = {
+  idle: 'device.state.idle',
+  starting: 'device.state.starting',
+  running: 'device.state.running',
+  error: 'device.state.error'
 }
 
-const LINK_LABEL = {
-  none: 'bağlı değil',
-  loopback: 'cihazsız (loopback)',
-  port: 'seri port'
-} as const
+const LINK_KEY = {
+  none: 'device.link.none',
+  loopback: 'device.link.loopback',
+  port: 'device.link.port'
+} as const satisfies Record<string, MessageKey>
 
 const fmt = (n: number, digits = 1): string => (Number.isFinite(n) ? n.toFixed(digits) : '–')
 
@@ -27,6 +35,7 @@ const fmt = (n: number, digits = 1): string => (Number.isFinite(n) ? n.toFixed(d
  * because they fail apart. A missing extension is shown as missing.
  */
 export function DeviceCard () {
+  const t = useTranslate()
   const [probe, setProbe] = useState<ExtensionProbe | null>(null)
   const [stats, setStats] = useState<EngineStats | null>(null)
   const [state, setState] = useState<EngineState>('idle')
@@ -64,22 +73,18 @@ export function DeviceCard () {
   return (
     <Card variant="default">
       <Card.Header>
-        <Card.Title>Cihaz</Card.Title>
-        <Card.Description>
-          Yakalama ve seri port tarayıcı eklentisinde çalışıyor; bu kart eklentiden okur.
-        </Card.Description>
+        <Card.Title>{t('device.title')}</Card.Title>
+        <Card.Description>{t('device.description')}</Card.Description>
       </Card.Header>
       <Card.Content className="flex flex-col gap-4">
-        {probe === null && <p className="text-sm text-muted">Eklenti aranıyor…</p>}
+        {probe === null && <p className="text-sm text-muted">{t('device.searching')}</p>}
 
         {probe?.available === false && (
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm text-muted">
-              {probe.reason === 'no-runtime'
-                ? 'Bu tarayıcı eklenti mesajlaşmasını desteklemiyor (Chromium gerekir) ya da bu adres eklentinin izin listesinde değil.'
-                : 'Eklenti bulunamadı. Yüklüyse Chrome\'da chrome://extensions altında etkin olduğundan emin olun.'}
+              {t(probe.reason === 'no-runtime' ? 'device.noRuntime' : 'device.notFound')}
             </span>
-            <Button size="sm" variant="secondary" onPress={reprobe}>Yeniden dene</Button>
+            <Button size="sm" variant="secondary" onPress={reprobe}>{t('device.retry')}</Button>
           </div>
         )}
 
@@ -87,44 +92,44 @@ export function DeviceCard () {
           <>
             <div className="flex flex-wrap items-center gap-3">
               <span className="rounded-full bg-background/60 px-3 py-1 text-sm">
-                {STATE_LABEL[state]}
+                {t(STATE_KEY[state])}
               </span>
-              <span className="text-xs text-muted">eklenti v{version}</span>
+              <span className="text-xs text-muted">{t('device.version', { version })}</span>
               {state === 'running' && (
-                <Button size="sm" variant="secondary" onPress={() => { void stopEngine() }}>Durdur</Button>
+                <Button size="sm" variant="secondary" onPress={() => { void stopEngine() }}>
+                  {t('device.stop')}
+                </Button>
               )}
             </div>
 
             {stats !== null && (
               <Surface className="grid grid-cols-2 gap-x-6 gap-y-1 rounded-xl p-3 font-mono text-xs sm:grid-cols-3" variant="secondary">
-                <Stat label="teslim edilen" value={`${fmt(stats.deliveredFps)} fps`} />
-                <Stat label="varış p50 / p99" value={`${fmt(stats.interArrivalMs.p50)} / ${fmt(stats.interArrivalMs.p99)} ms`} />
-                <Stat label="çıkış" value={`${fmt(stats.outputFps)} fps`} />
-                <Stat label="yakalama boşluğu" value={String(stats.captureGaps)} />
-                <Stat label="hat düşüşü" value={String(stats.pipelineDrops)} />
-                <Stat label="seri düşüşü" value={String(stats.link.dropped)} />
-                <Stat label="işleme p50 / p99" value={`${fmt(stats.processMs.p50, 2)} / ${fmt(stats.processMs.p99, 2)} ms`} />
-                <Stat label="bağlantı" value={LINK_LABEL[stats.link.mode] + (stats.link.port !== undefined ? ` ${stats.link.port}` : '')} />
+                <Stat label={t('device.stat.delivered')} value={`${fmt(stats.deliveredFps)} fps`} />
+                <Stat label={t('device.stat.arrival')} value={`${fmt(stats.interArrivalMs.p50)} / ${fmt(stats.interArrivalMs.p99)} ms`} />
+                <Stat label={t('device.stat.output')} value={`${fmt(stats.outputFps)} fps`} />
+                <Stat label={t('device.stat.captureGaps')} value={String(stats.captureGaps)} />
+                <Stat label={t('device.stat.pipelineDrops')} value={String(stats.pipelineDrops)} />
+                <Stat label={t('device.stat.serialDrops')} value={String(stats.link.dropped)} />
+                <Stat label={t('device.stat.process')} value={`${fmt(stats.processMs.p50, 2)} / ${fmt(stats.processMs.p99, 2)} ms`} />
                 <Stat
-                  label="kenar"
-                  value={stats.border.unknown ? 'bilinmiyor' : `${stats.border.topBottom} / ${stats.border.leftRight} px`}
+                  label={t('device.stat.link')}
+                  value={t(LINK_KEY[stats.link.mode]) + (stats.link.port !== undefined ? ` ${stats.link.port}` : '')}
+                />
+                <Stat
+                  label={t('device.stat.border')}
+                  value={stats.border.unknown ? t('layout.borderUnknown') : `${stats.border.topBottom} / ${stats.border.leftRight} px`}
                 />
                 {stats.link.mode === 'loopback' && (
-                  <Stat label="kabul / ret" value={`${stats.link.accepted} / ${stats.link.rejected}`} />
+                  <Stat label={t('device.stat.loopback')} value={`${stats.link.accepted} / ${stats.link.rejected}`} />
                 )}
                 {stats.source !== undefined && (
-                  <Stat label="kaynak" value={`${stats.source.width}×${stats.source.height}`} />
+                  <Stat label={t('device.stat.source')} value={`${stats.source.width}×${stats.source.height}`} />
                 )}
-                {stats.error !== undefined && <Stat label="hata" value={stats.error} />}
+                {stats.error !== undefined && <Stat label={t('device.stat.error')} value={stats.error} />}
               </Surface>
             )}
 
-            <p className="text-xs text-muted">
-              Yakalamayı başlatmak için araç çubuğundaki eklenti simgesine tıklayın: ekran seçimi
-              tarayıcı gereği eklentinin kendi penceresinden yapılır ve Chrome oturumu boyunca geçerlidir.
-              Seri port aynı yerden eşleştirilir; port yoksa motor cihazsız modda çalışır ve kareleri sayar.
-              DRM korumalı içerik (Netflix, Prime, Disney+) yakalamada siyah gelir; bu bir tarayıcı sınırıdır.
-            </p>
+            <p className="text-xs text-muted">{t('device.note')}</p>
           </>
         )}
       </Card.Content>

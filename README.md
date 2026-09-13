@@ -20,7 +20,9 @@ Depo kökü **tek bir Next.js uygulaması.** Workspace yok, alt paket yok.
 | `lib/engine/` | Motor: yerleşim, örnekleme, kenar, düzeltme, yumuşatma, dither, protokol, seri yazıcı — saf TypeScript, tarayıcı API'si yok | **çalışıyor**, testli |
 | `lib/extension/` | Panel ile eklentinin ortak mesaj sözleşmesi | **çalışıyor** |
 | `extension/` | Chrome eklentisi (MV3): yakalama + hat + seri port, offscreen document'ta | **derleniyor**, gerçek ekranda henüz ölçülmedi |
-| `components/` | HeroUI v3 ekranları | **çalışıyor** |
+| `components/` | HeroUI v3 ekranları, kullanım kılavuzu dahil | **çalışıyor** |
+| `lib/i18n/` | 12 dil; Türkçe ve İngilizce tam, diğerleri ortak çekirdek + İngilizce yedek | **çalışıyor**, testli |
+| `lib/theme.ts` | Tarayıcı temasını izleyen, kullanıcının ezebildiği açık/koyu | **çalışıyor**, testli |
 | `firmware/` | ESP32-S3 firmware'i, PlatformIO; algoritmalar host'ta test ediliyor | **derleniyor**, kartta ölçülmedi |
 | `test/` | Panel ve motor testleri; ağ, veritabanı ya da tarayıcı gerektirmez | **çalışıyor** |
 | `docs/hyperion-port-plan.md` | Hyperion.NG'den ne, nasıl, neden aktarılıyor | plan |
@@ -30,6 +32,22 @@ Depo kökü **tek bir Next.js uygulaması.** Workspace yok, alt paket yok.
 
 WinUI 3 masaüstü uygulaması **silindi** — Windows Dynamic Lighting kapsamdan
 çıktı. Git geçmişinde duruyor (`fa622c5` ve öncesi).
+
+## Dil ve tema
+
+Arayüz **tamamen Türkçe** ve varsayılan dil Türkçe. İlk açılışta tarayıcının
+dilinden (`navigator.languages`) en yakını seçiliyor, sonra kullanıcının seçimi
+`localStorage`'a yazılıyor. On iki dil listeleniyor — Türkçe, İngilizce,
+Almanca, Çince (Basitleştirilmiş), İspanyolca, Fransızca, Rusça, Portekizce
+(Brezilya), İtalyanca, Lehçe, Felemenkçe, Japonca — ve seçicide her birinin
+**yüzde kaçının çevrildiği yazıyor**: bir dili sunup İngilizce göstermek,
+baştan ne kadarının hazır olduğunu söylemekten kötü. Çevrilmemiş bir anahtar
+İngilizce'ye düşüyor, anahtar adı asla görünmüyor.
+
+Tema üç durumlu: **sistemi izle** (varsayılan), açık, koyu. "Sistemi izle" ayrı
+bir seçim — sabah aydınlanan bir masaüstünde panel de aydınlanıyor. Seçim ilk
+boyamadan önce `app/layout.tsx`'teki küçük satır içi betikle uygulanıyor, yani
+yanlış renkte bir kare yanıp sönmüyor.
 
 ## Yığın
 

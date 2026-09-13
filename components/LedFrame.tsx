@@ -2,15 +2,23 @@
 
 import { useId, useRef, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
+import { useTranslate } from '#components/Preferences'
 import { CORNER_ORDER, nudge, pointerToLayout } from '#lib/preview'
 import type { Keystone, LayoutPoint } from '#lib/engine/layout'
 import type { LedRect } from '#lib/engine/types'
+import type { MessageKey } from '#lib/i18n/strings'
 
-const CORNER_NAME: Record<(typeof CORNER_ORDER)[number], string> = {
-  topLeft: 'sol üst köşe',
-  topRight: 'sağ üst köşe',
-  bottomRight: 'sağ alt köşe',
-  bottomLeft: 'sol alt köşe'
+/**
+ * The drag handles' accessible names. These are the only strings this component
+ * owns - everything else it shows comes in as the `label` prop - and they exist
+ * because a bare draggable rectangle announces nothing at all to a screen
+ * reader, which would make the keyboard path unusable rather than merely plain.
+ */
+const HANDLE_KEY: Record<(typeof CORNER_ORDER)[number], MessageKey> = {
+  topLeft: 'layout.handle.topLeft',
+  topRight: 'layout.handle.topRight',
+  bottomRight: 'layout.handle.bottomRight',
+  bottomLeft: 'layout.handle.bottomLeft'
 }
 
 /** Arrow keys move by this much of the frame; Shift moves ten times as far. */
@@ -78,6 +86,7 @@ export function LedFrame ({
   // would silently take the first one's blur.
   const blur = `${useId()}-glow`
   const svg = useRef<SVGSVGElement>(null)
+  const t = useTranslate()
   const editing = keystone !== undefined && onKeystone !== undefined
 
   const move = (corner: (typeof CORNER_ORDER)[number], event: ReactPointerEvent<SVGGElement>): void => {
@@ -149,7 +158,7 @@ export function LedFrame ({
         const point = keystone[corner]
         return (
           <g
-            aria-label={CORNER_NAME[corner]}
+            aria-label={t(HANDLE_KEY[corner])}
             className="group cursor-grab touch-none focus:outline-none"
             key={corner}
             role="button"

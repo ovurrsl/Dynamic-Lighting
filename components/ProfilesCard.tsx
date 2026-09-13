@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Card, Input, Label, Surface, TextField } from '@heroui/react'
 
-import { parseEngineConfig, serialiseEngineConfig, type EngineConfig } from '#lib/engine/config'
+import { useTranslate } from '#components/Preferences'
+import { type EngineConfig } from '#lib/engine/config'
 import {
   exportProfiles,
   importProfiles,
@@ -35,6 +36,7 @@ export function ProfilesCard ({
   current: EngineConfig
   onLoad: (config: EngineConfig, name: string) => void
 }) {
+  const t = useTranslate()
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [name, setName] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
@@ -54,20 +56,20 @@ export function ProfilesCard ({
   const persist = useCallback((next: Profile[]): void => {
     setProfiles(next)
     const failure = storeProfiles(next)
-    if (failure !== null) setNotice(`Bu tarayıcıya kaydedilemedi: ${failure}`)
-  }, [])
+    if (failure !== null) setNotice(t('profiles.storeFailed', { reason: failure }))
+  }, [t])
 
   const save = useCallback(() => {
     const trimmed = name.trim()
-    if (trimmed === '') { setNotice('Profile bir ad ver.'); return }
+    if (trimmed === '') { setNotice(t('profiles.needName')); return }
     const existing = latest.current.find((profile) => profile.name === trimmed)
     const id = existing?.id ?? profileId(trimmed, latest.current.map((profile) => profile.id))
     persist(upsertProfile(latest.current, {
       id, name: trimmed, config: current, updatedAt: new Date().toISOString()
     }))
     setName('')
-    setNotice(existing === undefined ? 'Kaydedildi.' : 'Güncellendi.')
-  }, [current, name, persist])
+    setNotice(t(existing === undefined ? 'profiles.saved' : 'profiles.updated'))
+  }, [current, name, persist, t])
 
   /**
    * Writes every profile to a file. A blob URL rather than a data: URL because
@@ -79,46 +81,45 @@ export function ProfilesCard ({
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = 'ambiflux-profiller.json'
+    link.download = t('profiles.fileName')
     link.click()
     URL.revokeObjectURL(url)
-    setNotice(`${latest.current.length} profil dosyaya yazıldı.`)
-  }, [])
+    setNotice(t('profiles.exported', { count: latest.current.length }))
+  }, [t])
 
   const upload = useCallback(async (chosen: File) => {
     setNotice(null)
     const text = await chosen.text()
     const outcome = importProfiles(text, latest.current)
-    if (outcome.profiles === null) { setNotice(`Dosya okunamadı: ${outcome.problem}`); return }
+    if (outcome.profiles === null) {
+      setNotice(t('profiles.readFailed', { reason: outcome.problem ?? '' }))
+      return
+    }
     persist(outcome.profiles)
-    setNotice(outcome.problem === undefined
-      ? `${outcome.added} profil eklendi.`
-      : `${outcome.added} profil eklendi. ${outcome.problem}`)
-  }, [persist])
+    const added = t('profiles.imported', { count: outcome.added })
+    // A partial import still imported something. Saying so and then naming what
+    // was skipped is more use than either half alone.
+    setNotice(outcome.problem === undefined ? added : `${added} ${outcome.problem}`)
+  }, [persist, t])
 
   return (
     <Card variant="default">
       <Card.Header>
-        <Card.Title>Profiller</Card.Title>
-        <Card.Description>
-          Bir yerleşimi adıyla sakla, sonra geri dön. Masaüstü ve TV aynı şerit
-          değil; film ve oyun aynı bant derinliğini istemiyor.
-        </Card.Description>
+        <Card.Title>{t('profiles.title')}</Card.Title>
+        <Card.Description>{t('profiles.description')}</Card.Description>
       </Card.Header>
       <Card.Content className="flex flex-col gap-4">
         <div className="flex flex-wrap items-end gap-2">
           <TextField className="min-w-48 flex-1" value={name} variant="secondary" onChange={setName}>
-            <Label>Profil adı</Label>
-            <Input placeholder="Masaüstü" />
+            <Label>{t('profiles.name')}</Label>
+            <Input placeholder={t('profiles.namePlaceholder')} />
           </TextField>
-          <Button onPress={save}>Şu ankini kaydet</Button>
+          <Button onPress={save}>{t('profiles.save')}</Button>
         </div>
 
         {profiles.length === 0
           ? (
-            <p className="text-sm text-muted">
-              Henüz profil yok. Yerleşimi ayarla, buraya bir ad yaz ve kaydet.
-            </p>
+            <p className="text-sm text-muted">{t('profiles.empty')}</p>
             )
           : (
             <ul className="flex flex-col gap-2">
@@ -129,7 +130,10 @@ export function ProfilesCard ({
                       <div className="truncate text-sm">{profile.name}</div>
                       <div className="text-xs text-muted">
                         {profile.config.layout.kind === 'matrix'
-                          ? `${profile.config.layout.columns}×${profile.config.layout.rows} matris`
+                          ? t('profiles.matrix', {
+                            columns: profile.config.layout.columns,
+                            rows: profile.config.layout.rows
+                          })
                           : `${profile.config.layout.top}/${profile.config.layout.right}/${profile.config.layout.bottom}/${profile.config.layout.left}`}
                         {' · '}
                         {profile.config.colorOrder.order.toUpperCase()}
@@ -141,17 +145,17 @@ export function ProfilesCard ({
                         variant="secondary"
                         onPress={() => {
                           onLoad(profile.config, profile.name)
-                          setNotice(`"${profile.name}" editöre yüklendi. Şeride göndermek için Uygula.`)
+                          setNotice(t('profiles.loaded', { name: profile.name }))
                         }}
                       >
-                        Yükle
+                        {t('profiles.load')}
                       </Button>
                       <Button
                         size="sm"
                         variant="secondary"
                         onPress={() => { setNotice(null); persist(removeProfile(latest.current, profile.id)) }}
                       >
-                        Sil
+                        {t('profiles.delete')}
                       </Button>
                     </div>
                   </Surface>
@@ -162,10 +166,10 @@ export function ProfilesCard ({
 
         <div className="flex flex-wrap gap-2">
           <Button isDisabled={profiles.length === 0} size="sm" variant="secondary" onPress={download}>
-            Dosyaya aktar
+            {t('profiles.export')}
           </Button>
           <Button size="sm" variant="secondary" onPress={() => file.current?.click()}>
-            Dosyadan al
+            {t('profiles.import')}
           </Button>
           <input
             accept="application/json,.json"
@@ -185,10 +189,7 @@ export function ProfilesCard ({
           <Surface className="rounded-xl p-3 text-sm" variant="secondary">{notice}</Surface>
         )}
 
-        <p className="text-xs text-muted">
-          Profiller bu tarayıcıda saklanıyor ve hiçbir yere gönderilmiyor. Başka
-          bir makineye taşımak için dosyaya aktar.
-        </p>
+        <p className="text-xs text-muted">{t('profiles.local')}</p>
       </Card.Content>
     </Card>
   )

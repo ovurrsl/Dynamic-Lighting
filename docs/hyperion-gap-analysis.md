@@ -70,7 +70,7 @@ Tarayıcı kısıtı: ham UDP yok. Ama:
 | **Philips Hue Entertainment** | kısmen | HTTPS + DTLS; DTLS tarayıcıda yok, ama v1 HTTP API düşük hızda çalışır |
 | **Home Assistant** | **evet** | REST + WebSocket |
 | **Nanoleaf** | **evet** | HTTP API (yüksek hızlı akış UDP, düşük hızlı HTTP) |
-| ArtNet / E1.31 / DDP / TPM2.net | **hayır** | Ham UDP; tarayıcıda imkânsız |
+| ArtNet / E1.31 / DDP / TPM2.net | **hayır** | Ham UDP; `chrome.sockets` MV3'te yok (§G'de ölçüldü) |
 
 Not: sayfa HTTPS'te olduğu için yerel ağdaki `http://` cihaza çağrı **mixed
 content**'e takılır. Çözüm zaten elimizde — çağrıyı **eklentinin** yapması;
@@ -106,29 +106,69 @@ bir tanesi** çalışıyor.
 `schema-cecEvents`. Tarayıcı karşılıkları: `visibilitychange`, `Page Lifecycle`,
 ve zamanlayıcı. CEC tarayıcıda imkânsız ve zaten monitör ambilight'ında alakasız.
 
-### (G) Tarayıcıda yapılamayacaklar — kapsam dışı, eksik değil
+### (G) Eklentiyle mümkün olanlar — **önceki analizim burada yanlıştı**
 
-Boblight/flatbuffer/protobuf sunucuları, örnekler arası forwarder, V4L2 ve
-HDMI yakalama kartları, Raspberry Pi'ye özgü grabber'lar (dispmanx, amlogic,
-drm, framebuffer), SPI/FTDI/HID/PWM LED sürücüleri. Hepsi yerel donanım ya da
-ham soket gerektiriyor.
+Bu bölüm bir düzeltme. Daha önce V4L2/HDMI yakalama kartlarını ve SPI/FTDI/HID
+LED sürücülerini "tarayıcıda imkânsız" diye yazmıştım. **Değiller.** Eklenti
+sayfasında ölçüldü:
 
----
+```
+chrome.sockets      : undefined      chrome.socket : undefined
+navigator.hid       : object         navigator.usb : object
+navigator.serial    : object         getUserMedia  : function
+enumerateDevices    : function       WebTransport  : function
+```
+
+**Mümkün olanlar (yanlış sınıflandırmıştım):**
+
+- **USB / HDMI yakalama kartları.** Bir yakalama kartı işletim sisteminde
+  webcam olarak görünüyor, yani `enumerateDevices` onu `videoinput` diye
+  listeliyor ve `getUserMedia({video:{deviceId}})` açıyor. Bu, Hyperion'un
+  V4L2 grabber'ının karşılığı — **ve DRM sorununu kökünden çözüyor**, çünkü
+  sinyal HDMI splitter'dan sonra şifresi çözülmüş olarak geliyor. Planın
+  "v2 SKU" dediği şey aslında bugün yapılabilir.
+- **HID LED cihazları** (`navigator.hid`): Hyperion'un `dev_hid` grubu —
+  Lightpack, Paintpack, RawHID, USBASP. Beşi de WebHID ile erişilebilir.
+- **FTDI tabanlı cihazlar** (`navigator.usb`): `dev_ftdi` grubu. WebUSB ile
+  ham bulk transfer mümkün; FTDI'nin seri emülasyonunu elde yazmak gerekir
+  ama yapılabilir bir iş.
+- **Yerel ağdaki HTTP cihazları**: `host_permissions` ile mixed content
+  sorunu yok. Zaten yazılıydı.
+
+**Gerçekten imkânsız olanlar (ve artık ölçümle biliyorum):**
+
+- **Ham UDP.** `chrome.sockets` MV3'te yok — Chrome Apps ile birlikte kalktı ve
+  geri gelmiyor. Bu, **ArtNet, E1.31, DDP, TPM2.net**'i doğrudan konuşmayı
+  imkânsız kılıyor. `WebTransport` var ama QUIC konuşan bir sunucu gerektiriyor,
+  bir ArtNet cihazına yaramaz. Bu protokoller ancak bir köprü (WLED'in kendi
+  HTTP API'si gibi) üzerinden dolaylı olarak kullanılabilir.
+- **Dinleyen soketler.** Boblight, flatbuffer ve protobuf sunucuları bir porta
+  bağlanıp istemci beklemek zorunda; eklentinin soket dinleme yolu yok.
+- **Raspberry Pi'ye özgü grabber'lar** (dispmanx, amlogic, drm, framebuffer) ve
+  SPI/PWM çıkışı: bunlar bir işletim sistemi sürücüsü, tarayıcının erişebileceği
+  bir cihaz değil.
+
+Yani doğru ayrım "tarayıcı vs yerel uygulama" değil: **cihaza giden bir yol var
+mı yok mu.** USB, HID, seri ve HTTP için var; ham soket için yok.
 
 ## 3. Platformlar
 
 Odak **Windows + Chrome**, ama mimari baştan bunun ötesini hedefliyor. Her satır
 bir iddia değil, bir kısıt listesi.
 
-| Platform | Tarayıcı | Panel | Ekran yakalama | Seri port (Arduino) | Ağ cihazı (WLED) |
-|---|---|---|---|---|---|
-| **Windows** | **Chrome/Edge** | ✅ | ✅ eklenti | ✅ Web Serial | ✅ |
-| Windows | Firefox | ✅ | ✅ `getDisplayMedia` | ❌ Web Serial yok | ✅ |
-| macOS | Chrome | ✅ | ✅ eklenti | ✅ | ✅ |
-| macOS | Safari | ✅ | ✅ `getDisplayMedia` (Safari 13+) | ❌ | ✅ |
-| Android | Chrome | ✅ | ❌ mobilde yok | ❌ (WebUSB var, Web Serial yok) | ✅ |
-| Android TV | Chrome | ✅ | ❌ | ❌ | ✅ |
-| Apple TV | Safari (tvOS 17+) | ✅ | ❌ | ❌ | ✅ |
+| Platform | Tarayıcı | Panel | Ekran yakalama | Yakalama kartı | Seri (Arduino) | HID/USB cihaz | Ağ cihazı |
+|---|---|---|---|---|---|---|---|
+| **Windows** | **Chrome/Edge** | ✅ | ✅ eklenti | ✅ | ✅ Web Serial | ✅ WebHID/WebUSB | ✅ |
+| Windows | Firefox | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| macOS | Chrome | ✅ | ✅ eklenti | ✅ | ✅ | ✅ | ✅ |
+| macOS | Safari | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| Android | Chrome | ✅ | ❌ | ⚠️ OTG kart | ❌ | ⚠️ WebUSB var | ✅ |
+| Android TV | Chrome | ✅ | ❌ | ⚠️ | ❌ | ⚠️ | ✅ |
+| Apple TV | Safari (tvOS 17+) | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
+
+Yakalama kartı satırı önemli: mobil ve TV'de ekran yakalama yok ama **bir USB
+yakalama kartı webcam olarak görünüyor**, yani oralarda bile gerçek bir
+ambilight kaynağı mümkün.
 
 Üç gerçek, dürüstçe:
 
@@ -161,10 +201,13 @@ Sıra etkiye göre, ve her biri bir öncekinden bağımsız:
    Web Serial'ı olmayan her platformu açıyor.
 4. **Ses görselleştirici** — Web Audio, küçük iş, büyük görünürlük, her
    platformda çalışıyor.
-5. **Öncelik katmanları** — ön plan/arka plan efekti, kaynak öncelikleri.
+5. **Yakalama kartı girişi** — `enumerateDevices` + `getUserMedia`. Ekran
+   yakalamanın olmadığı platformlarda tek gerçek kaynak, ve **DRM'li içeriği
+   çözen tek yol**: sinyal HDMI splitter'dan sonra şifresiz geliyor.
+6. **Öncelik katmanları** — ön plan/arka plan efekti, kaynak öncelikleri.
    Efektler ve ses gelince bunlar anlam kazanıyor.
-6. **Olaylar** — sekme gizlenince duraklat, zamanlanmış aç/kapat.
-7. **Çoklu örnek** — mimariyi en çok değiştiren madde, o yüzden en sonda.
+7. **Olaylar** — sekme gizlenince duraklat, zamanlanmış aç/kapat.
+8. **Çoklu örnek** — mimariyi en çok değiştiren madde, o yüzden en sonda.
 
 ### Yapılandırılabilirlik kuralı
 

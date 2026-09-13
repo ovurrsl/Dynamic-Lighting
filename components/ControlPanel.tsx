@@ -19,9 +19,12 @@ import {
 } from '@heroui/react'
 
 import { DeviceCard } from '#components/DeviceCard'
+import { GuideCard } from '#components/GuideCard'
 import { LayoutCard } from '#components/LayoutCard'
+import { PreferencesMenu } from '#components/PreferencesMenu'
 import { ProfilesCard } from '#components/ProfilesCard'
 import { LedFrame } from '#components/LedFrame'
+import { useTranslate } from '#components/Preferences'
 import { toHex, toLinear16, toRgb8 } from '#lib/colour'
 import { DEFAULT_ENGINE_CONFIG, resolveLayout, type EngineConfig } from '#lib/engine/config'
 import { frameAspect } from '#lib/preview'
@@ -38,6 +41,7 @@ const PRESET_COLORS = [
  * it. The rectangles come from `resolveLayout`, the same call the engine makes.
  */
 function StripPreview ({ config, color, brightness }: { config: EngineConfig, color: Color, brightness: number }) {
+  const t = useTranslate()
   const css = useMemo(() => {
     const { r, g, b } = toRgb8(color)
     const scale = brightness / 100
@@ -50,13 +54,14 @@ function StripPreview ({ config, color, brightness }: { config: EngineConfig, co
       aspectRatio={frameAspect(config.layout)}
       colorAt={() => css}
       glow
-      label={`${rects.length} LED önizlemesi`}
+      label={`${t('preview.title')} — ${t('layout.leds', { count: rects.length })}`}
       rects={rects}
     />
   )
 }
 
 export function ControlPanel () {
+  const t = useTranslate()
   const [color, setColor] = useState<Color>(parseColor('#3b82f6'))
   const [brightness, setBrightness] = useState(70)
   const [isEnabled, setIsEnabled] = useState(true)
@@ -86,30 +91,29 @@ export function ControlPanel () {
 
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-6 p-6">
-      <header className="flex flex-wrap items-center justify-between gap-4">
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">AmbiFlux</h1>
-          <p className="text-sm text-muted">
-            Ekranı takip eden açık kaynak ambilight
-          </p>
+          <p className="text-sm text-muted">{t('app.tagline')}</p>
         </div>
-        <Switch isSelected={isEnabled} size="md" onChange={setIsEnabled}>
-          <Switch.Content>
-            <Switch.Control>
-              <Switch.Thumb />
-            </Switch.Control>
-            Aydınlatma
-          </Switch.Content>
-        </Switch>
+        <div className="flex flex-wrap items-end gap-4">
+          <PreferencesMenu />
+          <Switch className="pb-2" isSelected={isEnabled} size="md" onChange={setIsEnabled}>
+            <Switch.Content>
+              <Switch.Control>
+                <Switch.Thumb />
+              </Switch.Control>
+              {t('app.lighting')}
+            </Switch.Content>
+          </Switch>
+        </div>
       </header>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card variant="default">
           <Card.Header>
-            <Card.Title>Renk</Card.Title>
-            <Card.Description>
-              Sürüklerken canlı önizlenir, bıraktığında cihaza yazılır.
-            </Card.Description>
+            <Card.Title>{t('colour.title')}</Card.Title>
+            <Card.Description>{t('colour.description')}</Card.Description>
           </Card.Header>
           <Card.Content className="flex flex-col gap-4">
             {/*
@@ -121,7 +125,7 @@ export function ControlPanel () {
             <ColorPicker value={color} onChange={setColor}>
               <ColorPicker.Trigger>
                 <ColorSwatch size="lg" />
-                <Label>Renk seç</Label>
+                <Label>{t('colour.pick')}</Label>
               </ColorPicker.Trigger>
               <ColorPicker.Popover className="gap-2">
                 <ColorSwatchPicker className="justify-center pt-2" size="xs">
@@ -132,7 +136,7 @@ export function ControlPanel () {
                   ))}
                 </ColorSwatchPicker>
                 <ColorArea
-                  aria-label="Doygunluk ve parlaklık"
+                  aria-label={t('colour.saturation')}
                   className="max-w-full"
                   colorSpace="hsb"
                   xChannel="saturation"
@@ -140,12 +144,12 @@ export function ControlPanel () {
                 >
                   <ColorArea.Thumb />
                 </ColorArea>
-                <ColorSlider aria-label="Renk tonu" channel="hue" colorSpace="hsb">
+                <ColorSlider aria-label={t('colour.hue')} channel="hue" colorSpace="hsb">
                   <ColorSlider.Track>
                     <ColorSlider.Thumb />
                   </ColorSlider.Track>
                 </ColorSlider>
-                <ColorField aria-label="Onaltılık renk kodu">
+                <ColorField aria-label={t('colour.hex')}>
                   <ColorField.Group variant="secondary">
                     <ColorField.Prefix>
                       <ColorSwatch size="xs" />
@@ -163,7 +167,7 @@ export function ControlPanel () {
               value={brightness}
               onChange={(value) => setBrightness(value as number)}
             >
-              <Label>Parlaklık</Label>
+              <Label>{t('colour.brightness')}</Label>
               <Slider.Output />
               <Slider.Track>
                 <Slider.Fill />
@@ -175,31 +179,26 @@ export function ControlPanel () {
 
         <Card variant="default">
           <Card.Header>
-            <Card.Title>Önizleme</Card.Title>
-            <Card.Description>
-              Şeridin fiziksel sırası. Masadakiyle eşleşmiyorsa yerleşim ayarı yanlış.
-            </Card.Description>
+            <Card.Title>{t('preview.title')}</Card.Title>
+            <Card.Description>{t('preview.description')}</Card.Description>
           </Card.Header>
           <Card.Content className="flex flex-col gap-4">
             <StripPreview brightness={isEnabled ? brightness : 0} color={color} config={config} />
             <Surface className="rounded-xl p-3 font-mono text-xs" variant="secondary">
               <div className="flex justify-between">
-                <span className="text-muted">seçilen</span>
+                <span className="text-muted">{t('preview.selected')}</span>
                 <span>{toHex(color)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted">sRGB 8-bit</span>
+                <span className="text-muted">{t('preview.srgb')}</span>
                 <span>{srgb.r}, {srgb.g}, {srgb.b}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted">tele giden (doğrusal 16-bit)</span>
+                <span className="text-muted">{t('preview.wire')}</span>
                 <span>{wire.r}, {wire.g}, {wire.b}</span>
               </div>
             </Surface>
-            <p className="text-xs text-muted">
-              Doğrusal değerlerin sRGB'den belirgin düşük olması beklenir: firmware
-              hiçbir transfer fonksiyonu uygulamıyor, o yüzden kodlama burada çözülüyor.
-            </p>
+            <p className="text-xs text-muted">{t('preview.note')}</p>
           </Card.Content>
         </Card>
       </div>
@@ -212,6 +211,8 @@ export function ControlPanel () {
       />
 
       <DeviceCard />
+
+      <GuideCard />
     </div>
   )
 }

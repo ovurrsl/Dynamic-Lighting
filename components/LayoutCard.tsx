@@ -14,6 +14,7 @@ import {
 } from '@heroui/react'
 
 import { LedFrame } from '#components/LedFrame'
+import { useTranslate } from '#components/Preferences'
 import { clearStoredConfig, loadStoredConfig, storeConfig } from '#lib/config-store'
 import {
   DEFAULT_ENGINE_CONFIG,
@@ -28,6 +29,7 @@ import { COLOR_ORDERS, type ColorOrder } from '#lib/engine/order'
 import { createLiveSampler, PREVIEW_HZ, type LiveFrame, type LiveSampler } from '#lib/live-sampler'
 import { CORNER_ORDER, frameAspect, isDefaultKeystone, wireOrderColor } from '#lib/preview'
 import type { LedRect } from '#lib/engine/types'
+import type { MessageKey } from '#lib/i18n/strings'
 import { fetchConfig, saveConfig } from '#lib/extension-client'
 
 /**
@@ -45,21 +47,20 @@ import { fetchConfig, saveConfig } from '#lib/extension-client'
  * "Uygula" sends it.
  */
 
-const CORNER_LABEL: Record<Corner, string> = {
-  'top-left': 'sol üst',
-  'top-right': 'sağ üst',
-  'bottom-right': 'sağ alt',
-  'bottom-left': 'sol alt'
+const CORNER_KEY: Record<Corner, MessageKey> = {
+  'top-left': 'layout.corner.topLeft',
+  'top-right': 'layout.corner.topRight',
+  'bottom-right': 'layout.corner.bottomRight',
+  'bottom-left': 'layout.corner.bottomLeft'
 }
 
-/** Hyperion's names read as the ORDER OF THE WIRE, which is the output spelling. */
-const ORDER_LABEL: Record<ColorOrder, string> = {
-  rgb: 'RGB (standart WS2812B)',
-  rbg: 'RBG',
-  grb: 'GRB',
-  gbr: 'GBR',
-  brg: 'BRG',
-  bgr: 'BGR'
+/**
+ * Hyperion's names read as the ORDER OF THE WIRE, which is the output spelling.
+ * The three letters are not translated - they name channels, not words - so only
+ * the annotation on the common one goes through the table.
+ */
+function orderLabel (order: ColorOrder, standard: string): string {
+  return order === 'rgb' ? `RGB (${standard})` : order.toUpperCase()
 }
 
 interface Resolved {
@@ -151,6 +152,10 @@ export function LayoutCard ({
    * dependency it would re-run - and re-query the extension - on every render
    * for any caller that passes an inline function, which is most of them.
    */
+  const t = useTranslate()
+  // Read once per render rather than inside the option loop: the annotation is
+  // the same string for all six entries.
+  const standard = t('layout.orderStandard')
   const report = useRef(onConfig)
   report.current = onConfig
   const reportDraft = useRef(onDraft)
@@ -187,7 +192,7 @@ export function LayoutCard ({
       setDraft(stored.config)
       report.current?.(stored.config)
     } else if (stored.problem !== undefined) {
-      setNotice(`Kayıtlı yapılandırma okunamadı: ${stored.problem}`)
+      setNotice(t('layout.storeReadFailed', { reason: stored.problem }))
     }
     void fetchConfig().then((live) => {
       if (cancelled || live === null) return
@@ -244,20 +249,20 @@ export function LayoutCard ({
     const failure = storeConfig(config)
     void saveConfig(config).then((error) => {
       setSaving(false)
-      if (error !== null) { setNotice(`Eklenti kabul etmedi: ${error}`); return }
+      if (error !== null) { setNotice(t('layout.extensionRejected', { reason: error })); return }
       report.current?.(config)
       setNotice(failure === null
-        ? 'Uygulandı ve kaydedildi.'
-        : `Motora gönderildi, ama bu tarayıcıya kaydedilemedi: ${failure}`)
+        ? t('layout.applied')
+        : t('layout.appliedNotStored', { reason: failure }))
     })
-  }, [resolved])
+  }, [resolved, t])
 
   const reset = useCallback((to: EngineConfig) => {
     clearStoredConfig()
     setDraft(to)
     report.current?.(to)
-    setNotice('Varsayılana döndü. Motora göndermek için Uygula.')
-  }, [])
+    setNotice(t('layout.resetDone'))
+  }, [t])
 
   const keystone: Keystone = (layout.kind === 'classic' ? layout.keystone : undefined) ?? NO_KEYSTONE
 
@@ -284,7 +289,7 @@ export function LayoutCard ({
     try {
       const media = navigator.mediaDevices
       if (media?.getDisplayMedia === undefined) {
-        setNotice('Bu tarayıcı ekran paylaşımını desteklemiyor.')
+        setNotice(t('layout.noScreenShare'))
         return
       }
       const stream = await media.getDisplayMedia({ video: { frameRate: 10 }, audio: false })
@@ -296,10 +301,12 @@ export function LayoutCard ({
       // Cancelling the picker is a decision, not a failure.
       const name = error instanceof Error ? error.name : ''
       if (name !== 'NotAllowedError' && name !== 'AbortError') {
-        setNotice(`Ekran alınamadı: ${error instanceof Error ? error.message : String(error)}`)
+        setNotice(t('layout.screenFailed', {
+          reason: error instanceof Error ? error.message : String(error)
+        }))
       }
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     const element = video.current
@@ -345,12 +352,8 @@ export function LayoutCard ({
   return (
     <Card variant="default">
       <Card.Header>
-        <Card.Title>Monitör yerleşimi</Card.Title>
-        <Card.Description>
-          Her LED'in ekranın neresine baktığı. <b>Ekranı göster</b>'e basınca
-          yakalanan görüntü arkaya geliyor ve her LED motorun o bölgeden gerçekten
-          okuduğu renkle doluyor — yani gördüğün şey şeride gidecek şey.
-        </Card.Description>
+        <Card.Title>{t('layout.title')}</Card.Title>
+        <Card.Description>{t('layout.description')}</Card.Description>
       </Card.Header>
       <Card.Content className="flex flex-col gap-5">
         {shown !== null && (
@@ -372,7 +375,7 @@ export function LayoutCard ({
                 ? wireOrderColor
                 : (at) => live.colors[at] ?? 'rgb(0 0 0)'}
               keystone={editingCorners ? keystone : undefined}
-              label={`${shown.rects.length} LED'in örnekleme bölgeleri`}
+              label={t('layout.regions', { count: shown.rects.length })}
               onKeystone={editingCorners ? moveCorner : undefined}
               outline={live !== null}
               outlineFirst
@@ -384,15 +387,18 @@ export function LayoutCard ({
 
         {live !== null && (
           <Surface className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl p-3 font-mono text-xs" variant="secondary">
-            <span className="text-muted">canlı</span>
+            <span className="text-muted">{t('layout.live')}</span>
             <span>{live.source?.width}×{live.source?.height}</span>
-            <span className="text-muted">siyah kenar</span>
+            <span className="text-muted">{t('layout.blackBorder')}</span>
             <span>
               {live.border.unknown
-                ? 'bilinmiyor'
-                : `üst/alt ${live.border.topBottom}px · yan ${live.border.leftRight}px`}
+                ? t('layout.borderUnknown')
+                : t('layout.borderDetail', {
+                  topBottom: live.border.topBottom,
+                  leftRight: live.border.leftRight
+                })}
             </span>
-            <span className="text-muted">renkler motorun örneklediği renkler</span>
+            <span className="text-muted">{t('layout.liveNote')}</span>
           </Surface>
         )}
 
@@ -402,7 +408,7 @@ export function LayoutCard ({
             variant="secondary"
             onPress={() => { screen === null ? void showScreen() : setScreen(null) }}
           >
-            {screen === null ? 'Ekranı göster' : 'Ekranı bırak'}
+            {t(screen === null ? 'layout.showScreen' : 'layout.releaseScreen')}
           </Button>
           {layout.kind === 'classic' && (
             <Switch isSelected={editingCorners} size="sm" onChange={setEditingCorners}>
@@ -410,7 +416,7 @@ export function LayoutCard ({
                 <Switch.Control>
                   <Switch.Thumb />
                 </Switch.Control>
-                Köşeleri düzenle
+                {t('layout.editCorners')}
               </Switch.Content>
             </Switch>
           )}
@@ -425,23 +431,18 @@ export function LayoutCard ({
                   : current)
               }}
             >
-              Köşeleri sıfırla
+              {t('layout.resetCorners')}
             </Button>
           )}
         </div>
         {editingCorners && (
-          <p className="text-xs text-muted">
-            Köşeleri sürükle, ya da birini seçip ok tuşlarıyla oynat (Shift ile on
-            kat). Şerit monitörün kenarına tam oturmuyorsa — bir tarafta içeride
-            kalıyorsa — çerçeveyi ona göre daralt. Ekranı gösterirsen köşeleri
-            gerçekte ne olduğuna bakarak hizalayabilirsin.
-          </p>
+          <p className="text-xs text-muted">{t('layout.cornersHelp')}</p>
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
           <span className="text-muted">
-            {shown === null ? '—' : `${shown.rects.length} LED`}
-            {layout.kind === 'classic' && ' · beyaz çerçeveli olan LED 0'}
+            {shown === null ? '—' : t('layout.leds', { count: shown.rects.length })}
+            {layout.kind === 'classic' && ` · ${t('layout.led0')}`}
           </span>
           <Select
             className="w-44"
@@ -451,19 +452,19 @@ export function LayoutCard ({
               setDraft(value === 'matrix' ? MATRIX_ENGINE_CONFIG as EngineConfig : DEFAULT_ENGINE_CONFIG as EngineConfig)
             }}
           >
-            <Label>Yerleşim türü</Label>
+            <Label>{t('layout.kind')}</Label>
             <Select.Trigger>
               <Select.Value />
               <Select.Indicator />
             </Select.Trigger>
             <Select.Popover>
               <ListBox>
-                <ListBox.Item id="classic" textValue="Kenar çerçevesi">
-                  Kenar çerçevesi
+                <ListBox.Item id="classic" textValue={t('layout.kind.classic')}>
+                  {t('layout.kind.classic')}
                   <ListBox.ItemIndicator />
                 </ListBox.Item>
-                <ListBox.Item id="matrix" textValue="Matris">
-                  Matris
+                <ListBox.Item id="matrix" textValue={t('layout.kind.matrix')}>
+                  {t('layout.kind.matrix')}
                   <ListBox.ItemIndicator />
                 </ListBox.Item>
               </ListBox>
@@ -475,21 +476,21 @@ export function LayoutCard ({
           ? (
             <>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <EdgeCount label="Üst" value={layout.top} onChange={(top) => patchLayout({ top })} />
-                <EdgeCount label="Sağ" value={layout.right} onChange={(right) => patchLayout({ right })} />
-                <EdgeCount label="Alt" value={layout.bottom} onChange={(bottom) => patchLayout({ bottom })} />
-                <EdgeCount label="Sol" value={layout.left} onChange={(left) => patchLayout({ left })} />
+                <EdgeCount label={t('layout.top')} value={layout.top} onChange={(top) => patchLayout({ top })} />
+                <EdgeCount label={t('layout.right')} value={layout.right} onChange={(right) => patchLayout({ right })} />
+                <EdgeCount label={t('layout.bottom')} value={layout.bottom} onChange={(bottom) => patchLayout({ bottom })} />
+                <EdgeCount label={t('layout.left')} value={layout.left} onChange={(left) => patchLayout({ left })} />
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <Fraction
-                  label="Üst/alt bant derinliği (yüksekliğin oranı)"
+                  label={t('layout.depthTopBottom')}
                   maxValue={0.5}
                   value={layout.depthTopBottom}
                   onChange={(depthTopBottom) => patchLayout({ depthTopBottom })}
                 />
                 <Fraction
-                  label="Yan bant derinliği (genişliğin oranı)"
+                  label={t('layout.depthLeftRight')}
                   maxValue={0.5}
                   value={layout.depthLeftRight}
                   onChange={(depthLeftRight) => patchLayout({ depthLeftRight })}
@@ -502,7 +503,7 @@ export function LayoutCard ({
                   value={layout.start}
                   onChange={(value) => patchLayout({ start: value as Corner })}
                 >
-                  <Label>Şeridin başladığı köşe</Label>
+                  <Label>{t('layout.start')}</Label>
                   <Select.Trigger>
                     <Select.Value />
                     <Select.Indicator />
@@ -510,8 +511,8 @@ export function LayoutCard ({
                   <Select.Popover>
                     <ListBox>
                       {CORNERS.map((corner) => (
-                        <ListBox.Item id={corner} key={corner} textValue={CORNER_LABEL[corner]}>
-                          {CORNER_LABEL[corner]}
+                        <ListBox.Item id={corner} key={corner} textValue={t(CORNER_KEY[corner])}>
+                          {t(CORNER_KEY[corner])}
                           <ListBox.ItemIndicator />
                         </ListBox.Item>
                       ))}
@@ -525,7 +526,7 @@ export function LayoutCard ({
                   variant="secondary"
                   onChange={(offset) => { if (Number.isFinite(offset)) patchLayout({ offset }) }}
                 >
-                  <Label>Köşeden kaç LED sonra</Label>
+                  <Label>{t('layout.offset')}</Label>
                   <NumberField.Group>
                     <NumberField.DecrementButton />
                     <NumberField.Input className="w-12" />
@@ -542,7 +543,7 @@ export function LayoutCard ({
                     <Switch.Control>
                       <Switch.Thumb />
                     </Switch.Control>
-                    Saat yönünde
+                    {t('layout.clockwise')}
                   </Switch.Content>
                 </Switch>
               </div>
@@ -552,7 +553,7 @@ export function LayoutCard ({
                   <Switch.Control>
                     <Switch.Thumb />
                   </Switch.Control>
-                  Gelişmiş
+                  {t('layout.advanced')}
                 </Switch.Content>
               </Switch>
 
@@ -560,14 +561,14 @@ export function LayoutCard ({
                 <div className="flex flex-col gap-4 rounded-xl border border-default/40 p-4">
                   <div className="grid gap-4 sm:grid-cols-2">
                     <Fraction
-                      label="Bant örtüşmesi"
+                      label={t('layout.overlap')}
                       maxValue={1}
                       step={0.01}
                       value={layout.overlap ?? LAYOUT_DEFAULTS.overlap}
                       onChange={(overlap) => patchLayout({ overlap })}
                     />
                     <Fraction
-                      label="Köşe boşluğu (şerit köşeye yetişmiyorsa)"
+                      label={t('layout.edgeGap')}
                       maxValue={0.3}
                       value={layout.edgeGap ?? LAYOUT_DEFAULTS.edgeGap}
                       onChange={(edgeGap) => patchLayout({ edgeGap })}
@@ -582,7 +583,7 @@ export function LayoutCard ({
                       variant="secondary"
                       onChange={(aspect) => { if (Number.isFinite(aspect)) patchLayout({ aspectRatio: aspect }) }}
                     >
-                      <Label>En/boy oranı</Label>
+                      <Label>{t('layout.aspectRatio')}</Label>
                       <NumberField.Group>
                         <NumberField.DecrementButton />
                         <NumberField.Input className="w-16" />
@@ -598,7 +599,7 @@ export function LayoutCard ({
                         patchLayout({ gap: { position, length: layout.gap?.length ?? 0 } })
                       }}
                     >
-                      <Label>Eksik bölüm başlangıcı</Label>
+                      <Label>{t('layout.gapPosition')}</Label>
                       <NumberField.Group>
                         <NumberField.DecrementButton />
                         <NumberField.Input className="w-14" />
@@ -614,7 +615,7 @@ export function LayoutCard ({
                         patchLayout({ gap: { position: layout.gap?.position ?? 0, length } })
                       }}
                     >
-                      <Label>Eksik LED sayısı</Label>
+                      <Label>{t('layout.gapLength')}</Label>
                       <NumberField.Group>
                         <NumberField.DecrementButton />
                         <NumberField.Input className="w-14" />
@@ -622,37 +623,32 @@ export function LayoutCard ({
                       </NumberField.Group>
                     </NumberField>
                   </div>
-                  <p className="text-xs text-muted">
-                    Köşe boşluğu yükseklik oranı olarak veriliyor ve yatayda en/boy
-                    oranıyla ölçekleniyor, böylece dört kenarda da aynı fiziksel
-                    mesafe oluyor. Eksik bölüm, şeridin hiç uğramadığı yeri geometrik
-                    sırada anlatır: sonraki LED'ler öne kayar, çünkü kabloda da kayıyorlar.
-                  </p>
+                  <p className="text-xs text-muted">{t('layout.advancedNote')}</p>
                 </div>
               )}
             </>
             )
           : (
             <div className="grid gap-3 sm:grid-cols-2">
-              <EdgeCount label="Kolon" value={layout.columns} onChange={(columns) => patchLayout({ columns })} />
-              <EdgeCount label="Satır" value={layout.rows} onChange={(rows) => patchLayout({ rows })} />
+              <EdgeCount label={t('layout.columns')} value={layout.columns} onChange={(columns) => patchLayout({ columns })} />
+              <EdgeCount label={t('layout.rows')} value={layout.rows} onChange={(rows) => patchLayout({ rows })} />
               <Select
                 value={layout.cabling}
                 onChange={(value) => patchLayout({ cabling: value as 'snake' | 'parallel' })}
               >
-                <Label>Kablolama</Label>
+                <Label>{t('layout.cabling')}</Label>
                 <Select.Trigger>
                   <Select.Value />
                   <Select.Indicator />
                 </Select.Trigger>
                 <Select.Popover>
                   <ListBox>
-                    <ListBox.Item id="snake" textValue="Yılan (sıra sonunda geri döner)">
-                      Yılan (sıra sonunda geri döner)
+                    <ListBox.Item id="snake" textValue={t('layout.scan.snake')}>
+                      {t('layout.scan.snake')}
                       <ListBox.ItemIndicator />
                     </ListBox.Item>
-                    <ListBox.Item id="parallel" textValue="Paralel (her sıra aynı yönde)">
-                      Paralel (her sıra aynı yönde)
+                    <ListBox.Item id="parallel" textValue={t('layout.scan.parallel')}>
+                      {t('layout.scan.parallel')}
                       <ListBox.ItemIndicator />
                     </ListBox.Item>
                   </ListBox>
@@ -662,19 +658,19 @@ export function LayoutCard ({
                 value={layout.direction}
                 onChange={(value) => patchLayout({ direction: value as 'horizontal' | 'vertical' })}
               >
-                <Label>Tarama yönü</Label>
+                <Label>{t('layout.scanDirection')}</Label>
                 <Select.Trigger>
                   <Select.Value />
                   <Select.Indicator />
                 </Select.Trigger>
                 <Select.Popover>
                   <ListBox>
-                    <ListBox.Item id="horizontal" textValue="Yatay">
-                      Yatay
+                    <ListBox.Item id="horizontal" textValue={t('layout.direction.horizontal')}>
+                      {t('layout.direction.horizontal')}
                       <ListBox.ItemIndicator />
                     </ListBox.Item>
-                    <ListBox.Item id="vertical" textValue="Dikey">
-                      Dikey
+                    <ListBox.Item id="vertical" textValue={t('layout.direction.vertical')}>
+                      {t('layout.direction.vertical')}
                       <ListBox.ItemIndicator />
                     </ListBox.Item>
                   </ListBox>
@@ -691,7 +687,7 @@ export function LayoutCard ({
             setDraft((current) => ({ ...current, colorOrder: { ...current.colorOrder, order: value as ColorOrder } }))
           }}
         >
-          <Label>Kanal sırası</Label>
+          <Label>{t('layout.colorOrder')}</Label>
           <Select.Trigger>
             <Select.Value />
             <Select.Indicator />
@@ -699,25 +695,20 @@ export function LayoutCard ({
           <Select.Popover>
             <ListBox>
               {COLOR_ORDERS.map((order) => (
-                <ListBox.Item id={order} key={order} textValue={ORDER_LABEL[order]}>
-                  {ORDER_LABEL[order]}
+                <ListBox.Item id={order} key={order} textValue={orderLabel(order, standard)}>
+                  {orderLabel(order, standard)}
                   <ListBox.ItemIndicator />
                 </ListBox.Item>
               ))}
             </ListBox>
           </Select.Popover>
         </Select>
-        <p className="text-xs text-muted">
-          Kırmızı isteyip yeşil yanıyorsa sıra yanlış. İsim, kabloya çıkan
-          sıralamayı okur: GRB, kırmızının ikinci kanala gittiği şerittir.
-        </p>
+        <p className="text-xs text-muted">{t('layout.orderNote')}</p>
 
         {!resolved.ok && (
           <Surface className="rounded-xl p-3 text-sm text-danger" variant="secondary">
             {resolved.message}
-            <span className="block text-xs text-muted">
-              Resim, çizilebilen son yerleşimi gösteriyor.
-            </span>
+            <span className="block text-xs text-muted">{t('layout.lastDrawable')}</span>
           </Surface>
         )}
         {notice !== null && (
@@ -726,19 +717,16 @@ export function LayoutCard ({
 
         <div className="flex flex-wrap gap-2">
           <Button isDisabled={!resolved.ok || saving} onPress={apply}>
-            {saving ? 'Uygulanıyor…' : 'Uygula'}
+            {t(saving ? 'layout.applying' : 'layout.apply')}
           </Button>
           <Button
             variant="secondary"
             onPress={() => reset((layout.kind === 'matrix' ? MATRIX_ENGINE_CONFIG : DEFAULT_ENGINE_CONFIG) as EngineConfig)}
           >
-            Varsayılana dön
+            {t('layout.reset')}
           </Button>
         </div>
-        <p className="text-xs text-muted">
-          Uygula basılana kadar hiçbir şey şeride gitmez: yarısı yazılmış bir
-          kenar sayısı masadaki motora ulaşmamalı.
-        </p>
+        <p className="text-xs text-muted">{t('layout.applyNote')}</p>
       </Card.Content>
     </Card>
   )

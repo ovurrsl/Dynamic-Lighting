@@ -20,6 +20,7 @@ import {
 
 import { DeviceCard } from '#components/DeviceCard'
 import { LayoutCard } from '#components/LayoutCard'
+import { ProfilesCard } from '#components/ProfilesCard'
 import { LedFrame } from '#components/LedFrame'
 import { toHex, toLinear16, toRgb8 } from '#lib/colour'
 import type { LicenceGrant } from '#lib/client-api'
@@ -86,6 +87,17 @@ export function ControlPanel ({
    * here because two cards draw it and they must not disagree.
    */
   const [config, setConfig] = useState<EngineConfig>(DEFAULT_ENGINE_CONFIG as EngineConfig)
+  /**
+   * A profile the user loaded. It travels to the layout card as a draft rather
+   * than being applied here, so the strip still only changes on Apply.
+   */
+  const [loaded, setLoaded] = useState<{ config: EngineConfig, at: number } | undefined>(undefined)
+  /**
+   * What the layout editor currently shows. Saving a profile saves THIS, not
+   * `config`: someone who tweaks the depth and presses Save means the layout in
+   * front of them, not the one the strip happens to be running.
+   */
+  const [draft, setDraft] = useState<EngineConfig>(DEFAULT_ENGINE_CONFIG as EngineConfig)
 
   // What would go on the wire. Shown because it is the fastest way to see that
   // the linear decode is doing something: a mid sRGB value lands far lower in
@@ -226,7 +238,12 @@ export function ControlPanel ({
         </Card>
       </div>
 
-      <LayoutCard onConfig={setConfig} />
+      <LayoutCard loaded={loaded} onConfig={setConfig} onDraft={setDraft} />
+
+      <ProfilesCard
+        current={draft}
+        onLoad={(profile) => setLoaded({ config: profile, at: Date.now() })}
+      />
 
       <DeviceCard />
     </div>

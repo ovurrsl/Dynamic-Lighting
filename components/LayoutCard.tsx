@@ -125,7 +125,26 @@ function Fraction ({
   )
 }
 
-export function LayoutCard ({ onConfig }: { onConfig?: (config: EngineConfig) => void }) {
+export function LayoutCard ({
+  onConfig,
+  onDraft,
+  loaded
+}: {
+  /** The layout in force: reported on load and when Apply succeeds. */
+  onConfig?: (config: EngineConfig) => void
+  /**
+   * The layout being edited, whenever it is valid. Separate from `onConfig`
+   * because they answer different questions: what the strip is running, and
+   * what you are looking at. Saving a profile wants the second.
+   */
+  onDraft?: (config: EngineConfig) => void
+  /**
+   * A configuration handed in from outside - loading a profile. It becomes the
+   * DRAFT, not the running layout: the same rule as every other edit here, so
+   * loading a profile shows you what it is before it reaches the strip.
+   */
+  loaded?: { config: EngineConfig, at: number }
+}) {
   /**
    * Held in a ref so the seeding effect below depends on nothing at all. As a
    * dependency it would re-run - and re-query the extension - on every render
@@ -133,6 +152,8 @@ export function LayoutCard ({ onConfig }: { onConfig?: (config: EngineConfig) =>
    */
   const report = useRef(onConfig)
   report.current = onConfig
+  const reportDraft = useRef(onDraft)
+  reportDraft.current = onDraft
   const [draft, setDraft] = useState<EngineConfig>(DEFAULT_ENGINE_CONFIG as EngineConfig)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -175,6 +196,16 @@ export function LayoutCard ({ onConfig }: { onConfig?: (config: EngineConfig) =>
    * its error without the picture disappearing - a preview that blinks out
    * while you type is a preview you stop trusting.
    */
+  // Keyed by `at` rather than by the config, so loading the same profile twice
+  // still applies it after the user has edited something in between.
+  const lastLoadedAt = useRef<number | null>(null)
+  useEffect(() => {
+    if (loaded === undefined || loaded.at === lastLoadedAt.current) return
+    lastLoadedAt.current = loaded.at
+    setNotice(null)
+    setDraft(loaded.config)
+  }, [loaded])
+
   const lastGood = useRef<Resolved | null>(null)
   const resolved = useMemo<{ ok: true, value: Resolved } | { ok: false, message: string }>(() => {
     try {
@@ -186,6 +217,10 @@ export function LayoutCard ({ onConfig }: { onConfig?: (config: EngineConfig) =>
       return { ok: false, message: error instanceof Error ? error.message : String(error) }
     }
   }, [draft])
+
+  useEffect(() => {
+    if (resolved.ok) reportDraft.current?.(resolved.value.config)
+  }, [resolved])
 
   const shown = resolved.ok ? resolved.value : lastGood.current
   const layout = draft.layout

@@ -31,6 +31,7 @@ Host'ta koşuyor, o yüzden test ediliyor:
 | `afx_render.h` | interpolasyon, sigma-delta dither, güç sınırlayıcı | 17 |
 | `afx_idle.h` | host var/yok, çapraz geçişler, boşta gökkuşağı | 7 |
 | `afx_patterns.h` | tezgâh koşumu: yürüyüş, kanallar, rampa, beyaz, flaş | 8 |
+| `afx_config.h` | cihaz yapılandırması: TLV ayrıştırma, doğrulama, NVS blob'u | 11 |
 
 `src/main.cpp` — yalnız kablolama. Test edilemediği için mümkün olduğunca
 karar içermiyor.
@@ -50,6 +51,43 @@ Tasarımın gerekçeleri `../docs/hyperion-port-plan.md`'de. Kısaca:
   bayat kareyi kendiliğinden düşürüyor, yırtmıyor.
 - **LED görevi core 1'de yalnız.** ESP32'de RMT/I2S bozulmasının klasik
   sebebi aynı çekirdeğe düşen başka iş.
+
+## Yapılandırma — `AxC` kontrol kanalı
+
+Kart tek bir monitöre çivili değil. LED sayısı, güç bütçesi, boşta parlaklığı ve
+açılışta tezgâh koşumu çalışıp çalışmayacağı çalışma zamanında ayarlanıyor ve
+NVS'te saklanıyor. **Yerleşim burada değil ve hiç olmayacak**: kenar sayıları,
+bant derinlikleri, yön ve ofset host'ta. Firmware'in "üst kenar"ın ne olduğunu
+bilmesi gerekmiyor, ve bildiği an bir sonraki müşterinin monitörüne uymuyor.
+
+`AxC` karesinin gövdesi TLV: `[tip][uzunluk][değer…]`, big-endian.
+
+| Tip | Uzunluk | Ne |
+|---|---|---|
+| `0x01` | 0 | Sürüm sor |
+| `0x02` | 0 | Tezgâh koşumunu çalıştır |
+| `0x03` | 2 | LED sayısı (1…512) |
+| `0x04` | 2 | Güç bütçesi, mA (100…20000) |
+| `0x05` | 1 | Boşta parlaklığı (0…255) |
+| `0x06` | 1 | Açılışta tezgâh koşumu (0/1) |
+| `0x07` | 0 | Yapılandırmayı sor |
+| `0x08` | 0 | NVS'e kaydet |
+| `0x09` | 0 | Varsayılanlara dön ve kaydet |
+
+İki kural test edilmiş durumda ve ikisi de bilinçli:
+
+- **Bilinmeyen tip atlanıyor, reddedilmiyor.** Yeni bir host eski bir kartla
+  çalışmaya devam ediyor: duymadığı bir alanı gönderiyor ve mesajın geri kalanı
+  yine de iniyor.
+- **Bilinen tipin bozuk değeri REDDEDİLİYOR, kırpılmıyor.** 5000 LED'i sessizce
+  512'ye kırpmak host ile kartı şerit konusunda anlaşmazlıkta bırakır ve hiçbir
+  şey bunu söylemez.
+
+NVS'ten okunan blob da tel üzerinden gelenle **aynı doğrulamadan** geçiyor:
+sürüm baytı, checksum ve aralık kontrolü. Farklı bir derlemeyle yazılmış bir
+blob reddediliyor ve varsayılanlar ayakta kalıyor — yarısı anlaşılmış bir
+yapılandırma, hiç yapılandırma olmamasından kötü, çünkü uzunluğunda kimsenin
+anlaşmadığı bir şeridi yakıyor.
 
 ## Tezgâh koşumu — kartı yakınca ilk yapılacak şey
 

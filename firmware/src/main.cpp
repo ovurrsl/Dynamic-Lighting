@@ -1,9 +1,11 @@
 #include <Arduino.h>
 #include <NeoPixelBus.h>
+#include <Preferences.h>
 #include <esp_timer.h>
 
 #include <atomic>
 
+#include "afx_config.h"
 #include "afx_idle.h"
 #include "afx_patterns.h"
 #include "afx_protocol.h"
@@ -68,7 +70,21 @@ uint8_t showingSlot = 255;
 /** What the output task is gliding from and to. */
 uint16_t current[kMaxLeds * 3];
 uint16_t target[kMaxLeds * 3];
-uint16_t ledCount = 108;
+/**
+ * What this board is driving. Loaded from NVS at boot, changed over AxC, and
+ * saved only when asked - a flash write per frame would wear the part out.
+ */
+afx::DeviceConfig config;
+Preferences prefs;
+constexpr const char *kPrefsNamespace = "ambiflux";
+constexpr const char *kPrefsKey = "cfg";
+
+/**
+ * LEDs currently being driven. Starts at the configured count so the bench run
+ * and the idle animation cover the real strip, and follows each frame's header
+ * once a host is talking - the host is the authority while it is there.
+ */
+uint16_t ledCount = config.ledCount;
 uint32_t frameSequence = 0;
 
 afx::FrameParser<kMaxLeds * 6 + afx::kCalibrationSize> parser;
@@ -110,6 +126,11 @@ volatile bool outputDue = false;
  */
 void IRAM_ATTR onOutputTimer (void *) { outputDue = true; }
 
+// Defined further down, beside the NVS handle they use; the control channel is
+// what calls them, and it is declared first.
+void applyConfig ();
+void saveConfig ();
+
 /**
  * The control channel: version, configuration, and whatever else the host asks
  * that is not a picture.
@@ -120,23 +141,40 @@ void IRAM_ATTR onOutputTimer (void *) { outputDue = true; }
  * pushed straight onto the strip.
  */
 void handleControl (const uint8_t *tlv, size_t length) {
-  // TLV: [type][length][value...]. Only the version query is defined so far;
-  // an unknown type is skipped rather than refused, so an older board stays
-  // usable with a newer host.
-  size_t at = 0;
-  while (at + 2 <= length) {
-    const uint8_t type = tlv[at];
-    const uint8_t size = tlv[at + 1];
-    if (at + 2 + size > length) break;
-    if (type == 0x02) {                       // run the bench sequence
-      benchRunning = true;
-      benchStartMs = millis();
+  bool changed = false;
+  bool save = false;
+  bool report = false;
+  unsigned refused = 0;
+
+  afx::walkTlv(config, tlv, length, [&](uint8_t type, const uint8_t *, uint8_t, afx::Applied applied) {
+    switch (applied) {
+      case afx::Applied::Changed: changed = true; break;
+      case afx::Applied::Invalid: refused++; break;
+      case afx::Applied::Unknown: break;
+      case afx::Applied::Action:
+        switch (static_cast<afx::Tlv>(type)) {
+          case afx::Tlv::Version: report = true; break;
+          case afx::Tlv::QueryConfig: report = true; break;
+          case afx::Tlv::RunBench: benchRunning = true; benchStartMs = millis(); break;
+          case afx::Tlv::Save: save = true; break;
+          case afx::Tlv::ResetDefaults: config = afx::DeviceConfig(); changed = true; save = true; break;
+          default: break;
+        }
+        break;
     }
-    if (type == 0x01) {                       // version query
-      Serial.printf("{\"axc\":\"version\",\"v\":\"%s\",\"maxLeds\":%u}\n",
-                    AMBIFLUX_VERSION, static_cast<unsigned>(kMaxLeds));
-    }
-    at += 2 + size;
+  });
+
+  if (changed) applyConfig();
+  if (save) saveConfig();
+
+  if (report || changed || refused > 0) {
+    Serial.printf(
+        "{\"axc\":\"config\",\"v\":\"%s\",\"leds\":%u,\"budgetMa\":%u,"
+        "\"idle\":%u,\"benchOnBoot\":%d,\"maxLeds\":%u,\"refused\":%u,\"saved\":%d}\n",
+        AMBIFLUX_VERSION, static_cast<unsigned>(config.ledCount),
+        static_cast<unsigned>(config.budgetMa), static_cast<unsigned>(config.idleBrightness),
+        config.benchOnBoot ? 1 : 0, static_cast<unsigned>(afx::kConfigMaxLeds),
+        refused, save ? 1 : 0);
   }
 }
 
@@ -282,12 +320,43 @@ void reportTelemetry (uint32_t nowMs) {
       static_cast<unsigned long>(millis()));
 }
 
+void applyConfig () {
+  afx::PowerModel model;
+  model.budgetMa = static_cast<float>(config.budgetMa);
+  limiter = afx::PowerLimiter(model);
+
+  afx::IdlePolicy policy;
+  policy.idleBrightness = config.idleBrightness;
+  idleState = afx::IdleState(policy);
+
+  ledCount = config.ledCount;
+}
+
+void saveConfig () {
+  uint8_t blob[afx::kConfigBlobSize];
+  afx::serialiseConfig(config, blob);
+  prefs.putBytes(kPrefsKey, blob, sizeof(blob));
+}
+
+void loadConfig () {
+  uint8_t blob[afx::kConfigBlobSize];
+  const size_t read = prefs.getBytes(kPrefsKey, blob, sizeof(blob));
+  // A blob this build cannot read leaves the defaults standing rather than
+  // half-applying itself; deserialiseConfig does not touch `config` on failure.
+  if (read == sizeof(blob)) afx::deserialiseConfig(blob, read, config);
+  applyConfig();
+}
+
 }  // namespace
 
+/** Pushes the configuration into the stages that were built from it. */
 void setup () {
   Serial.begin(921600);
+  prefs.begin(kPrefsNamespace, false);
+  loadConfig();
   strip.Begin();
   strip.Show();
+  benchRunning = config.benchOnBoot;
   benchStartMs = millis();
 
   // The serial reader runs on core 0 so core 1 belongs to the LEDs alone.

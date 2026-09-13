@@ -1,310 +1,485 @@
-import type { LedColors } from '#lib/engine/types'
-import { encodeLinear16, encodeLinear8 } from '#lib/light'
-
 /**
- * Serial framing: LED colours -> the bytes the firmware reads.
+ * The serial wire format: the encoder is what the extension writes to the port,
+ * the parser is the reference the ESP32-S3 firmware is written against and what
+ * loopback mode runs. Both sides live in one file so they cannot drift.
  *
- * Port of the Adalight/AWA writer in Hyperion's
- * libsrc/leddevice/dev_serial/LedDeviceAdalight.cpp (bare `cpp:` references
- * below); the AWA protocol itself is HyperHDR's (MIT, (c) 2021 awawa-dev).
- * Section 7 of docs/hyperion-port-plan.md records the five details extracted
- * from that file; every one of them is a test in test/engine-protocol.test.ts.
+ * Port of the Adalight/AWA framing in Hyperion's
+ * `libsrc/leddevice/dev_serial/LedDeviceAdalight.cpp` (`prepareHeader()` builds
+ * the header, `write()` appends the Fletcher trailer, `whiteChannelExtension()`
+ * the calibration bytes). The port plan, section 7, holds the verbatim excerpt
+ * this was read from; nothing below is from memory. AWA itself originates in
+ * HyperHDR (MIT, awawa-dev), which is what makes the format clean for us to
+ * ship.
  *
- * Three protocols, one header shape:
+ * Three frame kinds share one 6-byte header:
  *
- *   ADA  'A' 'd' 'a'      hi lo chk   N*3 bytes RGB                      (cpp:113-117)
- *   AWA  'A' 'w' 'a'|'A'  hi lo chk   N*3 bytes RGB [+4 calib]  +3 Fletcher (cpp:101-105, 161-179)
- *   Afx  'A' 'f' 'x'      hi lo chk   N*6 bytes 16-bit BE linear +3 Fletcher (ours)
+ *   magic[3]  hi(N-1)  lo(N-1)  (hi ^ lo ^ 0x55)
  *
- * where `hi lo` is N-1 big-endian and `chk = hi ^ lo ^ 0x55` (cpp:104-105).
- * The count is sent as N-1 so that a 256-LED strip is 0x00ff and not 0x0100:
- * a legacy of 8-bit Arduinos, kept because every Adalight sketch expects it.
- * (LBAPA, the third protocol in that file, sends N instead and is not ported.)
+ *   'Ada'  + N*3 bytes RGB. No trailer, no integrity check at all: a flipped
+ *          pixel byte is shown, not detected. Kept for stock Adalight sketches.
+ *   'Awa'  + N*3 bytes RGB [+ 4 calibration bytes] + Fletcher(3). The third
+ *          magic byte is a FLAG: 'a' plain, 'A' when the four calibration bytes
+ *          (limit, red, green, blue) follow the pixels. The firmware derives
+ *          its RGBW mix from those four itself.
+ *   'Afx'  + N*6 bytes, 16-bit big-endian LINEAR per channel + Fletcher(3).
+ *          OURS, NOT HYPERION'S. Hyperion never puts more than 8 bits per
+ *          channel on a serial line - its device-facing type is a packed
+ *          3-byte `ColorRgb` and even its one 16-bit driver (dev_spi HD108)
+ *          copies an 8-bit value up. We write the firmware, so we can send the
+ *          16 bits the dark end of a linear ramp needs (lib/light.ts explains
+ *          why 8-bit linear bands). "Adalight compatible" still means 8-bit;
+ *          that is what 'Awa' is for.
  *
- * Afx is not in Hyperion: nothing there ever puts more than 8 bits per channel
- * on a serial line. It is the same header and trailer around 16-bit linear
- * payload, because the firmware is ours and the low end of a linear ramp needs
- * the bits (lib/light.ts). ADA and AWA stay as the proven 8-bit compatibility
- * path for anything that speaks Adalight.
+ * The LED count goes on the wire as N-1, big-endian, so N is 1..65536 and a
+ * zero-LED frame cannot be expressed. (Hyperion's third protocol, LBAPA, sends
+ * N instead - a known inconsistency, and one reason we do not carry LBAPA.)
  *
- * The Fletcher trailer is copied from cpp:165-178, not derived. Its shape is
- * where a rewrite goes wrong: it covers the PAYLOAD only (the header is not
- * hashed, `hasher` starts at HEADER_SIZE), `position` is a uint8 and wraps at
- * 256 (108 LEDs is 324 bytes, so it wraps for us), and ONLY the third byte is
- * escaped away from 0x41 ('A') so a checksum byte can never look like a frame
- * start - fletcher1 and fletcher2 may legitimately be 0x41, and the firmware
- * tolerates that because the header's count+XOR check rejects a false start.
+ * Bytes on this wire are the ONLY place the engine holds anything but linear
+ * floats: the 8-bit and 16-bit payloads arrive already quantised from
+ * lib/light.ts or lib/engine/dither.ts, and this module treats them as opaque
+ * bytes. It never converts a colour.
  */
-
-export type Protocol = 'ada' | 'awa' | 'afx'
 
 export const HEADER_SIZE = 6
 export const TRAILER_SIZE = 3
+export const CALIBRATION_SIZE = 4
 /** N-1 must fit in 16 bits. */
-export const MAX_LED_COUNT = 65536
+export const MAX_LEDS = 65536
 
-/** The byte a Fletcher extension of 'A' is replaced with (cpp:178). */
-export const FLETCHER_ESCAPE = 0xaa
+export type FrameKind = 'Ada' | 'Awa' | 'Afx'
 
-export const MAGIC: Readonly<Record<Protocol, readonly [number, number, number]>> = Object.freeze({
-  ada: [0x41, 0x64, 0x61], // 'A' 'd' 'a'
-  awa: [0x41, 0x77, 0x61], // 'A' 'w' 'a'
-  afx: [0x41, 0x66, 0x78] //  'A' 'f' 'x'
-})
+/** Bytes per LED in the payload of each kind. */
+export const BYTES_PER_LED: Readonly<Record<FrameKind, number>> = Object.freeze({ Ada: 3, Awa: 3, Afx: 6 })
 
 /**
- * AWA's optional white-channel calibration. When present the third magic byte
- * becomes 'A' and these four bytes follow the pixel data, inside the checksum
- * (cpp:103, whiteChannelExtension at cpp:163). The firmware does the RGBW
- * conversion itself from them. Each 0..255.
+ * The four 'AwA' calibration bytes, each 0..255, in wire order. They are what
+ * Hyperion's `whiteChannelExtension()` writes from `white_channel_limit`
+ * (already scaled from percent to 0..255) and `white_channel_red/green/blue`;
+ * the host does not interpret them, the firmware does.
  */
-export interface AwaCalibration {
+export interface Calibration {
   limit: number
   red: number
   green: number
   blue: number
 }
 
-export const AWA_CALIBRATION_SIZE = 4
-
-/** Colours as the framer accepts them: linear floats, or codes a dither stage already produced. */
-export type PayloadSource = LedColors | Uint8Array | Uint16Array
-
-export interface Framer {
-  readonly protocol: Protocol
+/**
+ * A parsed frame. `payload` is the parser's own copy - it does not alias the
+ * pushed chunk or the parser's scratch - so a consumer may keep it.
+ */
+export interface Frame {
+  readonly kind: FrameKind
   readonly count: number
-  /** Total frame length in bytes. */
-  readonly size: number
+  readonly payload: Uint8Array
+  /** Present only for an 'AwA' frame. */
+  readonly calibration?: Calibration
+}
+
+export interface ParserStats {
+  /** Frames delivered. */
+  frames: number
   /**
-   * Writes one frame. `out` (allocated when absent, sized `size`) gets header,
-   * payload, calibration and trailer; the returned view is exactly `size`
-   * bytes long. Float input is encoded with plain rounding (encodeLinear8 /
-   * encodeLinear16); a Uint8Array (ADA/AWA) or Uint16Array (Afx) of codes is
-   * copied as is, which is how a dithered frame goes out.
-   *
-   * The caller owns `out`. A serial writer with a write in flight must not hand
-   * the same buffer to the next frame; see lib/engine/serial.ts.
+   * Every time a partially parsed frame was abandoned and the parser went back
+   * to hunting for magic, whatever the reason. `countMismatch` and
+   * `badChecksum` classify the abandonments that got past the magic, so
+   * `resyncs >= countMismatch + badChecksum`; the difference is magic bytes
+   * that did not pan out. Garbage met while already hunting is not a resync.
    */
-  frame (source: PayloadSource, out?: Uint8Array): Uint8Array
+  resyncs: number
+  /** Trailer did not match the payload; frame dropped. */
+  badChecksum: number
+  /** Header check byte did not match hi/lo; frame dropped. */
+  countMismatch: number
 }
 
-export function bytesPerLed (protocol: Protocol): number {
-  return protocol === 'afx' ? 6 : 3
-}
-
-export function frameSize (protocol: Protocol, count: number, calibrated = false): number {
-  validateProtocol(protocol)
-  validateCount(count)
-  switch (protocol) {
-    case 'ada': return HEADER_SIZE + count * 3
-    case 'awa': return HEADER_SIZE + count * 3 + (calibrated ? AWA_CALIBRATION_SIZE : 0) + TRAILER_SIZE
-    case 'afx': return HEADER_SIZE + count * 6 + TRAILER_SIZE
-  }
-}
+const MAGIC_A = 0x41 // 'A'
+const MAGIC_ADA_1 = 0x64 // 'd'
+const MAGIC_ADA_2 = 0x61 // 'a'
+const MAGIC_AWA_1 = 0x77 // 'w'
+const MAGIC_AWA_2 = 0x61 // 'a'
+const MAGIC_AWA_2_CALIBRATED = 0x41 // 'A'
+const MAGIC_AFX_1 = 0x66 // 'f'
+const MAGIC_AFX_2 = 0x78 // 'x'
+const HEADER_XOR = 0x55
 
 /**
- * Writes the six header bytes at `out[at..at+6)` and returns the offset after
- * them. `calibrated` only means something for AWA.
+ * Hyperion emits the third trailer byte as `fletcherExt != 0x41 ? fletcherExt
+ * : 0xaa`. 0x41 is 'A': the intent is that the trailer never ends in a byte a
+ * scanner could take for the next frame's magic. The escape is asymmetric -
+ * fletcher1 and fletcher2 go out raw and may legitimately be 0x41 - and it is
+ * not invertible, since 0xaa is also a legitimate value of fletcherExt; the
+ * receiver therefore recomputes the escaped byte and compares, it never
+ * decodes. Replicated verbatim because a HyperSerial firmware expects exactly
+ * this, quirks included.
  */
-export function writeHeader (out: Uint8Array, at: number, protocol: Protocol, count: number, calibrated = false): number {
-  validateProtocol(protocol)
-  validateCount(count)
-  if (out.length < at + HEADER_SIZE) throw new RangeError(`protocol: no room for a header at ${at} in ${out.length} bytes`)
-  const magic = MAGIC[protocol]
-  const n = count - 1
-  const hi = (n >> 8) & 0xff
-  const lo = n & 0xff
-  out[at] = magic[0]
-  out[at + 1] = magic[1]
-  out[at + 2] = protocol === 'awa' && calibrated ? 0x41 : magic[2]
-  out[at + 3] = hi
-  out[at + 4] = lo
-  out[at + 5] = hi ^ lo ^ 0x55
-  return at + HEADER_SIZE
-}
+const FLETCHER_ESCAPE = 0x41
+const FLETCHER_ESCAPED = 0xaa
 
 /**
- * The three Fletcher bytes over `bytes[start..end)`, written to `out[at..at+3)`
- * (cpp:165-178, verbatim in structure). Returns the offset after them.
+ * The AWA trailer over `bytes[start, end)`, written to `out[at .. at+3)`.
  *
- * `position` is masked to a byte on every increment: that is the `uint8_t` of
- * the original and it is load-bearing, not incidental.
+ * LedDeviceAdalight.cpp `write()`, verbatim from the plan's excerpt:
+ *
+ *   fletcherExt = (fletcherExt + (*(hasher) ^ (position++))) % 255;
+ *   fletcher1   = (fletcher1 + *(hasher++)) % 255;
+ *   fletcher2   = (fletcher2 + fletcher1) % 255;
+ *
+ * `hasher` starts at `_ledBuffer.data() + HEADER_SIZE`: the checksum covers the
+ * PAYLOAD ONLY - pixels, plus the calibration bytes when present - never the
+ * header. The header protects itself with its own XOR byte.
+ *
+ * `position` is a `uint8_t` and WRAPS AT 256. That is the detail every rewrite
+ * gets wrong: a 108-LED frame is 324 payload bytes, so it crosses the wrap on
+ * every frame, and a counter that keeps going past 255 diverges from byte 256
+ * onward - the checksum simply never matches and nothing says why. Masking
+ * with `& 0xff` is not an optimisation, it is the specification.
  */
-export function writeFletcher (bytes: Uint8Array, start: number, end: number, out: Uint8Array, at: number): number {
-  if (start < 0 || end > bytes.length || start > end) throw new RangeError(`protocol: fletcher range ${start}..${end} outside ${bytes.length} bytes`)
-  if (out.length < at + TRAILER_SIZE) throw new RangeError(`protocol: no room for a trailer at ${at} in ${out.length} bytes`)
+function fletcherInto (bytes: Uint8Array, start: number, end: number, out: Uint8Array, at: number): void {
   let fletcher1 = 0
   let fletcher2 = 0
   let fletcherExt = 0
   let position = 0
   for (let i = start; i < end; i++) {
-    const byte = bytes[i] as number
-    fletcherExt = (fletcherExt + (byte ^ position)) % 255
+    const b = bytes[i] as number
+    fletcherExt = (fletcherExt + (b ^ position)) % 255
     position = (position + 1) & 0xff
-    fletcher1 = (fletcher1 + byte) % 255
+    fletcher1 = (fletcher1 + b) % 255
     fletcher2 = (fletcher2 + fletcher1) % 255
   }
   out[at] = fletcher1
   out[at + 1] = fletcher2
-  out[at + 2] = fletcherExt !== 0x41 ? fletcherExt : FLETCHER_ESCAPE
-  return at + TRAILER_SIZE
-}
-
-/** Convenience for tests and tools: the trailer for a payload, as three bytes. */
-export function fletcher (payload: Uint8Array, start = 0, end = payload.length): Uint8Array {
-  const out = new Uint8Array(TRAILER_SIZE)
-  writeFletcher(payload, start, end, out, 0)
-  return out
-}
-
-export interface FramerOptions {
-  /** AWA only. Presence switches the magic to 'AwA' and appends the four bytes. */
-  calibration?: AwaCalibration
-}
-
-export function createFramer (protocol: Protocol, count: number, options: FramerOptions = {}): Framer {
-  validateProtocol(protocol)
-  validateCount(count)
-  if (options.calibration !== undefined && protocol !== 'awa') {
-    throw new RangeError(`protocol: calibration is an AWA feature, not ${protocol}`)
-  }
-  const calibration = options.calibration === undefined ? null : validateCalibration(options.calibration)
-  const calibrated = calibration !== null
-  const size = frameSize(protocol, count, calibrated)
-  const perLed = bytesPerLed(protocol)
-  const payloadEnd = HEADER_SIZE + count * perLed
-  const hashedEnd = payloadEnd + (calibrated ? AWA_CALIBRATION_SIZE : 0)
-
-  // The header never changes for a given framer; write it once and copy.
-  const header = new Uint8Array(HEADER_SIZE)
-  writeHeader(header, 0, protocol, count, calibrated)
-
-  return {
-    protocol,
-    count,
-    size,
-    frame (source: PayloadSource, out?: Uint8Array): Uint8Array {
-      const buffer = out ?? new Uint8Array(size)
-      if (buffer.length < size) throw new RangeError(`protocol: output holds ${buffer.length} bytes, frame is ${size}`)
-      if (source instanceof Uint16Array) {
-        if (perLed !== 6) throw new TypeError(`protocol: 16-bit codes cannot go out over ${protocol}; use Afx or 8-bit codes`)
-      } else if (source instanceof Uint8Array) {
-        if (perLed !== 3) throw new TypeError('protocol: 8-bit codes cannot go out over afx; use 16-bit codes or floats')
-      } else if (!(source instanceof Float32Array)) {
-        throw new TypeError('protocol: source must be a Float32Array, Uint8Array or Uint16Array')
-      }
-      if (source.length !== count * 3) {
-        throw new RangeError(`protocol: source has ${source.length} channels, ${count} LEDs need ${count * 3}`)
-      }
-
-      buffer.set(header, 0)
-      const payload = buffer.subarray(HEADER_SIZE, payloadEnd)
-      if (source instanceof Float32Array) {
-        if (perLed === 6) encodeLinear16(source, payload)
-        else encodeLinear8(source, payload)
-      } else if (source instanceof Uint16Array) {
-        for (let i = 0; i < source.length; i++) {
-          const v = source[i] as number
-          payload[i * 2] = v >> 8
-          payload[i * 2 + 1] = v & 0xff
-        }
-      } else {
-        payload.set(source)
-      }
-
-      if (calibration !== null) {
-        buffer[payloadEnd] = calibration.limit
-        buffer[payloadEnd + 1] = calibration.red
-        buffer[payloadEnd + 2] = calibration.green
-        buffer[payloadEnd + 3] = calibration.blue
-      }
-      if (protocol !== 'ada') writeFletcher(buffer, HEADER_SIZE, hashedEnd, buffer, hashedEnd)
-      return buffer.length === size ? buffer : buffer.subarray(0, size)
-    }
-  }
-}
-
-/** What a receiver makes of one frame. `checksumOk` is null for ADA, which has no trailer. */
-export interface DecodedFrame {
-  protocol: Protocol
-  count: number
-  /** The raw pixel bytes: N*3 for ADA/AWA, N*6 (big-endian pairs) for Afx. */
-  payload: Uint8Array
-  calibration: AwaCalibration | null
-  checksumOk: boolean | null
+  out[at + 2] = fletcherExt !== FLETCHER_ESCAPE ? fletcherExt : FLETCHER_ESCAPED
 }
 
 /**
- * Reference receiver: exactly what the firmware must accept. Throws on
- * anything that is not a complete, well-formed frame. Used by the tests to
- * prove round trips and by the loopback writer to count frames a device would
- * have taken. The firmware's stream resynchronisation is its own concern;
- * this decodes one frame that starts at byte 0.
+ * The three AWA trailer bytes for a payload, exactly as they go on the wire:
+ * `[fletcher1, fletcher2, escapedExt]`. The escape is applied, so the third
+ * element is 0xaa whenever the raw fletcherExt was 0x41 (and also whenever it
+ * was 0xaa). Exposed so tests and the firmware's own vectors can hit the
+ * checksum without framing around it.
  */
-export function decodeFrame (bytes: Uint8Array): DecodedFrame {
-  if (bytes.length < HEADER_SIZE) throw new RangeError(`protocol: ${bytes.length} bytes is shorter than a header`)
-  const b0 = bytes[0] as number
-  const b1 = bytes[1] as number
-  const b2 = bytes[2] as number
-  let protocol: Protocol
-  let calibrated = false
-  if (b0 === 0x41 && b1 === 0x64 && b2 === 0x61) {
-    protocol = 'ada'
-  } else if (b0 === 0x41 && b1 === 0x77 && (b2 === 0x61 || b2 === 0x41)) {
-    protocol = 'awa'
-    calibrated = b2 === 0x41
-  } else if (b0 === 0x41 && b1 === 0x66 && b2 === 0x78) {
-    protocol = 'afx'
-  } else {
-    throw new RangeError(`protocol: unknown magic ${hex(b0)} ${hex(b1)} ${hex(b2)}`)
+export function fletcherAwa (payload: Uint8Array): [number, number, number] {
+  const trailer = new Uint8Array(TRAILER_SIZE)
+  fletcherInto(payload, 0, payload.length, trailer, 0)
+  return [trailer[0] as number, trailer[1] as number, trailer[2] as number]
+}
+
+/** Total bytes of a frame on the wire, so a caller can preallocate exactly. */
+export function frameSize (kind: FrameKind, count: number, calibrated = false): number {
+  const body = HEADER_SIZE + count * BYTES_PER_LED[kind]
+  switch (kind) {
+    case 'Ada': return body
+    case 'Awa': return body + (calibrated ? CALIBRATION_SIZE : 0) + TRAILER_SIZE
+    case 'Afx': return body + TRAILER_SIZE
   }
+}
 
-  const hi = bytes[3] as number
-  const lo = bytes[4] as number
-  if ((bytes[5] as number) !== (hi ^ lo ^ 0x55)) throw new RangeError('protocol: header checksum mismatch')
-  const count = ((hi << 8) | lo) + 1
-  const size = frameSize(protocol, count, calibrated)
-  if (bytes.length !== size) throw new RangeError(`protocol: ${protocol} frame for ${count} LEDs is ${size} bytes, got ${bytes.length}`)
+/**
+ * 'Ada': header + 8-bit RGB. `rgb8` is N*3 bytes; the returned frame is
+ * `HEADER_SIZE + N*3` bytes. See `encodeAwa` for the `out` contract.
+ */
+export function encodeAda (rgb8: Uint8Array, out?: Uint8Array): Uint8Array {
+  const count = validatePayload('Ada', rgb8)
+  const frame = prepareOut('Ada', out, frameSize('Ada', count))
+  writeHeader(frame, MAGIC_ADA_1, MAGIC_ADA_2, count)
+  placePayload(frame, rgb8)
+  return frame
+}
 
-  const payloadEnd = HEADER_SIZE + count * bytesPerLed(protocol)
-  const payload = bytes.subarray(HEADER_SIZE, payloadEnd)
-  let calibration: AwaCalibration | null = null
-  let hashedEnd = payloadEnd
+/**
+ * 'Awa' / 'AwA': header + 8-bit RGB [+ calibration] + Fletcher. `rgb8` is N*3
+ * bytes.
+ *
+ * `out`, when given, must hold at least the whole frame; pass exactly
+ * `frameSize()` bytes and the very same array comes back with nothing
+ * allocated, which is the point at 120 frames a second. A larger buffer is
+ * accepted and a right-sized view of it is returned, so a caller writing the
+ * result to a port never sends stale bytes past the frame. The payload may
+ * already sit inside `out` at its final position (offset `HEADER_SIZE`, the
+ * way `encodeLinear16(colors, out.subarray(6, ...))` would put it), in which
+ * case it is left where it is rather than copied onto itself.
+ */
+export function encodeAwa (rgb8: Uint8Array, calibration?: Calibration, out?: Uint8Array): Uint8Array {
+  const count = validatePayload('Awa', rgb8)
+  const calibrated = calibration !== undefined
+  if (calibrated) validateCalibration(calibration)
+  const frame = prepareOut('Awa', out, frameSize('Awa', count, calibrated))
+
+  // The third magic byte is the calibration flag, not a constant.
+  writeHeader(frame, MAGIC_AWA_1, calibrated ? MAGIC_AWA_2_CALIBRATED : MAGIC_AWA_2, count)
+  placePayload(frame, rgb8)
+
+  let end = HEADER_SIZE + rgb8.length
   if (calibrated) {
-    calibration = {
-      limit: bytes[payloadEnd] as number,
-      red: bytes[payloadEnd + 1] as number,
-      green: bytes[payloadEnd + 2] as number,
-      blue: bytes[payloadEnd + 3] as number
-    }
-    hashedEnd += AWA_CALIBRATION_SIZE
+    // Wire order from whiteChannelExtension(): limit, red, green, blue. These
+    // sit between the pixels and the trailer and are INSIDE the checksum.
+    frame[end] = calibration.limit
+    frame[end + 1] = calibration.red
+    frame[end + 2] = calibration.green
+    frame[end + 3] = calibration.blue
+    end += CALIBRATION_SIZE
   }
-  let checksumOk: boolean | null = null
-  if (protocol !== 'ada') {
-    const expected = fletcher(bytes, HEADER_SIZE, hashedEnd)
-    checksumOk = expected[0] === bytes[hashedEnd] && expected[1] === bytes[hashedEnd + 1] && expected[2] === bytes[hashedEnd + 2]
-  }
-  return { protocol, count, payload, calibration, checksumOk }
+  fletcherInto(frame, HEADER_SIZE, end, frame, end)
+  return frame
 }
 
-function validateProtocol (protocol: Protocol): void {
-  if (!(protocol in MAGIC)) throw new RangeError(`protocol: unknown protocol ${String(protocol)}`)
+/**
+ * 'Afx': header + 16-bit big-endian linear per channel + Fletcher. This is our
+ * extension (see the module comment): `linear16be` is N*6 bytes as produced by
+ * `encodeLinear16` in lib/light.ts, and the count on the wire is N, not the
+ * byte count, so a firmware that knows the kind knows the stride. Same trailer
+ * as 'Awa', same `out` contract as `encodeAwa`.
+ */
+export function encodeAfx (linear16be: Uint8Array, out?: Uint8Array): Uint8Array {
+  const count = validatePayload('Afx', linear16be)
+  const frame = prepareOut('Afx', out, frameSize('Afx', count))
+  writeHeader(frame, MAGIC_AFX_1, MAGIC_AFX_2, count)
+  placePayload(frame, linear16be)
+  const end = HEADER_SIZE + linear16be.length
+  fletcherInto(frame, HEADER_SIZE, end, frame, end)
+  return frame
 }
 
-function validateCount (count: number): void {
-  if (!Number.isInteger(count) || count < 1 || count > MAX_LED_COUNT) {
-    throw new RangeError(`protocol: LED count must be an integer 1..${MAX_LED_COUNT}, got ${count}`)
+/**
+ * The header from prepareHeader(): magic, then N-1 big-endian, then the two
+ * count bytes XORed with 0x55. The XOR byte is the header's own integrity
+ * check - the Fletcher trailer deliberately does not cover it.
+ */
+function writeHeader (frame: Uint8Array, magic1: number, magic2: number, count: number): void {
+  const encoded = count - 1
+  const hi = encoded >> 8
+  const lo = encoded & 0xff
+  frame[0] = MAGIC_A
+  frame[1] = magic1
+  frame[2] = magic2
+  frame[3] = hi
+  frame[4] = lo
+  frame[5] = hi ^ lo ^ HEADER_XOR
+}
+
+function placePayload (frame: Uint8Array, payload: Uint8Array): void {
+  // Already in place: the caller encoded straight into the frame buffer.
+  if (payload.buffer === frame.buffer && payload.byteOffset === frame.byteOffset + HEADER_SIZE) return
+  frame.set(payload, HEADER_SIZE)
+}
+
+/** Returns N. */
+function validatePayload (kind: FrameKind, payload: Uint8Array): number {
+  const stride = BYTES_PER_LED[kind]
+  if (payload.length === 0 || payload.length % stride !== 0) {
+    throw new RangeError(`protocol: ${kind} payload must be a non-empty multiple of ${stride} bytes, got ${payload.length}`)
   }
+  const count = payload.length / stride
+  if (count > MAX_LEDS) throw new RangeError(`protocol: ${kind} carries at most ${MAX_LEDS} LEDs, got ${count}`)
+  return count
 }
 
-function validateCalibration (c: AwaCalibration): AwaCalibration {
+function validateCalibration (calibration: Calibration): void {
   for (const key of ['limit', 'red', 'green', 'blue'] as const) {
-    const v = c[key]
-    if (!Number.isInteger(v) || v < 0 || v > 255) throw new RangeError(`protocol: calibration ${key} must be an integer 0..255, got ${v}`)
+    const v = calibration[key]
+    if (!Number.isInteger(v) || v < 0 || v > 255) {
+      throw new RangeError(`protocol: calibration ${key} must be an integer in 0..255, got ${v}`)
+    }
   }
-  return { limit: c.limit, red: c.red, green: c.green, blue: c.blue }
 }
 
-function hex (byte: number): string {
-  return `0x${byte.toString(16).padStart(2, '0')}`
+function prepareOut (kind: FrameKind, out: Uint8Array | undefined, size: number): Uint8Array {
+  if (out === undefined) return new Uint8Array(size)
+  if (out.length < size) throw new RangeError(`protocol: ${kind} frame needs ${size} bytes, output holds ${out.length}`)
+  return out.length === size ? out : out.subarray(0, size)
+}
+
+// Parser states. Numbers rather than strings: this runs once per byte.
+const MAGIC0 = 0
+const MAGIC1 = 1
+const MAGIC2 = 2
+const HI = 3
+const LO = 4
+const CHK = 5
+const PAYLOAD = 6
+const CALIB = 7
+const TRAILER = 8
+type State = typeof MAGIC0 | typeof MAGIC1 | typeof MAGIC2 | typeof HI | typeof LO | typeof CHK
+  | typeof PAYLOAD | typeof CALIB | typeof TRAILER
+
+/**
+ * Byte-at-a-time frame parser. Feed it whatever the port hands you - a frame
+ * may arrive in any number of pieces and a chunk may hold several frames - and
+ * it returns the complete frames it found.
+ *
+ * THE RESYNC RULE. On any mismatch the parser goes back to hunting for magic,
+ * and the byte that failed is RE-EVALUATED as a possible magic start rather
+ * than discarded: if it is 'A' the parser is in MAGIC1 afterwards, otherwise
+ * MAGIC0. The case that matters is 'A' failing INSIDE the magic: a stream that
+ * reads "AAda..." (a stray 'A', then a real frame) has its second 'A' arrive
+ * in MAGIC1, and an implementation that drops the failing byte and returns to
+ * MAGIC0 then sees "da..." and misses the frame - and, because every frame
+ * starts with 'A', misses every frame after it in the same way. It never
+ * recovers. The same rule applies to a header check byte or a trailer byte
+ * that happens to be 'A'.
+ *
+ * Two consequences worth knowing, both inherent to a stream format with no
+ * byte stuffing: garbage can only be skipped, never detected, so a run of it
+ * that happens to spell a valid header is parsed as one (and then fails its
+ * trailer); and a truncated frame swallows the start of the next one, whose
+ * bytes fail the trailer, so a transmitter dying mid-frame costs at most the
+ * frame it collided with. 'Ada' has no trailer, so for it the second point is
+ * worse - a truncated 'Ada' frame is completed with the next frame's bytes and
+ * DELIVERED. That, and not fashion, is why 'Awa' exists.
+ */
+export class FrameParser {
+  readonly stats: ParserStats = { frames: 0, resyncs: 0, badChecksum: 0, countMismatch: 0 }
+
+  private state: State = MAGIC0
+  private kind: FrameKind = 'Ada'
+  private calibrated = false
+  private hi = 0
+  private lo = 0
+  private count = 0
+  /** Payload bytes; `need` adds the calibration bytes, which share `scratch`. */
+  private payloadLength = 0
+  private need = 0
+  private filled = 0
+  private trailerAt = 0
+  /**
+   * Reused across frames and grown to the largest frame seen; the copy handed
+   * out in `Frame.payload` is the one allocation per frame.
+   */
+  private scratch = new Uint8Array(108 * 6 + CALIBRATION_SIZE)
+  private readonly expected = new Uint8Array(TRAILER_SIZE)
+
+  /** Back to hunting for magic; keeps the statistics. For a reopened port. */
+  reset (): void {
+    this.state = MAGIC0
+  }
+
+  push (chunk: Uint8Array): Frame[] {
+    const frames: Frame[] = []
+    let i = 0
+    while (i < chunk.length) {
+      // PAYLOAD and CALIB are the two states that take a run of bytes rather
+      // than one; everything else consumes exactly one byte per iteration.
+      if (this.state === PAYLOAD || this.state === CALIB) {
+        const stop = this.state === PAYLOAD ? this.payloadLength : this.need
+        const take = Math.min(stop - this.filled, chunk.length - i)
+        this.scratch.set(chunk.subarray(i, i + take), this.filled)
+        this.filled += take
+        i += take
+        if (this.filled < stop) break
+        if (this.state === PAYLOAD) {
+          if (this.kind === 'Ada') {
+            // No trailer: the frame ends with its last pixel byte, and the
+            // very next byte may be the next frame's magic.
+            frames.push(this.emit())
+            this.state = MAGIC0
+          } else {
+            this.state = this.calibrated ? CALIB : TRAILER
+          }
+        } else {
+          this.state = TRAILER
+        }
+        if (this.state === TRAILER) {
+          fletcherInto(this.scratch, 0, this.need, this.expected, 0)
+          this.trailerAt = 0
+        }
+        continue
+      }
+
+      const b = chunk[i] as number
+      i++
+      switch (this.state) {
+        case MAGIC0:
+          if (b === MAGIC_A) this.state = MAGIC1
+          break
+
+        case MAGIC1:
+          // A second 'A' here goes through resync(), which keeps us in MAGIC1.
+          if (b === MAGIC_ADA_1) this.kind = 'Ada'
+          else if (b === MAGIC_AWA_1) this.kind = 'Awa'
+          else if (b === MAGIC_AFX_1) this.kind = 'Afx'
+          else { this.resync(b); break }
+          this.state = MAGIC2
+          break
+
+        case MAGIC2:
+          // 'AwA' is the calibrated 'Awa' magic, not a stray 'A' - it must be
+          // matched before the resync rule gets a look at the byte.
+          if (this.kind === 'Awa' && (b === MAGIC_AWA_2 || b === MAGIC_AWA_2_CALIBRATED)) {
+            this.calibrated = b === MAGIC_AWA_2_CALIBRATED
+            this.state = HI
+          } else if ((this.kind === 'Ada' && b === MAGIC_ADA_2) || (this.kind === 'Afx' && b === MAGIC_AFX_2)) {
+            this.calibrated = false
+            this.state = HI
+          } else {
+            this.resync(b)
+          }
+          break
+
+        case HI:
+          this.hi = b
+          this.state = LO
+          break
+
+        case LO:
+          this.lo = b
+          this.state = CHK
+          break
+
+        case CHK:
+          if (b !== (this.hi ^ this.lo ^ HEADER_XOR)) {
+            this.stats.countMismatch++
+            this.resync(b)
+            break
+          }
+          this.count = ((this.hi << 8) | this.lo) + 1
+          this.payloadLength = this.count * BYTES_PER_LED[this.kind]
+          this.need = this.payloadLength + (this.calibrated ? CALIBRATION_SIZE : 0)
+          if (this.scratch.length < this.need) this.scratch = new Uint8Array(this.need)
+          this.filled = 0
+          this.state = PAYLOAD
+          break
+
+        case TRAILER:
+          // Compared byte by byte so a mismatch falls back at once and the
+          // failing byte gets its chance as magic; waiting for all three would
+          // only widen the window in which a following frame is swallowed.
+          if (b !== this.expected[this.trailerAt]) {
+            this.stats.badChecksum++
+            this.resync(b)
+            break
+          }
+          if (++this.trailerAt === TRAILER_SIZE) {
+            frames.push(this.emit())
+            this.state = MAGIC0
+          }
+          break
+      }
+    }
+    return frames
+  }
+
+  private resync (b: number): void {
+    this.stats.resyncs++
+    this.state = b === MAGIC_A ? MAGIC1 : MAGIC0
+  }
+
+  private emit (): Frame {
+    this.stats.frames++
+    const payload = this.scratch.slice(0, this.payloadLength)
+    if (!this.calibrated) return { kind: this.kind, count: this.count, payload }
+    const at = this.payloadLength
+    const s = this.scratch
+    return {
+      kind: this.kind,
+      count: this.count,
+      payload,
+      calibration: {
+        limit: s[at] as number,
+        red: s[at + 1] as number,
+        green: s[at + 2] as number,
+        blue: s[at + 3] as number
+      }
+    }
+  }
 }

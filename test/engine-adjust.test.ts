@@ -15,6 +15,8 @@ import {
   oklabGain,
   oklabToLinear,
   parseLedSelector,
+  TEMPERATURE_MAX,
+  TEMPERATURE_MIN,
   type AdjustmentProfile
 } from '#lib/engine/adjust'
 import { REFERENCE_LAYOUT, ledCount } from '#lib/engine/layout'
@@ -500,4 +502,274 @@ test('invalid profile values are rejected when the table is built, not per frame
   assert.throws(() => createAdjustment([{ leds: '*', red: { r: -0.1, g: 0, b: 0 } }], 1), RangeError)
   // A hot corner is allowed; see the clamp test.
   assert.doesNotThrow(() => createAdjustment([{ leds: '*', red: { r: 1.5, g: 0, b: 0 } }], 1))
+})
+
+// ---------------------------------------------------------------------------
+// Adversarial coverage (review pass): edges, boundaries, ordering, deviations
+// ---------------------------------------------------------------------------
+
+/** Every channel finite and inside 0..1 - the output contract of `apply`. */
+const assertInRange = (frame: LedColors, message: string): void => {
+  for (let i = 0; i < frame.length; i++) {
+    const v = frame[i]!
+    assert.ok(Number.isFinite(v) && v >= 0 && v <= 1, `${message}: channel ${i} is ${v}`)
+  }
+}
+
+test('an empty frame, a frame shorter than one LED and a dangling channel are all left alone', () => {
+  const adjustment = createAdjustment([{ leds: '*', brightness: 50 }], 4)
+  assert.equal(adjustment.apply(new Float32Array(0)).length, 0)
+  const short = adjustment.apply(new Float32Array([1, 1]))
+  assert.deepEqual([...short], [1, 1], 'two channels are not a LED')
+  const dangling = adjustment.apply(new Float32Array([1, 1, 1, 1]))
+  near(dangling[0]!, 1 / 3, 1e-7)
+  near(dangling[2]!, 1 / 3, 1e-7)
+  assert.equal(dangling[3], 1, 'the fourth channel belongs to no complete LED')
+})
+
+test('a one-LED strip is addressable by * and by 0; index 1 and a zero-LED strip are refused', () => {
+  const star = createAdjustment([{ leds: '*', blue: { r: 0, g: 0, b: 0.5 } }], 1)
+  assert.deepEqual([...star.unassigned], [])
+  assert.deepEqual([...star.apply(solid(0, 0, 1))], [0, 0, 0.5])
+  const zero = createAdjustment([{ leds: '0', blue: { r: 0, g: 0, b: 0.5 } }], 1)
+  assert.deepEqual([...zero.apply(solid(0, 0, 1))], [0, 0, 0.5])
+  assert.throws(() => createAdjustment([{ leds: '1' }], 1), RangeError)
+  assert.throws(() => createAdjustment([{ leds: '0-1' }], 1), RangeError)
+  // Consistent with layout.ts, which also refuses a strip of no LEDs.
+  assert.throws(() => createAdjustment([], 0), RangeError)
+  assert.deepEqual(parseLedSelector('*', 0), [], 'the selector itself is fine with an empty strip')
+})
+
+test('every LED of the reference strip receives its own profile at its own offset, and the last profile wins', () => {
+  // One profile per LED, each with a distinct green level on the red corner.
+  // i/128 is exact in Float32, so equality is exact.
+  const profiles: AdjustmentProfile[] = Array.from({ length: COUNT }, (_, i) => ({
+    leds: String(i),
+    red: { r: 1, g: i / 128, b: 0 }
+  }))
+  const own = createAdjustment(profiles, COUNT)
+  assert.deepEqual([...own.unassigned], [])
+  const frame = own.apply(solid(1, 0, 0, COUNT))
+  for (let i = 0; i < COUNT; i++) {
+    assert.equal(frame[i * 3]!, 1, `LED ${i} red`)
+    assert.equal(frame[i * 3 + 1]!, i / 128, `LED ${i} green`)
+    assert.equal(frame[i * 3 + 2]!, 0, `LED ${i} blue`)
+  }
+  // The same list in reverse followed by a wildcard: the wildcard wins everywhere.
+  const overlay = createAdjustment([...profiles].reverse().concat([{ leds: '*', red: { r: 1, g: 0.25, b: 0 } }]), COUNT)
+  const flat = overlay.apply(solid(1, 0, 0, COUNT))
+  for (let i = 0; i < COUNT; i++) assert.equal(flat[i * 3 + 1]!, 0.25, `LED ${i} overridden`)
+})
+
+test('a large strip with every knob off its default keeps every output finite and inside 0..1', () => {
+  const count = 20000
+  const everything: Omit<AdjustmentProfile, 'leds'> = {
+    saturationGain: 2,
+    brightnessGain: 1.5,
+    taper: 1.3,
+    brightness: 30,
+    brightnessCompensation: 100,
+    temperature: 2000,
+    backlightThreshold: 80,
+    backlightColored: true,
+    black: { r: 0.02, g: 0.02, b: 0.02 },
+    red: { r: 1.6, g: 0, b: 0 },
+    cyan: { r: 0, g: 1.2, b: 1.2 },
+    white: { r: 2, g: 2, b: 2 }
+  }
+  for (const [label, extra] of [
+    ['as given', {}],
+    ['brightness 1', { brightness: 1 }],
+    ['40000 K, plain backlight', { temperature: 40000, backlightColored: false }],
+    ['gains below one', { saturationGain: 0.1, brightnessGain: 0.1 }]
+  ] as const) {
+    const adjustment = createAdjustment([{ leds: '*', ...everything, ...extra }], count)
+    assertInRange(adjustment.apply(randomFrame(6, count)), `${label}, backlight on`)
+    adjustment.setBacklightEnabled(false)
+    assertInRange(adjustment.apply(randomFrame(7, count)), `${label}, backlight off`)
+  }
+})
+
+test('the stages run in Hyperion\'s order: gain, then taper, then corners, then temperature', () => {
+  // Gain before taper. On a grey, Oklab L is the plain cube root, so halving L
+  // then squaring gives ((0.5^(1/3) * 0.5)^3)^2 = 0.0625^2; the other order
+  // would give (0.25^(1/3) * 0.5)^3 = 0.03125.
+  const gainThenTaper = through({ brightnessGain: 0.5, taper: 2 }, 0.5, 0.5, 0.5)
+  near(gainThenTaper.r, 0.0625 ** 2, 1e-6)
+  assert.ok(Math.abs(gainThenTaper.r - 0.03125) > 0.02)
+
+  // Taper before corners: 0.5^2 = 0.25 of the way to a red corner with g 0.5
+  // is g 0.125; corners first would square the 0.25 to 0.0625.
+  const taperThenCorners = through({ taper: 2, red: { r: 1, g: 0.5, b: 0 } }, 0.5, 0, 0)
+  near(taperThenCorners.r, 0.25, 1e-7)
+  near(taperThenCorners.g, 0.125, 1e-7)
+
+  // Corners before temperature: the calibrated green of the red corner is
+  // tinted by the green multiplier, not by the red one.
+  const tint = kelvinToLinearRgb(10000)
+  assert.ok(Math.abs(tint.r - tint.g) > 0.05, 'precondition: r and g multipliers differ')
+  const cornersThenTemp = through({ red: { r: 1, g: 0.1, b: 0 }, temperature: 10000 }, 1, 0, 0)
+  near(cornersThenTemp.r, tint.r, 1e-6)
+  near(cornersThenTemp.g, 0.1 * tint.g, 1e-6)
+  assert.ok(Math.abs(cornersThenTemp.g - 0.1 * tint.r) > 1e-3, 'would be the other order')
+})
+
+test('our default delivers the same mid-grey light as Hyperion\'s default; taper 2.2 is six times darker than either', () => {
+  // The LED wire is linear PWM (lib/light.ts), so Hyperion's post-LUT byte IS
+  // the light level: gamma 2.2 sends sRGB 128 to byte 55, and byte 55 lights
+  // the LED at 55/255 = 0.2157 - which is the decoded value of sRGB 128, 0.2159.
+  // Hyperion's "gamma" is the decode we do at capture. The same exponent on top
+  // of our decoded value is a second decode and lands at 0.0343, 6.3x darker
+  // than what Hyperion's default puts on the wire.
+  const midGrey = srgbToLinear(128 / 255)
+  const hyperionWire = Math.floor((128 / 255) ** 2.2 * 255) / 255
+  near(hyperionWire, 55 / 255, 1e-12)
+  near(through({}, midGrey, midGrey, midGrey).r / hyperionWire, 1, 2e-3, 'default matches Hyperion\'s default light')
+  const doubled = through({ taper: 2.2 }, midGrey, midGrey, midGrey).r
+  assert.ok(hyperionWire / doubled > 6, `${doubled} must be far below Hyperion's ${hyperionWire}`)
+})
+
+test('Kelvin is taken as given: 6699 K and 6650 K are not the 6600 K identity', () => {
+  // KelvinToRgb.h:23 does `temperature /= 100` on an int, so every value in
+  // 6600..6699 is the identity there. Here the fit is evaluated where asked.
+  assert.deepEqual(kelvinToSrgb(6600), { r: 1, g: 1, b: 1 })
+  for (const k of [6601, 6650, 6699]) {
+    const c = kelvinToSrgb(k)
+    assert.ok(c.g < 0.995, `${k} K must not collapse onto 6600 K, got g ${c.g}`)
+    assert.notDeepEqual(c, kelvinToSrgb(6600))
+  }
+  // And the seam of the fit is where Helland put it, on either side of 66.
+  assert.ok(kelvinToSrgb(6599).b < 1 && kelvinToSrgb(6601).g < 1)
+})
+
+test('Helland\'s channels are not truncated to bytes', () => {
+  // KelvinToRgb.h casts each channel with static_cast<int>: 3000 K green is
+  // 177.2 -> 177 there (0.6941), 0.6949 here; blue 109.9 -> 109 (0.4275) vs 0.4310.
+  const c = kelvinToSrgb(3000)
+  near(c.g, (99.4708025861 * Math.log(30) - 161.1195681661) / 255, 1e-12)
+  near(c.b, (138.5177312231 * Math.log(20) - 305.0447927307) / 255, 1e-12)
+  assert.ok(Math.abs(c.g - 177 / 255) > 5e-4)
+  assert.ok(Math.abs(c.b - 109 / 255) > 3e-3)
+})
+
+test('the temperature fit is finite, inside 0..1 and monotonic over the whole clamped range', () => {
+  let prev = kelvinToSrgb(TEMPERATURE_MIN)
+  for (let k = TEMPERATURE_MIN + 50; k <= TEMPERATURE_MAX; k += 50) {
+    const c = kelvinToSrgb(k)
+    for (const v of [c.r, c.g, c.b]) assert.ok(Number.isFinite(v) && v >= 0 && v <= 1, `${k} K: ${v}`)
+    if (k <= 6600) {
+      assert.ok(c.g >= prev.g - 1e-12 && c.b >= prev.b - 1e-12, `${k} K: green and blue rise towards 6600`)
+    } else if (k > 6700) {
+      assert.ok(c.r <= prev.r + 1e-12 && c.g <= prev.g + 1e-12, `${k} K: red and green fall past 6600`)
+    }
+    prev = c
+  }
+  const linear = kelvinToLinearRgb(TEMPERATURE_MAX)
+  assert.ok(linear.r < linear.g && linear.g < linear.b)
+})
+
+test('the brightness scalars are not ceil\'d to a byte', () => {
+  // RgbTransform.cpp ceil()s 255/B_in: brightness 60 gives 255/2.6 = 98.08 -> 99
+  // -> 0.3882 there, exactly 1/2.6 = 0.3846 here; 75 gives 0.5 here, 128/255 there.
+  near(brightnessScalars(60, 0).rgb, 1 / 2.6, 1e-12)
+  assert.ok(Math.abs(brightnessScalars(60, 0).rgb - 99 / 255) > 3e-3)
+  assert.equal(brightnessScalars(75, 0).rgb, 0.5)
+  assert.ok(Math.abs(brightnessScalars(75, 0).rgb - 128 / 255) > 1e-3)
+  // The hinge is continuous from both sides at exactly 50.
+  near(brightnessScalars(50, 0).rgb, 1 / 3, 1e-15)
+  near(brightnessScalars(50.0001, 0).rgb, 1 / 3, 1e-6)
+  near(brightnessScalars(49.9999, 0).rgb, 1 / 3, 1e-6)
+})
+
+test('the backlight floor byte is not truncated', () => {
+  // RgbTransform.cpp:87-101 casts 255*shaped to uint8_t: threshold 30 is byte
+  // 43.8 -> 43 there, which is 3.5% less light than the untruncated curve.
+  const shaped30 = (Math.pow(2, 0.6) - 1) / 3
+  near(backlightFloor(30), srgbToLinear(shaped30), 1e-15)
+  const hyperion30 = srgbToLinear(Math.floor(255 * shaped30) / 255)
+  assert.ok(backlightFloor(30) / hyperion30 > 1.03, 'must not be the truncated byte')
+  // A colour sitting exactly on the floor is left where it is.
+  const f = backlightFloor(50)
+  const onFloor = through({ backlightThreshold: 50 }, f, f, f)
+  assert.deepEqual(onFloor, { r: Math.fround(f), g: Math.fround(f), b: Math.fround(f) })
+})
+
+test('LED selector edge cases: zero-width ranges, leading zeros, stray whitespace, empty items, non-ASCII digits', () => {
+  assert.deepEqual(parseLedSelector('0-0', 3), [0])
+  assert.deepEqual(parseLedSelector('1-1', 3), [1])
+  assert.deepEqual(parseLedSelector('007', 10), [7])
+  assert.deepEqual(parseLedSelector(' * ', 3), [0, 1, 2])
+  assert.deepEqual(parseLedSelector('\t3', 10), [3])
+  assert.deepEqual(parseLedSelector('3\n', 10), [3])
+  assert.deepEqual(parseLedSelector('9,0-2', 10), [9, 0, 1, 2], 'order of first mention')
+  for (const bad of ['1,,2', '1,2,', ',1', '0 - 2', '٣', '1٫', '1-2-', '--1']) {
+    assert.throws(() => parseLedSelector(bad, 10), SyntaxError, `"${bad}" must be rejected`)
+  }
+})
+
+test('a profile object mutated after the table is built does not reach the chain', () => {
+  const red = { r: 1, g: 0.1, b: 0 }
+  const profile: AdjustmentProfile = { leds: '*', red, brightness: 100 }
+  const adjustment = createAdjustment([profile], 1)
+  red.g = 0.9
+  profile.brightness = 10
+  profile.temperature = 3000
+  assert.deepEqual([...adjustment.apply(solid(1, 0, 0))], [1, Math.fround(0.1), 0])
+})
+
+test('gains at the ends of their range: 0 saturation leaves white white, a big lightness gain clamps, a small one keeps hue', () => {
+  const white = through({ saturationGain: 0 }, 1, 1, 1)
+  near(white.r, 1, 1e-6)
+  near(white.g, 1, 1e-6)
+  near(white.b, 1, 1e-6)
+  assert.deepEqual(through({ brightnessGain: 2 }, 1, 1, 1), { r: 1, g: 1, b: 1 })
+  assert.deepEqual(through({ brightnessGain: 2, saturationGain: 2 }, 0, 0, 0), { r: 0, g: 0, b: 0 })
+
+  // A saturation gain inside the gamut keeps the hue and scales the chroma.
+  const c = { r: 0.6, g: 0.3, b: 0.2 }
+  const before = linearToOklab(c)
+  const after = linearToOklab(through({ saturationGain: 0.5 }, c.r, c.g, c.b))
+  near(Math.atan2(after.b, after.a), Math.atan2(before.b, before.a), 1e-5, 'hue')
+  near(Math.hypot(after.a, after.b) / Math.hypot(before.a, before.b), 0.5, 1e-5, 'chroma')
+  near(after.L, before.L, 1e-6, 'lightness')
+})
+
+test('hot corners on every corner still land inside 0..1, and the pure corners hit their calibrations', () => {
+  const hot: Omit<AdjustmentProfile, 'leds'> = {
+    black: { r: 0.1, g: 0.1, b: 0.1 },
+    red: { r: 2, g: 0, b: 0 },
+    green: { r: 0, g: 2, b: 0 },
+    blue: { r: 0, g: 0, b: 2 },
+    cyan: { r: 0, g: 2, b: 2 },
+    magenta: { r: 2, g: 0, b: 2 },
+    yellow: { r: 2, g: 2, b: 0 },
+    white: { r: 2, g: 2, b: 2 }
+  }
+  const adjustment = createAdjustment([{ leds: '*', ...hot }], COUNT)
+  assertInRange(adjustment.apply(randomFrame(9)), 'hot corners')
+  assert.deepEqual(through(hot, 1, 1, 1), { r: 1, g: 1, b: 1 })
+  assert.deepEqual(through(hot, 0, 0, 0), { r: Math.fround(0.1), g: Math.fround(0.1), b: Math.fround(0.1) })
+  // Half red under a 2x red corner is exactly full red - the clamp sits at 1.
+  assert.equal(through(hot, 0.5, 0, 0).r, 1)
+})
+
+test('brightness 0 with a calibrated black floor leaves only the black corner', () => {
+  const profile = { brightness: 0, black: { r: 0.05, g: 0.05, b: 0.05 } }
+  assert.deepEqual(through(profile, 1, 1, 1), { r: 0, g: 0, b: 0 })
+  near(through(profile, 0, 0, 0).r, 0.05, 1e-7)
+  // Mid grey: only the black weight (1-0.5)^3 = 0.125 of the floor survives.
+  near(through(profile, 0.5, 0.5, 0.5).g, 0.125 * 0.05, 1e-7)
+})
+
+test('setBacklightEnabled churn between frames is honoured every time, and unassigned LEDs never see the floor', () => {
+  const adjustment = createAdjustment([{ leds: '0, 2', backlightThreshold: 50 }], 3)
+  const floor = Math.fround(backlightFloor(50))
+  for (let n = 0; n < 100; n++) {
+    const enabled = n % 2 === 0
+    adjustment.setBacklightEnabled(enabled)
+    const frame = adjustment.apply(solid(0, 0, 0, 3))
+    assert.equal(frame[0], enabled ? floor : 0, `frame ${n}: LED 0`)
+    assert.equal(frame[3], 0, `frame ${n}: LED 1 has no profile`)
+    assert.equal(frame[6], enabled ? floor : 0, `frame ${n}: LED 2`)
+  }
 })

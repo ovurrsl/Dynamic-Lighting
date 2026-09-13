@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "AmbiFlux",
+  "version": "0.1.0",
+  "description": "Ekranı takip eden ambilight motoru: yakalama, örnekleme ve seri port. Panel: ambiflux-revor.vercel.app",
+  "minimum_chrome_version": "116",
+  "permissions": ["offscreen", "desktopCapture", "storage"],
+  "background": {
+    "service_worker": "sw.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "AmbiFlux"
+  },
+  "externally_connectable": {
+    "matches": [
+      "https://ambiflux-revor.vercel.app/*",
+      "https://ambiflux.vercel.app/*"
+    ]
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0jgLtEovx/nCUOI0l//muoL6Iq3cYNUWyqqomAeLiYhlm1V5MQ+r8baaBA7r0forya+TIpu8emz9eieyqvtq9v6vpzk/hENlIRBIJi+xnzhz90KaAbF5zqO1sfi9k3wQPEVb981IOKqVQUDgfqo1N+q8vZvg9JI+osm2MVkpj94B2WBOjDrAtAqH7ABSOljKEnlLtJla6/JQ395RoVC364xIR9KEMjWCftmR4HQXoDvORJYIFnMaSUguPmlLSkrXORRU4zezR33k2MIhO7GEkJlXmDO7UZZq/f9+YAgjs5D8wdwUQk7m2QMmsbtpxtYAaI8hkSSR3UvXlCsUptEHOQIDAQAB"
+}

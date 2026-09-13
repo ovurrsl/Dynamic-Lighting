@@ -34,3 +34,6 @@ server/.data/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Extension build output; load extension/dist unpacked
+extension/dist/

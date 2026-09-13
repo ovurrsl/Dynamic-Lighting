@@ -1,0 +1,6 @@
+# Vercel builds the Next app at the root. None of these are part of it.
+extension
+AmbiFluxNanoR4LampArray
+test
+supabase
+docs

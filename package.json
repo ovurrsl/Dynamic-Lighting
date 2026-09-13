@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/*.test.ts\"",
     "keygen": "node scripts/keygen.mjs",
-    "migrate": "node scripts/migrate.mjs"
+    "migrate": "node scripts/migrate.mjs",
+    "build:extension": "node scripts/build-extension.mjs",
+    "typecheck:extension": "tsc -p extension --noEmit"
   },
   "dependencies": {
     "@heroui/react": "~3.2.5",
@@ -27,9 +29,12 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
+    "@types/chrome": "^0.2.9",
     "@types/node": "^22.18.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/w3c-web-serial": "^1.0.8",
+    "esbuild": "^0.25.12",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.0"
   },

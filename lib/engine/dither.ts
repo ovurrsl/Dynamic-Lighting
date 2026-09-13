@@ -102,8 +102,13 @@ class TemporalDither implements Dither {
   readonly levels: number
   private residual: Float64Array
   /**
-   * Departure 2 above: half a float32 ULP of a value at 1.0 (2^-24), doubled for
-   * the multiply, in level units. Below this a fractional part is representation
+   * Departure 2 above, in level units. The worst representation error of
+   * `fround(k / levels) * levels` over every code k is exactly `levels * 2^-25`
+   * (the multiply itself is exact: a 24-bit significand times a 16-bit integer
+   * fits a double), so `levels * 2^-23` is that bound with a 4x margin - two
+   * float32 ULPs of an input in [0.5, 1), four in [0.25, 0.5), more below. The
+   * margin is arbitrary; the most light it can swallow is 2^-23 of full scale,
+   * invisible by construction. Below it a fractional part is representation
    * noise, not a request for light.
    */
   private readonly exactEps: number
@@ -123,22 +128,26 @@ class TemporalDither implements Dither {
 
   apply<T extends DitherOutput> (colors: LedColors, out: T): T {
     const channels = colors.length
-    if (channels !== this.residual.length) {
-      // Hyperion reallocates and zeroes on a count change too
-      // (`intitializeComponentVectors`, cpp:252-265); the smoother does the same
-      // on `setTarget`, so a layout change propagates without anyone having to
-      // remember to reset every stage.
-      if (channels % 3 !== 0) throw new RangeError(`dither: frame length ${channels} is not a multiple of 3`)
-      this.reset(channels / 3)
-    }
+    // Validate before touching any state, so a refused frame leaves the
+    // count and the residuals exactly as they were.
     if (out.length < channels) {
       throw new RangeError(`dither: output holds ${out.length} codes, frame needs ${channels}`)
     }
     // A typed array stores modulo its width, so 65535 into a Uint8Array would
     // silently become 255 - the one failure mode a dither must not have, since
-    // the residual would still believe the full code went out.
-    if (this.levels > 255 && !(out instanceof Uint16Array)) {
-      throw new RangeError(`dither: ${this.levels} levels need a Uint16Array output`)
+    // the residual would still believe the full code went out. The width is
+    // what matters, not the class: an `instanceof` check fails for a buffer
+    // built in another realm (an iframe, a vm context).
+    if (this.levels > 255 && out.BYTES_PER_ELEMENT < 2) {
+      throw new RangeError(`dither: ${this.levels} levels need a 16-bit output`)
+    }
+    if (channels !== this.residual.length) {
+      // Hyperion reallocates and zeroes on a count change too
+      // (`intitializeComponentVectors`, cpp:251-265); the smoother does the same
+      // on `setTarget`, so a layout change propagates without anyone having to
+      // remember to reset every stage.
+      if (channels % 3 !== 0) throw new RangeError(`dither: frame length ${channels} is not a multiple of 3`)
+      this.reset(channels / 3)
     }
 
     const levels = this.levels

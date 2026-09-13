@@ -4,12 +4,12 @@
  * loopback mode runs. Both sides live in one file so they cannot drift.
  *
  * Port of the Adalight/AWA framing in Hyperion's
- * `libsrc/leddevice/dev_serial/LedDeviceAdalight.cpp` (`prepareHeader()` builds
- * the header, `write()` appends the Fletcher trailer, `whiteChannelExtension()`
- * the calibration bytes). The port plan, section 7, holds the verbatim excerpt
- * this was read from; nothing below is from memory. AWA itself originates in
- * HyperHDR (MIT, awawa-dev), which is what makes the format clean for us to
- * ship.
+ * `libsrc/leddevice/dev_serial/LedDeviceAdalight.cpp`, 2.2.2-beta.1:
+ * `prepareHeader()` (:73-123) builds the header, `write()` (:125-186) appends
+ * the Fletcher trailer (:165-178), `whiteChannelExtension()` (:213) the calibration
+ * bytes. The port plan, section 7, holds the verbatim excerpt this was read
+ * from; nothing below is from memory. AWA itself originates in HyperHDR
+ * (MIT, awawa-dev), which is what makes the format clean for us to ship.
  *
  * Three frame kinds share one 6-byte header:
  *
@@ -182,8 +182,8 @@ export function frameSize (kind: FrameKind, count: number, calibrated = false): 
 export function encodeAda (rgb8: Uint8Array, out?: Uint8Array): Uint8Array {
   const count = validatePayload('Ada', rgb8)
   const frame = prepareOut('Ada', out, frameSize('Ada', count))
-  writeHeader(frame, MAGIC_ADA_1, MAGIC_ADA_2, count)
   placePayload(frame, rgb8)
+  writeHeader(frame, MAGIC_ADA_1, MAGIC_ADA_2, count)
   return frame
 }
 
@@ -206,9 +206,13 @@ export function encodeAwa (rgb8: Uint8Array, calibration?: Calibration, out?: Ui
   if (calibrated) validateCalibration(calibration)
   const frame = prepareOut('Awa', out, frameSize('Awa', count, calibrated))
 
-  // The third magic byte is the calibration flag, not a constant.
-  writeHeader(frame, MAGIC_AWA_1, calibrated ? MAGIC_AWA_2_CALIBRATED : MAGIC_AWA_2, count)
+  // Payload first, header second: a payload that overlaps the head of `out`
+  // (a caller's view at offset 0 or 3) would otherwise have its first bytes
+  // overwritten by the header before they were copied - and the trailer,
+  // computed afterwards, would bless the corrupted bytes. The third magic
+  // byte is the calibration flag, not a constant.
   placePayload(frame, rgb8)
+  writeHeader(frame, MAGIC_AWA_1, calibrated ? MAGIC_AWA_2_CALIBRATED : MAGIC_AWA_2, count)
 
   let end = HEADER_SIZE + rgb8.length
   if (calibrated) {
@@ -234,8 +238,8 @@ export function encodeAwa (rgb8: Uint8Array, calibration?: Calibration, out?: Ui
 export function encodeAfx (linear16be: Uint8Array, out?: Uint8Array): Uint8Array {
   const count = validatePayload('Afx', linear16be)
   const frame = prepareOut('Afx', out, frameSize('Afx', count))
-  writeHeader(frame, MAGIC_AFX_1, MAGIC_AFX_2, count)
   placePayload(frame, linear16be)
+  writeHeader(frame, MAGIC_AFX_1, MAGIC_AFX_2, count)
   const end = HEADER_SIZE + linear16be.length
   fletcherInto(frame, HEADER_SIZE, end, frame, end)
   return frame
@@ -261,6 +265,8 @@ function writeHeader (frame: Uint8Array, magic1: number, magic2: number, count: 
 function placePayload (frame: Uint8Array, payload: Uint8Array): void {
   // Already in place: the caller encoded straight into the frame buffer.
   if (payload.buffer === frame.buffer && payload.byteOffset === frame.byteOffset + HEADER_SIZE) return
+  // Any other overlap is fine too: TypedArray.prototype.set copies through a
+  // clone when source and target share a buffer.
   frame.set(payload, HEADER_SIZE)
 }
 
@@ -328,8 +334,24 @@ type State = typeof MAGIC0 | typeof MAGIC1 | typeof MAGIC2 | typeof HI | typeof 
  * worse - a truncated 'Ada' frame is completed with the next frame's bytes and
  * DELIVERED. That, and not fashion, is why 'Awa' exists.
  */
+export interface FrameParserOptions {
+  /**
+   * Largest LED count a header may announce; anything above is treated as a
+   * count mismatch and the parser goes back to hunting. Default MAX_LEDS, so
+   * the format's whole range round-trips. A receiver with a fixed strip
+   * should pass its own count: six bytes of garbage that happen to spell a
+   * valid 65536-LED header otherwise commit the parser to 393 KB of payload
+   * - ten seconds of real frames swallowed at 120 fps - and the ESP32-S3 has
+   * neither the memory nor the patience. With the option the loss is bounded
+   * to one frame's worth of bytes and the firmware can carry the parser over
+   * unchanged.
+   */
+  maxLeds?: number
+}
+
 export class FrameParser {
   readonly stats: ParserStats = { frames: 0, resyncs: 0, badChecksum: 0, countMismatch: 0 }
+  readonly maxLeds: number
 
   private state: State = MAGIC0
   private kind: FrameKind = 'Ada'
@@ -348,6 +370,14 @@ export class FrameParser {
    */
   private scratch = new Uint8Array(108 * 6 + CALIBRATION_SIZE)
   private readonly expected = new Uint8Array(TRAILER_SIZE)
+
+  constructor (options: FrameParserOptions = {}) {
+    const maxLeds = options.maxLeds ?? MAX_LEDS
+    if (!Number.isInteger(maxLeds) || maxLeds < 1 || maxLeds > MAX_LEDS) {
+      throw new RangeError(`protocol: maxLeds must be an integer 1..${MAX_LEDS}, got ${maxLeds}`)
+    }
+    this.maxLeds = maxLeds
+  }
 
   /** Back to hunting for magic; keeps the statistics. For a reopened port. */
   reset (): void {
@@ -433,6 +463,13 @@ export class FrameParser {
             break
           }
           this.count = ((this.hi << 8) | this.lo) + 1
+          if (this.count > this.maxLeds) {
+            // A well-formed header for a strip this receiver does not have:
+            // refused like a bad one, so it costs a few bytes, not a payload.
+            this.stats.countMismatch++
+            this.resync(b)
+            break
+          }
           this.payloadLength = this.count * BYTES_PER_LED[this.kind]
           this.need = this.payloadLength + (this.calibrated ? CALIBRATION_SIZE : 0)
           if (this.scratch.length < this.need) this.scratch = new Uint8Array(this.need)

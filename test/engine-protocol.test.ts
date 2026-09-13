@@ -1152,3 +1152,103 @@ test('ten thousand frames through one parser and one output buffer: no drift in 
   assert.deepEqual(churn.push(new Uint8Array([0x00])), [])
   assert.equal(churn.stats.resyncs, 300)
 })
+
+// ---------------------------------------------------------------------------
+// Spec review: the aliasing order, the CHK-byte resync, the count ceiling and
+// the `out` contract on every kind.
+// ---------------------------------------------------------------------------
+
+test('a payload that overlaps the head of `out` is framed intact: the payload is placed before the header', () => {
+  // The caller's payload view starts at offset 0 (and 3) of the very buffer
+  // the frame is built in. Header-first would overwrite its first bytes and
+  // the trailer would then bless the corruption, so nothing downstream could
+  // notice.
+  for (const offset of [0, 3]) {
+    for (const kind of ['Ada', 'Awa', 'Afx'] as const) {
+      const count = 4
+      const stride = BYTES_PER_LED[kind]
+      const out = new Uint8Array(frameSize(kind, count, true))
+      const payload = out.subarray(offset, offset + count * stride)
+      for (let i = 0; i < payload.length; i++) payload[i] = 100 + i
+      const expected = Array.from(payload)
+      const frame = kind === 'Ada' ? encodeAda(payload, out) : kind === 'Awa' ? encodeAwa(payload, undefined, out) : encodeAfx(payload, out)
+      assert.deepEqual(Array.from(frame.subarray(HEADER_SIZE, HEADER_SIZE + count * stride)), expected, `${kind} at offset ${offset}`)
+      const { frames } = parseAll(frame)
+      assert.equal(frames.length, 1)
+      assert.deepEqual(Array.from(frames[0]!.payload), expected)
+    }
+  }
+})
+
+test("a header check byte that is 'A' is re-evaluated as magic: the frame that follows it is delivered", () => {
+  // Prefix: 'A','d','a', 0x00, 0x00 - a header wanting 0x55 as its check
+  // byte - then a clean Awa frame, whose leading 'A' arrives in CHK. The
+  // naive form (`state = MAGIC0` on failure) drops that 'A' and with it the
+  // frame; the rule keeps it as a magic candidate.
+  const next = prng(211)
+  const clean = cleanFrame('Awa', LEDS, next)
+  const { frames, parser } = parseAll(concat(new Uint8Array([A, 0x64, 0x61, 0x00, 0x00]), clean.frame))
+  assert.equal(frames.length, 1)
+  assert.deepEqual(Array.from(frames[0]!.payload), Array.from(clean.payload))
+  assert.deepEqual(parser.stats, { frames: 1, resyncs: 1, badChecksum: 0, countMismatch: 1 })
+})
+
+test('maxLeds bounds what a phantom header can cost: a valid header for more LEDs than the receiver has is a count mismatch', () => {
+  const next = prng(223)
+  const frames = Array.from({ length: 30 }, () => cleanFrame('Awa', LEDS, next).frame)
+  // Six bytes that spell a valid Afx header for 65536 LEDs, then thirty real
+  // frames. Unbounded, the parser waits for 393 KB of payload and swallows
+  // them all.
+  const phantom = new Uint8Array([A, 0x66, 0x78, 0xff, 0xff, 0x55])
+  const stream = concat(phantom, ...frames)
+  const unbounded = new FrameParser()
+  assert.equal(unbounded.push(stream).length, 0, 'the default ceiling is the format\'s: every frame is swallowed')
+
+  const bounded = new FrameParser({ maxLeds: LEDS })
+  const delivered = bounded.push(stream)
+  assert.equal(delivered.length, 30)
+  assert.deepEqual(bounded.stats, { frames: 30, resyncs: 1, badChecksum: 0, countMismatch: 1 })
+  assert.equal(bounded.maxLeds, LEDS)
+
+  // A frame at exactly the ceiling still passes; one above does not.
+  const exact = new FrameParser({ maxLeds: 4 })
+  assert.equal(exact.push(cleanFrame('Ada', 4, next).frame).length, 1)
+  assert.equal(exact.push(cleanFrame('Ada', 5, next).frame).length, 0)
+  assert.equal(exact.stats.countMismatch, 1)
+
+  assert.throws(() => new FrameParser({ maxLeds: 0 }), RangeError)
+  assert.throws(() => new FrameParser({ maxLeds: MAX_LEDS + 1 }), RangeError)
+  assert.throws(() => new FrameParser({ maxLeds: 1.5 }), RangeError)
+})
+
+test('the `out` contract holds for every kind, calibrated included: the same object back when exact, a right-sized view when larger', () => {
+  const next = prng(227)
+  const calibration: Calibration = { limit: 1, red: 2, green: 3, blue: 4 }
+  const cases: Array<[FrameKind, boolean]> = [['Ada', false], ['Awa', false], ['Awa', true], ['Afx', false]]
+  for (const [kind, calibrated] of cases) {
+    const count = 7
+    const payload = randomBytes(count * BYTES_PER_LED[kind], next)
+    const encode = (out?: Uint8Array): Uint8Array =>
+      kind === 'Ada' ? encodeAda(payload, out) : kind === 'Awa' ? encodeAwa(payload, calibrated ? calibration : undefined, out) : encodeAfx(payload, out)
+    const size = frameSize(kind, count, calibrated)
+    const reference = encode()
+    assert.equal(reference.length, size)
+
+    const exact = new Uint8Array(size)
+    assert.equal(encode(exact), exact, `${kind}${calibrated ? ' calibrated' : ''}: the exact buffer comes back as itself`)
+    assert.deepEqual(Array.from(exact), Array.from(reference))
+
+    const larger = new Uint8Array(size + 9).fill(0xee)
+    const view = encode(larger)
+    assert.equal(view.length, size)
+    assert.equal(view.buffer, larger.buffer)
+    assert.deepEqual(Array.from(view), Array.from(reference))
+    assert.ok(larger.subarray(size).every((v) => v === 0xee), 'bytes past the frame are untouched')
+
+    assert.throws(() => encode(new Uint8Array(size - 1)), RangeError)
+
+    const parsed = parseAll(view)
+    assert.equal(parsed.frames.length, 1)
+    assert.deepEqual(parsed.frames[0]!.calibration, calibrated ? calibration : undefined)
+  }
+})

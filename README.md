@@ -47,7 +47,7 @@ dosyalarının her biri üç satırlık bir adaptör: URL'i, runtime'ı ve metho
 eşlemesini tanımlıyor, sonra `lib/api`'yi çağırıyor.
 
 Sebebi pratik: `lib/api` yalın web `Request`/`Response` kullanıyor, `next/server`
-import etmiyor. Böylece **31 testin tamamı derleme olmadan, sunucu açmadan, port
+import etmiyor. Böylece **API testlerinin tamamı derleme olmadan, sunucu açmadan, port
 kullanmadan** handler'ları doğrudan çağırıyor. Yan fayda: framework bir daha
 değişirse mantık yerinde kalıyor.
 

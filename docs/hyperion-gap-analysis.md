@@ -153,61 +153,125 @@ mı yok mu.** USB, HID, seri ve HTTP için var; ham soket için yok.
 
 ## 3. Platformlar
 
-Odak **Windows + Chrome**, ama mimari baştan bunun ötesini hedefliyor. Her satır
-bir iddia değil, bir kısıt listesi.
+Odak **Windows + Chrome**, ama mimari baştan bunun ötesini hedefliyor.
 
-| Platform | Tarayıcı | Panel | Ekran yakalama | Yakalama kartı | Seri (Arduino) | HID/USB cihaz | Ağ cihazı |
+> **2026-09-14 düzeltmesi — bu bölümdeki en kesin iddiam yanlıştı.**
+> Burada "mobilde ekran yakalama yok, `getDisplayMedia` mobil Chrome ve
+> Safari'de yok" yazıyordu. Bir iPhone'dan gelen iki ekran görüntüsü bunu
+> çürüttü: iOS Safari, panelin **sayfa içi** yakalamasını açtı, iOS'un kendi
+> "Ekran Paylaşma" sayfasını gösterdi ("Tüm Ekranı Paylaş" seçenekli, ReplayKit
+> kayıt göstergesiyle), ve panel `canlı 1180×2556` okudu — yani **cihazın tam
+> ekranı, doğal çözünürlükte**, siyah kenar algılayıcısı koşarak ve LED'ler
+> motorun örneklediği renklerle dolarak.
+>
+> Ve kaynaklar hâlâ aksini söylüyor: caniuse'un **Ağustos 2026** verisinde
+> "iOS Safari 26.6: desteklenmiyor", MDN aynı, WebKit'in Safari 26.0 duyurusunda
+> ekran yakalama hiç geçmiyor.
+>
+> **Bu çelişki kapanmadı** ve kapanması gereken üç ihtimal var: (a) uyumluluk
+> tabloları geride, (b) cihazda bir **özellik bayrağı** açık (iOS'ta Ayarlar →
+> Safari → İleri Düzey → Özellik Bayrakları), (c) cihaz bir iOS beta'sında.
+> (b) ve (c) durumunda bu, üstüne ürün kurulabilecek bir yetenek **değil**.
+> Ayırt edecek olan ölçüm §3.1'de.
+
+### 3.1 Bunun nasıl ölçüleceği
+
+Tarayıcıya sormak, tabloya sormaktan üstün — ve bu projede tablolar **üç kez**
+yanıldı: `MediaStreamTrackProcessor`'ın worker'da olup olmadığı, yakalama
+kartları ile HID/FTDI cihazlarının mümkün olup olmadığı, ve şimdi bu. O yüzden
+artık panelin **Cihaz** sayfasında bir yetenek tablosu var (`lib/capabilities.ts`):
+tarayıcıya doğrudan soruyor ve cevabı gösteriyor. Destek konuşmasının ilk adımı
+da bu — "şu sayfanın fotoğrafını gönder", yirmi sürüm sorusundan fazlasını
+cevaplıyor.
+
+Kapatılması gereken üç soru, ve üçünü de yalnız gerçek cihaz cevaplayabilir:
+
+1. **Bayrak mı, varsayılan mı?** Aynı iPhone'da Safari → Ayarlar → İleri Düzey →
+   Özellik Bayrakları'nda ekran yakalamayla ilgili bir şey açık mı; ve iOS
+   sürümü kaç. Bayraksa ürün buna dayanamaz.
+2. **Arka planda yaşıyor mu?** Bu, iOS'taki E4 ve mimari açıdan belirleyici olan
+   soru: yakalamayı başlat, Safari'den çık, başka bir şey izle, 60 s sonra
+   dön — kare sayacı ilerledi mi. iOS arka plandaki sayfayı askıya alıyorsa
+   "ekranı takip eden ambilight" iPhone'da **yok**, çünkü ambilight'ın tüm
+   anlamı sen başka bir şey izlerken çalışması. Bu durumda iOS'un rolü kumanda
+   ve önizleme olur, kaynak değil.
+3. **DRM.** Netflix/Disney+ ReplayKit akışında siyah geliyor mu. Masaüstünde
+   geliyor; burada da gelmesi beklenir, ama beklenti ölçüm değil.
+
+### 3.2 Matris
+
+Sütunlar artık **ölçülen** ile **varsayılan**ı ayırıyor. `✅` bir yerde
+görülmüş, `◻` yalnız dokümantasyondan, `❌` ölçülmüş ya da yapısal olarak
+imkânsız.
+
+| Platform | Tarayıcı | Panel | Ekran yakalama | Yakalama kartı | Seri (Arduino) | HID/USB | Ağ cihazı |
 |---|---|---|---|---|---|---|---|
-| **Windows** | **Chrome/Edge** | ✅ | ✅ eklenti | ✅ | ✅ Web Serial | ✅ WebHID/WebUSB | ✅ |
-| Windows | Firefox | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
-| macOS | Chrome | ✅ | ✅ eklenti | ✅ | ✅ | ✅ | ✅ |
-| macOS | Safari | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
-| Android | Chrome | ✅ | ❌ | ⚠️ OTG kart | ❌ | ⚠️ WebUSB var | ✅ |
-| Android TV | Chrome | ✅ | ❌ | ⚠️ | ❌ | ⚠️ | ✅ |
-| Apple TV | Safari (tvOS 17+) | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Windows** | **Chrome/Edge** | ✅ | ✅ eklenti (ölçüldü, 108 fps) | ◻ | ✅ Web Serial | ✅ WebHID/WebUSB (ölçüldü) | ◻ |
+| Windows | Firefox | ✅ | ◻ sayfa | ◻ | ❌ | ❌ | ◻ |
+| macOS | Chrome | ✅ | ◻ eklenti | ◻ | ◻ | ◻ | ◻ |
+| macOS | Safari | ✅ | ◻ sayfa | ◻ | ❌ | ❌ | ◻ |
+| **iOS** | **Safari** | ✅ | **✅ sayfa (ölçüldü, 1180×2556)** — §3'teki uyarıyla | ◻ | ❌ | ❌ | ◻ |
+| Android | Chrome | ✅ | ◻ — iOS'tan sonra bu da yeniden ölçülmeli | ◻ OTG kart | ❌ | ◻ WebUSB | ◻ |
+| Android TV | Chrome | ✅ | ◻ | ◻ | ❌ | ◻ | ◻ |
+| Apple TV | Safari (tvOS) | ✅ | ◻ | ❌ | ❌ | ❌ | ◻ |
 
-Yakalama kartı satırı önemli: mobil ve TV'de ekran yakalama yok ama **bir USB
-yakalama kartı webcam olarak görünüyor**, yani oralarda bile gerçek bir
-ambilight kaynağı mümkün.
+Android satırındaki `◻`'ler artık ayrı bir not hak ediyor: iOS hakkındaki
+iddiam yanlış çıktıysa Android hakkındaki iddiam da **aynı kaynaktan** geliyordu
+ve aynı şüpheyi hak ediyor. Ölçülmeden `❌` yazılmayacak.
 
-Üç gerçek, dürüstçe:
+### 3.3 Bunun mimariye üç sonucu
 
-1. **Web Serial yalnız Chromium'da var.** Firefox ve Safari onu uygulamayı
-   reddetti. Bu platformlarda Arduino'ya doğrudan bağlanmak mümkün değil —
-   ve bu bizim düzeltebileceğimiz bir şey değil.
-2. **Mobil ve TV'de ekran yakalama yok.** `getDisplayMedia` mobil Chrome ve
-   Safari'de yok. Ama bu platformlar **kumanda** olarak tam değerli: efekt seç,
-   renk ayarla, profil yükle — hepsi ağ cihazına ya da çalışan bir masaüstü
-   örneğine gider.
-3. **Ağ cihazı desteği her platformu açıyor.** WLED'e HTTP ile bağlanmak her
-   yerde çalışıyor. Bu yüzden ağ cihazları yol haritasında efektlerden hemen
-   sonra: yakalamanın olmadığı her platformda uygulamayı yine de kullanılır
-   kılan tek madde bu.
+**(1) Motor yalnız eklentide yaşayamaz.** Eklenti bir Chromium-masaüstü
+çözümü, ve var olma sebebi tek: arka plana düşen sekmenin kısıtlanması. Oysa
+iPhone'da çalışan şey **sayfanın kendi yakalaması**ydı — `lib/live-sampler.ts`,
+canlı önizleme için yazılmış olan. Yani sayfa içi motorun yarısı zaten var ve
+tesadüfen değil: önizlemeyi motorun kendi modülleriyle kurma kararı, şimdi
+ikinci bir host'un temeli oluyor.
 
-Bunu mimaride karşılayan şey **çıkış katmanının soyut olması**: `serial.ts` bir
-`FrameSink` uyguluyor, WLED sürücüsü de aynı arayüzü uygulayacak, ve panel
-hangisinin bağlı olduğunu bilmek zorunda kalmayacak.
+Doğru yapı: **motor host'tan bağımsız**, iki host var — Chromium masaüstünde
+eklenti (kısıtlanmama uğruna), diğer her yerde sayfa. Eklenti artık "tek yol"
+değil, "bir platformdaki iyileştirme".
+
+**(2) Ağ sürücüsünün önceliği yükseldi.** iOS Safari'de Web Serial yok,
+WebUSB yok, WebHID yok, Web Bluetooth yok — ve bunlar bizim düzeltebileceğimiz
+şeyler değil. Bir iPhone'dan şeride giden **tek** yol ağ. Yani "iOS ekranı
+okuyabiliyor" bulgusu, ağ sürücüsü olmadan hiçbir şeye yaramıyor: yakalanan
+kare gidecek yer bulamıyor. Ağ sürücüsü artık yol haritasında efekt motorunun
+yanında, "ikinci" değil.
+
+**(3) `FrameSink` soyutlaması bunun önkoşulu ve artık ertelenemez.** Bugün
+kareler tek bir yere gidiyor. Hem sayfa host'u hem ağ sürücüsü aynı dikişe
+ihtiyaç duyuyor.
 
 ## 4. Yol haritası
 
-Sıra etkiye göre, ve her biri bir öncekinden bağımsız:
+Sıra etkiye göre. **2026-09-14'te yeniden sıralandı:** iOS bulgusu (§3) çıkış
+katmanını ve ağ sürücüsünü yukarı taşıdı — bir iPhone ekranı okuyabiliyorsa ama
+şeride ulaşamıyorsa bulgunun hiçbir değeri yok.
 
-1. **Efekt motoru** — uygulamayı ekran yakalamasız kullanılır kılıyor, ve
-   tarayıcıda Hyperion'dakinden daha ucuz. Mobil ve TV'de çalışabilen ilk
-   gerçek özellik de bu.
-2. **Çıkış katmanını soyutla** — `FrameSink` arayüzü; seri port onu zaten
-   uyguluyor, ağ cihazları için önkoşul.
-3. **WLED sürücüsü** — kendi firmware'imizi zorunlu olmaktan çıkarıyor ve
-   Web Serial'ı olmayan her platformu açıyor.
-4. **Ses görselleştirici** — Web Audio, küçük iş, büyük görünürlük, her
+1. **Çıkış katmanını soyutla** — `FrameSink` arayüzü; seri port onu zaten
+   uyguluyor. Hem ağ sürücüsünün hem sayfa içi host'un önkoşulu, yani artık
+   ertelenebilir değil.
+2. **Ağ sürücüsü (WLED)** — kendi firmware'imizi zorunlu olmaktan çıkarıyor ve
+   Web Serial'ı olmayan **her** platformu açıyor. iOS'tan bir şeride giden tek
+   yol bu: orada Web Serial, WebUSB, WebHID ve Web Bluetooth'un dördü de yok ve
+   hiçbiri bizim düzeltebileceğimiz bir şey değil.
+3. **Motoru host'tan ayır** — Chromium masaüstünde eklenti (kısıtlanmama
+   uğruna), diğer her yerde sayfa. `lib/live-sampler.ts` yakalama yarısını
+   zaten yapıyor; eksik olan çıkış yarısı ve host seçimi. §3'teki (2) numaralı
+   ölçüm olumsuz çıkarsa bu madde iOS'u kurtarmaz ama macOS Safari'yi ve
+   Firefox'u yine de açar.
+4. **Efekt motoru** — uygulamayı ekran yakalamasız kullanılır kılıyor, ve
+   tarayıcıda Hyperion'dakinden daha ucuz.
+5. **Ses görselleştirici** — Web Audio, küçük iş, büyük görünürlük, her
    platformda çalışıyor.
-5. **Yakalama kartı girişi** — `enumerateDevices` + `getUserMedia`. Ekran
+6. **Yakalama kartı girişi** — `enumerateDevices` + `getUserMedia`. Ekran
    yakalamanın olmadığı platformlarda tek gerçek kaynak, ve **DRM'li içeriği
    çözen tek yol**: sinyal HDMI splitter'dan sonra şifresiz geliyor.
-6. **Öncelik katmanları** — ön plan/arka plan efekti, kaynak öncelikleri.
+7. **Öncelik katmanları** — ön plan/arka plan efekti, kaynak öncelikleri.
    Efektler ve ses gelince bunlar anlam kazanıyor.
-7. **Olaylar** — sekme gizlenince duraklat, zamanlanmış aç/kapat.
-8. **Çoklu örnek** — mimariyi en çok değiştiren madde, o yüzden en sonda.
+8. **Olaylar** — sekme gizlenince duraklat, zamanlanmış aç/kapat.
+9. **Çoklu örnek** — mimariyi en çok değiştiren madde, o yüzden en sonda.
 
 ### Yapılandırılabilirlik kuralı
 

@@ -23,9 +23,13 @@ import type { MessageKey } from '#lib/i18n/strings'
 type State = 'next' | 'planned' | 'never'
 
 const ITEMS: Array<{ title: MessageKey, body: MessageKey, state: State }> = [
-  { title: 'roadmap.effects.title', body: 'roadmap.effects.body', state: 'next' },
+  // Reordered 2026-09-14. An iPhone was shown capturing its own screen and
+  // feeding our sampler - and iOS Safari has no Web Serial, WebUSB, WebHID or
+  // Web Bluetooth, so a captured frame there has nowhere to go. The output
+  // abstraction and the network driver stopped being "later".
   { title: 'roadmap.sink.title', body: 'roadmap.sink.body', state: 'next' },
-  { title: 'roadmap.wled.title', body: 'roadmap.wled.body', state: 'planned' },
+  { title: 'roadmap.wled.title', body: 'roadmap.wled.body', state: 'next' },
+  { title: 'roadmap.effects.title', body: 'roadmap.effects.body', state: 'planned' },
   { title: 'roadmap.audio.title', body: 'roadmap.audio.body', state: 'planned' },
   { title: 'roadmap.capture.title', body: 'roadmap.capture.body', state: 'planned' },
   { title: 'roadmap.priority.title', body: 'roadmap.priority.body', state: 'planned' },

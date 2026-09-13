@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { Button, Surface, Switch } from '@heroui/react'
 
 import { CalibrationCard } from '#components/CalibrationCard'
+import { CapabilitiesCard } from '#components/CapabilitiesCard'
 import { ColourCard } from '#components/ColourCard'
 import { DeviceCard } from '#components/DeviceCard'
 import { useEngine } from '#components/Engine'
@@ -47,10 +48,25 @@ function sectionBody (id: SectionId, enabled: boolean) {
     case 'layout': return <LayoutSection />
     case 'calibration': return <CalibrationCard />
     case 'profiles': return <ProfilesSection />
-    case 'device': return <DeviceCard />
+    case 'device': return <DeviceSection />
     case 'guide': return <GuideCard />
     case 'roadmap': return <RoadmapCard />
   }
+}
+
+/**
+ * The device page is diagnostics, and the browser's own capabilities belong
+ * with the engine's counters: both answer "why is my strip dark", and the
+ * capability table answers it for the half of the world that cannot run the
+ * extension at all.
+ */
+function DeviceSection () {
+  return (
+    <div className="flex flex-col gap-6">
+      <DeviceCard />
+      <CapabilitiesCard />
+    </div>
+  )
 }
 
 /** Thin wrappers, so the two cards that need shared state do not have to know about the shell. */

@@ -814,9 +814,14 @@ export function LayoutCard ({
               // Awa is the only format that carries the four calibration bytes,
               // so switching away from it drops them rather than sending them
               // where they cannot be read.
+              // Afx is dithered by the firmware, so the host dither is dropped
+              // on the way there rather than becoming a parser error the user
+              // cannot act on - the same handling the calibration bytes get.
               output: value === 'Awa'
                 ? { ...current.output, format: 'Awa' }
-                : { ...current.output, format: value as WireFormat, calibration: undefined }
+                : value === 'Ada'
+                  ? { ...current.output, format: 'Ada', calibration: undefined }
+                  : { ...current.output, format: value as WireFormat, calibration: undefined, dither: undefined }
             }))
           }}
         >
@@ -837,6 +842,35 @@ export function LayoutCard ({
           </Select.Popover>
         </Select>
         <p className="text-xs text-muted">{t(`output.note.${draft.output.format}`)}</p>
+
+        {/*
+          Only on the two 8-bit formats, because that is the only place it does
+          anything: Afx carries 16-bit and the firmware sigma-deltas it on the
+          strip's own refresh. Showing a disabled switch under Afx would invite
+          the reading that ours is the format without dithering, which is the
+          opposite of true.
+        */}
+        {draft.output.format !== 'Afx' && (
+          <Surface className="flex flex-col gap-2 rounded-xl p-3" variant="secondary">
+            <Switch
+              isSelected={draft.output.dither === true}
+              onChange={(dither) => {
+                setNotice(null)
+                setDraft((current) => ({
+                  ...current,
+                  output: { ...current.output, dither: dither ? true : undefined }
+                }))
+              }}
+            >
+              <Switch.Content>
+                <Switch.Control><Switch.Thumb /></Switch.Control>
+                {t('output.dither')}
+              </Switch.Content>
+            </Switch>
+            <p className="text-xs text-muted">{t('output.dither.note')}</p>
+            <p className="text-xs text-muted">{t('output.dither.rate')}</p>
+          </Surface>
+        )}
         </>
         )}
 

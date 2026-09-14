@@ -707,6 +707,20 @@ function parseEngineConfig(value) {
       blue: integer(cal.blue, "output.calibration.blue", 0, 255)
     };
   }
+  if (outputRaw.dither !== void 0) {
+    if (typeof outputRaw.dither !== "boolean") {
+      throw new ConfigError("output.dither", `must be true or false, got ${describe(outputRaw.dither)}`);
+    }
+    if (outputRaw.dither) {
+      if (transport === "wled") {
+        throw new ConfigError("output.dither", "is not used by WLED, which has its own JSON protocol");
+      }
+      if (format === "Afx") {
+        throw new ConfigError("output.dither", "is not used by Afx, which the firmware dithers itself");
+      }
+      output.dither = true;
+    }
+  }
   const captureRaw = raw.capture === void 0 ? {} : object(raw.capture, "config.capture");
   const cropRaw = captureRaw.crop === void 0 ? {} : object(captureRaw.crop, "config.capture.crop");
   const crop = {

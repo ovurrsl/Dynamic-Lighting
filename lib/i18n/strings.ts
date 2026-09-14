@@ -47,6 +47,9 @@ const en = {
   'output.note.Afx': 'Six bytes per LED, a Fletcher trailer, and a control channel. Needs the firmware in firmware/.',
   'output.note.Awa': 'Three bytes per LED plus a Fletcher trailer. HyperHDR’s format: works with HyperSerialESP32, HyperSerialWLED and anything else speaking AWA.',
   'output.note.Ada': 'Three bytes per LED and no check of any kind — a flipped bit is shown as colour. Here only because some older sketches accept nothing else.',
+  'output.dither': 'Spread the rounding across time',
+  'output.dither.note': 'These formats send eight bits of LINEAR light, and linear codes are spaced evenly in photons rather than in what the eye sees — so the dark end, where a bias light spends its life, gets only a handful of steps and bands. This carries each rounding error into the next frame instead, so the strip’s time-average lands on the colour that was asked for. Off by default: it changes what an existing rig sends.',
+  'output.dither.rate': 'It only reads as extra resolution while frames keep arriving — at 120 a second the eye integrates them, at ten a second the same thing is a shimmer. Over USB the rate is comfortable; over WiFi we have not measured it. The 21-step grey ramp on the Calibration page is how to see which you have: watch the bottom three steps.',
 
   'output.transport.title': 'How the device is reached',
   'output.transport.description': 'A paired USB board, or one over WiFi. The network options are not a convenience: on iOS there is no Web Serial, no WebUSB, no WebHID and no Web Bluetooth, so a captured frame there has nowhere else to go.',
@@ -739,6 +742,9 @@ const tr: Messages = {
   'output.note.Afx': 'LED başına altı bayt, Fletcher trailer, ve bir kontrol kanalı. firmware/ içindeki firmware’i istiyor.',
   'output.note.Awa': 'LED başına üç bayt artı Fletcher trailer. HyperHDR’ın formatı: HyperSerialESP32, HyperSerialWLED ve AWA konuşan her şeyle çalışıyor.',
   'output.note.Ada': 'LED başına üç bayt ve hiçbir kontrol yok — ters dönen bir bit renk olarak gösteriliyor. Burada olma sebebi sadece bazı eski sketch’lerin başka bir şey kabul etmemesi.',
+  'output.dither': 'Yuvarlamayı zamana yay',
+  'output.dither.note': 'Bu formatlar sekiz bit DOĞRUSAL ışık gönderiyor, ve doğrusal kodlar gözün gördüğüne göre değil foton sayısına göre eşit aralıklı — yani karanlık uç, bir bias light’ın ömrünü geçirdiği yer, avuç içi kadar adım alıyor ve bantlanıyor. Bu seçenek her yuvarlama hatasını bir sonraki kareye taşıyor, böylece şeridin zaman ortalaması istenen renge oturuyor. Varsayılan kapalı: mevcut bir düzeneğin gönderdiğini değiştiriyor.',
+  'output.dither.rate': 'Yalnız kareler gelmeye devam ettiği sürece ek çözünürlük gibi okunuyor — saniyede 120’de göz onları topluyor, saniyede onda aynı şey bir titreşim. USB üzerinden hız rahat; WiFi üzerinden ölçmedik. Hangisinde olduğunu görmenin yolu Kalibrasyon sayfasındaki 21 adımlı gri rampa: alttaki üç adıma bak.',
 
   'output.transport.title': 'Cihaza nasıl ulaşılıyor',
   'output.transport.description': 'Eşleştirilmiş bir USB kartı ya da WiFi üzerinden bir cihaz. Ağ seçenekleri bir kolaylık değil: iOS’ta Web Serial, WebUSB, WebHID ve Web Bluetooth’un hiçbiri yok, yani orada yakalanan karenin gidebileceği başka bir yer yok.',

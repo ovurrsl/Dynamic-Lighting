@@ -404,7 +404,19 @@ export function createEngine (host: EngineHost): Engine {
         // sink. The encoder still exists so the loopback has something to parse.
         config.output.transport === 'wled' ? 'Afx' : config.output.format,
         leds,
-        config.output.format === 'Awa' ? config.output.calibration : undefined
+        {
+          ...(config.output.format === 'Awa' && config.output.calibration !== undefined
+            ? { calibration: config.output.calibration }
+            : {}),
+          // Guarded by the same condition the parser enforces rather than
+          // passed through: a stored config from before this option existed is
+          // valid, and the loopback's Afx encoder must never be handed it.
+          ...(config.output.dither === true &&
+              config.output.transport !== 'wled' &&
+              config.output.format !== 'Afx'
+            ? { dither: true }
+            : {})
+        }
       )
     }
   }

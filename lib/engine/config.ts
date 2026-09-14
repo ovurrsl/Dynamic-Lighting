@@ -102,6 +102,16 @@ export interface OutputConfig {
    * Adalight sketch expects.
    */
   calibration?: Calibration
+  /**
+   * Diffuse the 8-bit rounding error across time. 'Awa' and 'Ada' only.
+   *
+   * These two formats exist to drive a sketch that is not ours, and such a
+   * sketch writes the byte straight to its LED library: nothing downstream
+   * recovers the precision that rounding to 255 LINEAR levels throws away, and
+   * the dark end is where a bias light lives. `Afx` refuses it because our own
+   * firmware dithers the 16-bit value itself.
+   */
+  dither?: boolean
 }
 
 /**
@@ -344,21 +354,21 @@ export const DEFAULT_OUTPUT: Readonly<OutputConfig> = Object.freeze({
  * retype the address.
  */
 export function switchTransport (output: OutputConfig, transport: OutputTransport): OutputConfig {
+  const carried = {
+    ...(output.calibration !== undefined ? { calibration: output.calibration } : {}),
+    ...(output.dither === true ? { dither: true } : {})
+  }
   if (transport === 'serial') {
-    return { transport, format: output.format, ...(output.calibration !== undefined ? { calibration: output.calibration } : {}) }
+    return { transport, format: output.format, ...carried }
   }
   const host = output.host ?? ''
   if (transport === 'wled') {
-    // WLED has its own protocol: the format is meaningless and the calibration
-    // bytes belong to an Awa frame that will never be sent.
+    // WLED has its own protocol: the format is meaningless, the calibration
+    // bytes belong to an Awa frame that will never be sent, and the dither
+    // works on a payload this transport does not produce.
     return { transport, host, segment: output.segment ?? 0, format: 'Afx' }
   }
-  return {
-    transport,
-    host,
-    format: output.format,
-    ...(output.calibration !== undefined ? { calibration: output.calibration } : {})
-  }
+  return { transport, host, format: output.format, ...carried }
 }
 
 export const DEFAULT_CAPTURE: Readonly<CaptureConfig> = Object.freeze({
@@ -795,6 +805,24 @@ export function parseEngineConfig (value: unknown): EngineConfig {
       red: integer(cal.red, 'output.calibration.red', 0, 255),
       green: integer(cal.green, 'output.calibration.green', 0, 255),
       blue: integer(cal.blue, 'output.calibration.blue', 0, 255)
+    }
+  }
+  if (outputRaw.dither !== undefined) {
+    if (typeof outputRaw.dither !== 'boolean') {
+      throw new ConfigError('output.dither', `must be true or false, got ${describe(outputRaw.dither)}`)
+    }
+    // Only ASKING for it is refused, and only where it would do nothing: on Afx
+    // the firmware is already dithering and a second diffuser over the same LSB
+    // is noise, on WLED our payload is never built at all. An explicit `false`
+    // is the default said out loud, so it carries anywhere.
+    if (outputRaw.dither) {
+      if (transport === 'wled') {
+        throw new ConfigError('output.dither', 'is not used by WLED, which has its own JSON protocol')
+      }
+      if (format === 'Afx') {
+        throw new ConfigError('output.dither', 'is not used by Afx, which the firmware dithers itself')
+      }
+      output.dither = true
     }
   }
 

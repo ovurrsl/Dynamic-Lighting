@@ -475,3 +475,54 @@ test('a config written before border detection was a setting still loads', () =>
   delete older.border
   assert.deepEqual(parseEngineConfig(older).border, DEFAULT_BORDER)
 })
+
+test('the host dither is accepted on the 8-bit formats and refused where it would do nothing', () => {
+  for (const format of ['Awa', 'Ada'] as const) {
+    const ok = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format, dither: true } })
+    assert.equal(ok.output.dither, true)
+  }
+
+  // Afx is 16-bit and the firmware sigma-deltas it on the strip's own refresh;
+  // a second diffuser over the same LSB is noise. Told, not ignored.
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Afx', dither: true } }),
+    /not used by Afx/
+  )
+  assert.throws(
+    () => parseEngineConfig({
+      ...DEFAULT_ENGINE_CONFIG,
+      output: { transport: 'wled', host: 'wled.local', format: 'Afx', dither: true }
+    }),
+    /not used by WLED/
+  )
+})
+
+test('an explicit `false` is the default said out loud, so it carries anywhere', () => {
+  // Otherwise a panel that always writes the field would make Afx unsaveable.
+  for (const format of WIRE_FORMATS) {
+    const parsed = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format, dither: false } })
+    assert.equal(parsed.output.dither, undefined, `${format} kept a false`)
+  }
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Awa', dither: 'yes' } }),
+    /must be true or false/
+  )
+})
+
+test('switching transport carries the dither where it still applies and drops it on WLED', () => {
+  const awa = { transport: 'serial' as const, format: 'Awa' as const, dither: true }
+  assert.equal(switchTransport(awa, 'websocket').dither, true)
+  // WLED builds its own JSON and never sees the payload the dither works on,
+  // so carrying it would produce a config the parser then refuses.
+  const wled = switchTransport({ ...awa, host: 'wled.local' }, 'wled')
+  assert.equal(wled.dither, undefined)
+  assert.doesNotThrow(() => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: wled }))
+})
+
+test('a config saved before this option existed still loads', () => {
+  // The field is optional and absent means off; a stored rig must not become
+  // unloadable because a newer panel knows about one more setting.
+  const parsed = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Awa' } })
+  assert.equal(parsed.output.dither, undefined)
+  assert.equal(serialiseEngineConfig(parsed).includes('dither'), false)
+})

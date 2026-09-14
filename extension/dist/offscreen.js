@@ -1827,6 +1827,20 @@ function parseEngineConfig(value) {
       blue: integer(cal.blue, "output.calibration.blue", 0, 255)
     };
   }
+  if (outputRaw.dither !== void 0) {
+    if (typeof outputRaw.dither !== "boolean") {
+      throw new ConfigError("output.dither", `must be true or false, got ${describe(outputRaw.dither)}`);
+    }
+    if (outputRaw.dither) {
+      if (transport === "wled") {
+        throw new ConfigError("output.dither", "is not used by WLED, which has its own JSON protocol");
+      }
+      if (format === "Afx") {
+        throw new ConfigError("output.dither", "is not used by Afx, which the firmware dithers itself");
+      }
+      output.dither = true;
+    }
+  }
   const captureRaw = raw.capture === void 0 ? {} : object(raw.capture, "config.capture");
   const cropRaw = captureRaw.crop === void 0 ? {} : object(captureRaw.crop, "config.capture.crop");
   const crop = {
@@ -2817,22 +2831,105 @@ function validateSize(width, height) {
   }
 }
 
+// lib/engine/dither.ts
+var LEVELS_8BIT = 255;
+var LEVELS_16BIT = 65535;
+function createDither(count, levels) {
+  return new TemporalDither(count, levels);
+}
+var TemporalDither = class {
+  levels;
+  residual;
+  /**
+   * Departure 2 above, in level units. The worst representation error of
+   * `fround(k / levels) * levels` over every code k is exactly `levels * 2^-25`
+   * (the multiply itself is exact: a 24-bit significand times a 16-bit integer
+   * fits a double), so `levels * 2^-23` is that bound with a 4x margin - two
+   * float32 ULPs of an input in [0.5, 1), four in [0.25, 0.5), more below. The
+   * margin is arbitrary; the most light it can swallow is 2^-23 of full scale,
+   * invisible by construction. Below it a fractional part is representation
+   * noise, not a request for light.
+   */
+  exactEps;
+  constructor(count, levels) {
+    if (!Number.isInteger(levels) || levels < 1 || levels > LEVELS_16BIT) {
+      throw new RangeError(`dither: levels must be an integer in 1..${LEVELS_16BIT}, got ${levels}`);
+    }
+    this.levels = levels;
+    this.exactEps = levels * 2 ** -23;
+    this.residual = new Float64Array(validateCount2(count) * 3);
+  }
+  get count() {
+    return this.residual.length / 3;
+  }
+  apply(colors, out) {
+    const channels = colors.length;
+    if (out.length < channels) {
+      throw new RangeError(`dither: output holds ${out.length} codes, frame needs ${channels}`);
+    }
+    if (this.levels > 255 && out.BYTES_PER_ELEMENT < 2) {
+      throw new RangeError(`dither: ${this.levels} levels need a 16-bit output`);
+    }
+    if (channels !== this.residual.length) {
+      if (channels % 3 !== 0) throw new RangeError(`dither: frame length ${channels} is not a multiple of 3`);
+      this.reset(channels / 3);
+    }
+    const levels = this.levels;
+    const eps = this.exactEps;
+    const residual = this.residual;
+    for (let i = 0; i < channels; i++) {
+      let v = colors[i];
+      if (!(v >= 0)) v = 0;
+      else if (v > 1) v = 1;
+      let scaled = v * levels;
+      const nearest = Math.round(scaled);
+      if (Math.abs(scaled - nearest) < eps) scaled = nearest;
+      const f = scaled + residual[i];
+      let code = Math.round(f);
+      if (code < 0) code = 0;
+      else if (code > levels) code = levels;
+      out[i] = code;
+      residual[i] = f - code;
+    }
+    return out;
+  }
+  reset(count) {
+    if (count === void 0 || count * 3 === this.residual.length) {
+      this.residual.fill(0);
+      return;
+    }
+    this.residual = new Float64Array(validateCount2(count) * 3);
+  }
+  residuals() {
+    return this.residual;
+  }
+};
+function validateCount2(count) {
+  if (!Number.isInteger(count) || count < 1) throw new RangeError(`dither: count must be a positive integer, got ${count}`);
+  return count;
+}
+
 // lib/engine/encode.ts
-function createFrameEncoder(format, leds, calibration) {
+function createFrameEncoder(format, leds, options = {}) {
   if (!Number.isInteger(leds) || leds < 1) {
     throw new RangeError(`encode: leds must be a positive integer, got ${String(leds)}`);
   }
   if (format !== "Afx" && format !== "Awa" && format !== "Ada") {
     throw new RangeError(`encode: unknown format ${String(format)}`);
   }
+  const { calibration, dither = false } = options;
   if (calibration !== void 0 && format !== "Awa") {
     throw new RangeError(`encode: calibration is only carried by Awa, not ${format}`);
+  }
+  if (dither && format === "Afx") {
+    throw new RangeError("encode: Afx is dithered by the firmware, not by the host");
   }
   const calibrated = calibration !== void 0;
   const frameBytes = frameSize(format, leds, calibrated);
   const wire = new Uint8Array(frameBytes);
   const payloadBytes = leds * (format === "Afx" ? 6 : 3);
   const payload = wire.subarray(HEADER_SIZE, HEADER_SIZE + payloadBytes);
+  const ditherer = dither ? createDither(leds, LEVELS_8BIT) : null;
   return {
     format,
     leds,
@@ -2847,14 +2944,18 @@ function createFrameEncoder(format, leds, calibration) {
           encodeLinear16(view, payload);
           return encodeAfx(payload, wire);
         case "Awa":
-          encodeLinear8(view, payload);
+          quantise2(view);
           return encodeAwa(payload, calibration, wire);
         case "Ada":
-          encodeLinear8(view, payload);
+          quantise2(view);
           return encodeAda(payload, wire);
       }
     }
   };
+  function quantise2(view) {
+    if (ditherer === null) encodeLinear8(view, payload);
+    else ditherer.apply(view, payload);
+  }
 }
 
 // lib/engine/wled.ts
@@ -4336,7 +4437,13 @@ function createEngine(host) {
         // sink. The encoder still exists so the loopback has something to parse.
         config.output.transport === "wled" ? "Afx" : config.output.format,
         leds,
-        config.output.format === "Awa" ? config.output.calibration : void 0
+        {
+          ...config.output.format === "Awa" && config.output.calibration !== void 0 ? { calibration: config.output.calibration } : {},
+          // Guarded by the same condition the parser enforces rather than
+          // passed through: a stored config from before this option existed is
+          // valid, and the loopback's Afx encoder must never be handed it.
+          ...config.output.dither === true && config.output.transport !== "wled" && config.output.format !== "Afx" ? { dither: true } : {}
+        }
       )
     };
   }

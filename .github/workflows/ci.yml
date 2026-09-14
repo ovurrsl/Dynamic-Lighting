@@ -42,15 +42,12 @@ jobs:
       # That makes staleness possible: edit src, forget to rebuild, and the
       # repository ships an extension that does not match its own source. This
       # is the check that makes committing build output safe.
+      # `npm run verify:extension`, not a copy of it: this check has already
+      # failed once for real, and the fix is that the same command can be run
+      # before a commit. Two definitions would let them drift, and the one that
+      # drifts is the local one nobody runs.
       - name: Eklenti derlemesi depodakiyle aynı mı
-        run: |
-          npm run build:extension
-          rm -f extension/dist/*.map
-          if ! git diff --quiet -- extension/dist; then
-            echo "::error::extension/dist kaynakla eşleşmiyor. 'npm run build:extension' çalıştırıp commit et."
-            git diff --stat -- extension/dist
-            exit 1
-          fi
+        run: npm run verify:extension
 
   firmware:
     name: Firmware

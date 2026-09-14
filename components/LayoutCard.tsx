@@ -15,6 +15,7 @@ import {
   TextField
 } from '@heroui/react'
 
+import { useEngine } from '#components/Engine'
 import { LedFrame } from '#components/LedFrame'
 import { useTranslate } from '#components/Preferences'
 import { clearStoredConfig, loadStoredConfig, storeConfig } from '#lib/config-store'
@@ -37,7 +38,7 @@ import { createLiveSampler, PREVIEW_HZ, type LiveFrame, type LiveSampler } from 
 import { CORNER_ORDER, frameAspect, isDefaultKeystone, wireOrderColor } from '#lib/preview'
 import type { LedRect } from '#lib/engine/types'
 import type { MessageKey } from '#lib/i18n/strings'
-import { fetchConfig, saveConfig } from '#lib/extension-client'
+import { fetchConfig } from '#lib/extension-client'
 
 /**
  * The layout editor: which LED looks where.
@@ -160,6 +161,7 @@ export function LayoutCard ({
    * for any caller that passes an inline function, which is most of them.
    */
   const t = useTranslate()
+  const { saveConfig } = useEngine()
   // Read once per render rather than inside the option loop: the annotation is
   // the same string for all six entries.
   const standard = t('layout.orderStandard')
@@ -263,7 +265,7 @@ export function LayoutCard ({
         ? t('layout.applied')
         : t('layout.appliedNotStored', { reason: failure }))
     })
-  }, [resolved, t])
+  }, [resolved, saveConfig, t])
 
   const reset = useCallback((to: EngineConfig) => {
     clearStoredConfig()

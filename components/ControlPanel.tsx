@@ -9,6 +9,7 @@ import { CaptureCard } from '#components/CaptureCard'
 import { ColourCard } from '#components/ColourCard'
 import { BoardNetworkCard } from '#components/BoardNetworkCard'
 import { DeviceCard } from '#components/DeviceCard'
+import { HostCard } from '#components/HostCard'
 import { useEngine } from '#components/Engine'
 import { EngineConfigProvider, useEngineConfig } from '#components/EngineConfig'
 import { GuideCard } from '#components/GuideCard'
@@ -28,6 +29,8 @@ import {
   sectionsInGroup,
   type SectionId
 } from '#lib/sections'
+import type { EngineState } from '#lib/extension/messages'
+import type { MessageKey } from '#lib/i18n/strings'
 
 /**
  * The shell: a sidebar of grouped sections, one section at a time.
@@ -71,6 +74,7 @@ function sectionBody (id: SectionId, enabled: boolean) {
 function DeviceSection () {
   return (
     <div className="flex flex-col gap-6">
+      <HostCard />
       <DeviceCard />
       <BoardNetworkCard />
       <CapabilitiesCard />
@@ -96,11 +100,37 @@ function ProfilesSection () {
  * page; the cost is that the device page was where you could see whether
  * anything was running. This pays that back in one line.
  */
+/** One place for the four state words, so the badge and the device page agree. */
+const STATE_LABEL: Record<EngineState, MessageKey> = {
+  idle: 'device.state.idle',
+  starting: 'device.state.starting',
+  running: 'device.state.running',
+  error: 'device.state.error'
+}
+
 function EngineBadge () {
   const t = useTranslate()
-  const { probe, state, stats } = useEngine()
+  const { probe, host, pageCapable, state, stats } = useEngine()
+  // The badge used to speak for the extension, because the extension was the
+  // engine. Now it speaks for whichever host is live - saying "not installed"
+  // beside a strip the page is actively driving is worse than saying nothing.
+  if (host === 'page') {
+    const running = state === 'running'
+    return (
+      <span className="flex items-center gap-2 text-xs">
+        <span aria-hidden className={`size-2 rounded-full ${running ? 'bg-success' : state === 'error' ? 'bg-danger' : 'bg-default'}`} />
+        <span className="text-muted">
+          {t(STATE_LABEL[state])}
+          {running && stats !== null && ` · ${stats.deliveredFps.toFixed(0)} fps`}
+          {` · ${t('host.page')}`}
+        </span>
+      </span>
+    )
+  }
   if (probe === null) return null
   if (!probe.available) {
+    // With a page host available this is a choice, not a dead end.
+    if (pageCapable) return null
     return (
       <span className="flex items-center gap-2 text-xs">
         <span aria-hidden className="size-2 rounded-full bg-default" />
@@ -118,11 +148,7 @@ function EngineBadge () {
         }`}
       />
       <span className="text-muted">
-        {t(
-          state === 'running' ? 'device.state.running'
-            : state === 'starting' ? 'device.state.starting'
-              : state === 'error' ? 'device.state.error' : 'device.state.idle'
-        )}
+        {t(STATE_LABEL[state])}
         {state === 'running' && fps !== null && ` · ${fps.toFixed(0)} fps`}
       </span>
     </span>

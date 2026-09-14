@@ -8,7 +8,6 @@ import { useEngineConfig } from '#components/EngineConfig'
 import { useTranslate } from '#components/Preferences'
 import { deriveColorOrder, type SeenChannel } from '#lib/engine/order'
 import { WIZARD_COLORS, type PatternKind, type PatternSpec } from '#lib/engine/patterns'
-import { runPattern, saveConfig, stopEngine } from '#lib/extension-client'
 import type { MessageKey } from '#lib/i18n/strings'
 
 /**
@@ -51,18 +50,20 @@ interface Wizard {
 
 export function CalibrationCard () {
   const t = useTranslate()
-  const { probe, stats } = useEngine()
+  const { probe, host, pageCapable, stats, runPattern, saveConfig, stop: stopEngine } = useEngine()
   const { config, setConfig } = useEngineConfig()
   const [notice, setNotice] = useState<string | null>(null)
   const [wizard, setWizard] = useState<Wizard | null>(null)
 
-  const installed = probe?.available === true
+  // Either host can drive a test pattern: the pattern path is the engine's,
+  // not the extension's.
+  const installed = host === 'page' ? pageCapable : probe?.available === true
   const running = stats?.pattern
 
   const send = useCallback(async (spec: PatternSpec): Promise<void> => {
     const result = await runPattern(spec)
     setNotice(result.error ?? null)
-  }, [])
+  }, [runPattern])
 
   const stop = useCallback(async (): Promise<void> => {
     // Black first, then stop: stopping alone leaves the strip holding whatever
@@ -71,7 +72,7 @@ export function CalibrationCard () {
     await runPattern({ kind: 'off' })
     await stopEngine()
     setNotice(null)
-  }, [])
+  }, [runPattern, stopEngine])
 
   const answer = useCallback((seen: SeenChannel) => {
     setWizard((current) => {

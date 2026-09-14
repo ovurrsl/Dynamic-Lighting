@@ -19,18 +19,27 @@ const fmt = (n: number, digits = 1): string => (Number.isFinite(n) ? n.toFixed(d
  * The start button is here rather than only in the extension's popup, and that
  * is the point of the page. Until now the only way to start a capture was the
  * toolbar menu - a product whose main control lives in a browser menu is a
- * product people cannot find. The screen picker still opens in the extension's
- * engine document, because that is the only place it works; the panel just asks.
+ * product people cannot find.
+ *
+ * Where the picker opens depends on the host, and the button does not care: in
+ * the extension it opens in the engine's own document, because that is the only
+ * place it works there; in the page host it opens here. Which host is running -
+ * and the fact that only one of them survives a hidden tab - is the Device
+ * page's business, not this one's.
  */
 export function OverviewCard () {
   const t = useTranslate()
-  const { probe, state, stats, busy, start, selfTest, stop } = useEngine()
+  const { probe, host, pageCapable, state, stats, busy, start, selfTest, stop } = useEngine()
   const { config } = useEngineConfig()
   const [notice, setNotice] = useState<string | null>(null)
 
   const rects = useMemo(() => resolveLayout(config), [config])
   const running = state === 'running'
   const installed = probe?.available === true
+  // The extension is no longer the only host, so "not installed" is no longer
+  // "nothing can run": a browser that can capture a screen can run the engine
+  // in this page, and on iOS that is the only route there has ever been.
+  const hosted = host === 'page' ? pageCapable : installed
 
   const act = (call: () => Promise<{ state: string, error?: string }>, pending: string) => {
     setNotice(pending)
@@ -49,9 +58,11 @@ export function OverviewCard () {
         <Card.Content className="flex flex-col gap-4">
           {probe === null && <p className="text-sm text-muted">{t('device.searching')}</p>}
 
-          {probe !== null && !installed && (
+          {probe !== null && !hosted && (
             <div className="flex flex-wrap items-center gap-3">
-              <span className="text-sm text-muted">{t('overview.needExtension')}</span>
+              <span className="text-sm text-muted">
+                {t(pageCapable ? 'overview.needExtension' : 'host.page.unavailable')}
+              </span>
               <Button
                 size="sm"
                 variant="secondary"
@@ -62,7 +73,7 @@ export function OverviewCard () {
             </div>
           )}
 
-          {installed && (
+          {hosted && (
             <>
               <div className="flex flex-wrap items-center gap-2">
                 <Button

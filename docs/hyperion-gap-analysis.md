@@ -289,11 +289,39 @@ katmanını ve ağ sürücüsünü yukarı taşıdı — bir iPhone ekranı okuy
    **Ölçülmemiş:** WLED'in JSON'la ulaşılabilir kare hızı (N1), WiFi
    linkliyken `shortFrames` (N2) ve kendi soketimizin kare hızı (N3) —
    üçü de `docs/firmware-and-devices.md` §5'te.
-3. **Motoru host'tan ayır** — Chromium masaüstünde eklenti (kısıtlanmama
-   uğruna), diğer her yerde sayfa. `lib/live-sampler.ts` yakalama yarısını
-   zaten yapıyor; eksik olan çıkış yarısı ve host seçimi. §3'teki (2) numaralı
-   ölçüm olumsuz çıkarsa bu madde iOS'u kurtarmaz ama macOS Safari'yi ve
-   Firefox'u yine de açar.
+3. **Motoru host'tan ayır — ✅ 2026-09-14.** Motorun tamamı
+   `lib/engine/runtime.ts`'e taşındı ve host enjekte ediliyor; eklentinin
+   `offscreen.ts`'i 875 satırdan 199'a indi ve artık üç şey yapıyor: yakalama
+   aç, canvas ver, mesaj taşı. Sayfa host'u (`lib/page-host.ts`) **aynı**
+   motoru koşturuyor — iki motor olsaydı biri çürürdü.
+
+   Platformlar arasında gerçekten ayrışan tek yer kare kaynağıydı, o da
+   `lib/engine/source.ts`'e çıkarıldı: `MediaStreamTrackProcessor` (yalnız
+   Chromium), `<video>` + `requestVideoFrameCallback`, ve rVFC'siz tarayıcılar
+   için `<video>` + zamanlayıcı. Üçü de `createImageBitmap`'e aynı şeyi
+   veriyor, yani **fark ilk aşamada bitiyor**, motorun içinde değil.
+
+   **Üçü de gerçek bir tarayıcıda, gerçek ekran yakalamasıyla ölçüldü**
+   (Chromium 141, 1280×1024, loopback):
+
+   | Rota | Teslim | Varış p50 | Düşen |
+   |---|---|---|---|
+   | akış (MSTP) | 59.1 fps | 16.8 ms | 0 |
+   | video + rVFC | 58.2 fps | 16.7 ms | 0 |
+   | video + zamanlayıcı | 39.7 fps | 24.6 ms | 0 |
+
+   Zamanlayıcı rotası ölçülebilir biçimde daha kötü ve sebebi yapısal: rVFC
+   kare başına — yani ekran DEĞİŞTİKÇE — ateşlenirken zamanlayıcı aynı resmi
+   kendi temposunda yeniden okuyor. Firefox'un bugünkü durumu bu, ve panel
+   hangi rotanın koştuğunu yazıyor: tek bir "fps" sayısı üçünü birbirine
+   karıştırırdı.
+
+   **Kaçınılmaz kısıt, saklanmadan söylendi:** bir sayfa, sekmesi gizlendiğinde
+   ya da küçültüldüğünde kısıtlanıyor. Motorun en başta eklentiye taşınmasının
+   sebebi tam olarak buydu ve zamanlayıcılarla etrafından dolaşılamıyor. Yani
+   sayfa host'u telefon, ikinci makine ya da eklentisiz tarayıcı için dürüst;
+   tek monitörde tam ekran oyun için değil. Panelde Cihaz sayfasında bu
+   cümlenin kendisi yazıyor.
 4. **Efekt motoru** — uygulamayı ekran yakalamasız kullanılır kılıyor, ve
    tarayıcıda Hyperion'dakinden daha ucuz.
 5. **Ses görselleştirici** — Web Audio, küçük iş, büyük görünürlük, her

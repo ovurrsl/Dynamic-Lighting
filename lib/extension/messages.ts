@@ -183,6 +183,16 @@ export interface EngineStats {
     detail?: Record<string, number | string | boolean>
   }
   /**
+   * Which frame source is running: 'stream' is MediaStreamTrackProcessor,
+   * 'video-callback' a <video> read through requestVideoFrameCallback,
+   * 'video-timer' the same element read on a plain timer.
+   *
+   * Shown rather than hidden because the three do not perform alike and the
+   * difference is a property of the browser, not of the rig - a user comparing
+   * their numbers against someone else's needs to know which one they are on.
+   */
+  sourceKind?: string
+  /**
    * The test pattern running, if one is. Distinct from `state`, which only says
    * the engine is producing frames: a strip lit by the walk and a strip
    * following the screen are both "running", and confusing them would have the

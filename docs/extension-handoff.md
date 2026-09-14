@@ -627,6 +627,8 @@ tüm zinciri** ölçen tek yöntem bu.
 | (s) | Ağ sürücüleri | **yapıldı** — `lib/engine/net.ts` (bizim firmware + WLED), panelde taşıma seçici |
 | (t) | Firmware WebSocket sunucusu | **yapıldı** — `nano_esp32_net`, `ws://<adres>/afx`, aynı baytlar aynı ayrıştırıcıya |
 | (u) | `AxC` kontrol kanalı, host tarafı | **yapıldı** — `lib/engine/control.ts`; WiFi kimlik bilgileri Cihaz sayfasından |
+| (v) | Motoru host'tan ayır | **yapıldı** — `lib/engine/runtime.ts`; offscreen 875 → 199 satır |
+| (w) | Sayfa host'u | **yapıldı** — `lib/page-host.ts`; üç kare rotası gerçek tarayıcıda ölçüldü |
 
 ### Sıra değiştirmek isteyen için
 

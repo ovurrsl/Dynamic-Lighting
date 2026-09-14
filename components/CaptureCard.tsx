@@ -16,7 +16,6 @@ import {
   type CaptureConfig,
   type EngineConfig
 } from '#lib/engine/config'
-import { saveConfig } from '#lib/extension-client'
 import type { MessageKey } from '#lib/i18n/strings'
 
 /**
@@ -52,7 +51,7 @@ function cellsPerLed (config: EngineConfig, gridWidth: number): number {
 
 export function CaptureCard () {
   const t = useTranslate()
-  const { probe } = useEngine()
+  const { probe, host, pageCapable, saveConfig } = useEngine()
   const { config, setConfig } = useEngineConfig()
   const [draft, setDraft] = useState<CaptureConfig | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -91,13 +90,17 @@ export function CaptureCard () {
       setDraft(null)
       setNotice(t('capture.applied'))
     })
-  }, [config, current, problem, setConfig, t])
+  }, [config, current, problem, saveConfig, setConfig, t])
 
-  if (probe !== null && probe.available !== true) {
+  // These are engine settings, so they need an engine - but since the page
+  // host exists that no longer means an extension. The gate asks whether
+  // anything can run, not whether one particular host is installed.
+  const hosted = host === 'page' ? pageCapable : probe === null || probe.available === true
+  if (!hosted) {
     return (
       <Card variant="default">
         <Card.Header><Card.Title>{t('nav.capture')}</Card.Title></Card.Header>
-        <Card.Content><p className="text-sm text-muted">{t('capture.needExtension')}</p></Card.Content>
+        <Card.Content><p className="text-sm text-muted">{t('capture.needEngine')}</p></Card.Content>
       </Card>
     )
   }

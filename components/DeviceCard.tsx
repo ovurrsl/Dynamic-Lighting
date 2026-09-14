@@ -28,6 +28,17 @@ const LINK_KEY = {
   wled: 'device.link.wled'
 } as const satisfies Record<EngineStats['link']['mode'], MessageKey>
 
+/**
+ * The three frame routes, named rather than shown as a slug: 'video-timer' says
+ * nothing to a user, and the difference between them is the difference between
+ * a frame per screen change and a frame per tick.
+ */
+const SOURCE_KEY: Record<string, MessageKey | undefined> = {
+  stream: 'device.source.stream',
+  'video-callback': 'device.source.video-callback',
+  'video-timer': 'device.source.video-timer'
+}
+
 const fmt = (n: number, digits = 1): string => (Number.isFinite(n) ? n.toFixed(digits) : '–')
 
 /**
@@ -40,7 +51,7 @@ const fmt = (n: number, digits = 1): string => (Number.isFinite(n) ? n.toFixed(d
  */
 export function DeviceCard () {
   const t = useTranslate()
-  const { probe, state, stats, version, reprobe, stop } = useEngine()
+  const { probe, host, state, stats, version, reprobe, stop } = useEngine()
   const detail = describeDetail(stats?.link.detail)
 
   return (
@@ -50,9 +61,9 @@ export function DeviceCard () {
         <Card.Description>{t('device.description')}</Card.Description>
       </Card.Header>
       <Card.Content className="flex flex-col gap-4">
-        {probe === null && <p className="text-sm text-muted">{t('device.searching')}</p>}
+        {host === 'extension' && probe === null && <p className="text-sm text-muted">{t('device.searching')}</p>}
 
-        {probe?.available === false && (
+        {host === 'extension' && probe?.available === false && (
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm text-muted">
               {t(probe.reason === 'no-runtime' ? 'device.noRuntime' : 'device.notFound')}
@@ -61,13 +72,22 @@ export function DeviceCard () {
           </div>
         )}
 
-        {probe?.available === true && (
+        {/*
+          The counters belong to the ENGINE, not to the extension. Gating them
+          on the extension was right while it was the only host; now it would
+          hide every number from exactly the platforms that most need them,
+          because those are the ones with no extension to find.
+        */}
+        {(host === 'page' || probe?.available === true) && (
           <>
             <div className="flex flex-wrap items-center gap-3">
               <span className="rounded-full bg-background/60 px-3 py-1 text-sm">
                 {t(STATE_KEY[state])}
               </span>
-              <span className="text-xs text-muted">{t('device.version', { version })}</span>
+              {host === 'extension' && (
+                <span className="text-xs text-muted">{t('device.version', { version })}</span>
+              )}
+              <span className="text-xs text-muted">{t(host === 'page' ? 'host.page' : 'host.extension')}</span>
               {state === 'running' && (
                 <Button size="sm" variant="secondary" onPress={() => { void stop() }}>
                   {t('device.stop')}
@@ -103,6 +123,13 @@ export function DeviceCard () {
                   to be diagnosable.
                 */}
                 {detail !== null && <Stat className="col-span-2 sm:col-span-3" label={t('device.stat.detail')} value={detail} />}
+                {stats.sourceKind !== undefined && (
+                  <Stat
+                    className="col-span-2 sm:col-span-3"
+                    label={t('device.stat.sourceKind')}
+                    value={t(SOURCE_KEY[stats.sourceKind] ?? 'device.stat.sourceKind')}
+                  />
+                )}
                 {stats.source !== undefined && (
                   <Stat label={t('device.stat.source')} value={`${stats.source.width}×${stats.source.height}`} />
                 )}
@@ -126,7 +153,7 @@ export function DeviceCard () {
               </Surface>
             )}
 
-            <p className="text-xs text-muted">{t('device.note')}</p>
+            <p className="text-xs text-muted">{t(host === 'page' ? 'device.note.page' : 'device.note')}</p>
           </>
         )}
       </Card.Content>

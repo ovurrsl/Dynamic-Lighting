@@ -10,7 +10,6 @@ import {
   MAX_SSID_BYTES,
   MIN_PASSPHRASE_BYTES
 } from '#lib/engine/control'
-import { sendControl } from '#lib/extension-client'
 
 /**
  * Putting the board on a network.
@@ -33,12 +32,13 @@ const bytesOf = (text: string): number => new TextEncoder().encode(text).length
 
 export function BoardNetworkCard () {
   const t = useTranslate()
-  const { probe, stats } = useEngine()
+  const { probe, host, stats, sendControl } = useEngine()
   const [ssid, setSsid] = useState('')
   const [passphrase, setPassphrase] = useState('')
   const [enabled, setEnabled] = useState(true)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [touched, setTouched] = useState(false)
 
   const ssidBytes = bytesOf(ssid.trim())
   const passBytes = bytesOf(passphrase)
@@ -64,7 +64,9 @@ export function BoardNetworkCard () {
     })
   }
 
-  if (probe?.available !== true) return null
+  // Shown for either host: a page driving a board over a socket can
+  // reconfigure it just as well as the extension can.
+  if (host !== 'page' && probe?.available !== true) return null
 
   return (
     <Card variant="default">
@@ -79,7 +81,7 @@ export function BoardNetworkCard () {
           </Surface>
         )}
 
-        <TextField className="w-80" value={ssid} variant="secondary" onChange={setSsid}>
+        <TextField className="w-80" value={ssid} variant="secondary" onChange={(value) => { setTouched(true); setSsid(value) }}>
           <Label>{t('board.wifi.ssid')}</Label>
           <Input placeholder={t('board.wifi.ssid.placeholder')} />
         </TextField>
@@ -105,7 +107,7 @@ export function BoardNetworkCard () {
         </Switch>
         <p className="text-xs text-muted">{t('board.wifi.enabled.note')}</p>
 
-        {needsName && (
+        {needsName && touched && (
           <Surface className="rounded-xl p-3 text-sm text-danger" variant="secondary">
             {t('board.wifi.needName')}
           </Surface>

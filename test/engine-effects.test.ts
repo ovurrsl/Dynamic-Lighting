@@ -42,6 +42,15 @@ const maxOf = (out: Float32Array): number => {
 // Geometry.
 // ---------------------------------------------------------------------------
 
+/** Per-LED brightness, for the effects whose shape is about which LEDs are lit. */
+function levelsOf (out: Float32Array): number[] {
+  const levels: number[] = []
+  for (let i = 0; i < out.length; i += 3) {
+    levels.push(Math.max(out[i] as number, out[i + 1] as number, out[i + 2] as number))
+  }
+  return levels
+}
+
 test('geometry is built from where the LEDs actually look, not from their index', () => {
   // The whole reason effects take geometry: an effect written against
   // `i / count` is right only on the rig it was written for.
@@ -301,5 +310,106 @@ test('an effect never allocates once it is built', () => {
     const effect = createEffect({ kind }, GEOMETRY, () => 0)
     for (let ms = 0; ms < 2000; ms += 8) effect.render(out, ms)
     assert.equal(out.length, REFERENCE.length * 3)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The four added to fill the categories the first seven left out.
+// ---------------------------------------------------------------------------
+
+test('twinkle lights some LEDs and not others, and not all at once', () => {
+  // The failure this pins: one shared period makes the whole strip pulse
+  // together, which is `breathe` and not twinkle.
+  const geometry = GEOMETRY
+  const effect = createEffect({ kind: 'twinkle' }, geometry, () => 0)
+  const out = allocLedColors(geometry.count)
+
+  let sawSpread = false
+  for (const at of [0, 400, 900, 1700, 2600]) {
+    effect.render(out, at)
+    const levels = levelsOf(out)
+    const bright = levels.filter((v) => v > 0.5).length
+    const dark = levels.filter((v) => v < 0.05).length
+    if (bright > 0 && dark > 0) sawSpread = true
+  }
+  assert.ok(sawSpread, 'at some instant some LEDs are lit and others are dark')
+})
+
+test('twinkle repeats exactly, because it is seeded', () => {
+  // Otherwise "the twinkle looks wrong" and "the twinkle has a bug" cannot be
+  // told apart.
+  const geometry = GEOMETRY
+  const a = createEffect({ kind: 'twinkle' }, geometry, () => 0)
+  const b = createEffect({ kind: 'twinkle' }, geometry, () => 0)
+  const outA = allocLedColors(geometry.count)
+  const outB = allocLedColors(geometry.count)
+  a.render(outA, 1234)
+  b.render(outB, 1234)
+  assert.deepEqual([...outA], [...outB])
+})
+
+test('scan follows the SCREEN, not the wire, and bounces rather than wrapping', () => {
+  // The difference from the comet is the whole reason it exists: a comet goes
+  // round the frame, a scan crosses it. And a bar that reappears on the far
+  // side reads as a glitch, because nothing physical does that.
+  const geometry = GEOMETRY
+  const effect = createEffect({ kind: 'scan' }, geometry, () => 0)
+  const out = allocLedColors(geometry.count)
+
+  const brightestX = (ms: number): number => {
+    effect.render(out, ms)
+    const levels = levelsOf(out)
+    let best = 0
+    for (let i = 1; i < levels.length; i++) if ((levels[i] as number) > (levels[best] as number)) best = i
+    return geometry.centres[best * 2] as number
+  }
+
+  // One full sweep takes 1/0.4 = 2.5 s out and 2.5 s back.
+  const left = brightestX(100)
+  const middle = brightestX(1250)
+  const right = brightestX(2400)
+  assert.ok(left < middle && middle < right, `it should travel rightwards: ${left} ${middle} ${right}`)
+  // On the way back it must pass through the middle again rather than jumping.
+  const back = brightestX(3700)
+  assert.ok(back < right, 'and come back rather than restarting on the left')
+})
+
+test('wipe has an EDGE: at any instant the strip holds two colours, not a gradient', () => {
+  const geometry = GEOMETRY
+  const effect = createEffect({ kind: 'wipe' }, geometry, () => 0)
+  const out = allocLedColors(geometry.count)
+  effect.render(out, 2000)
+
+  const seen = new Set<string>()
+  for (let i = 0; i < geometry.count; i++) {
+    seen.add([...out.slice(i * 3, i * 3 + 3)].map((v) => v.toFixed(4)).join(','))
+  }
+  assert.equal(seen.size, 2, `two colours and a hard edge, saw ${seen.size}`)
+})
+
+test('chase is spaced by LED, not by distance', () => {
+  // The look depends on even spacing ON THE STRIP; spacing it in space would
+  // break the pattern exactly where two edges have different densities.
+  const geometry = GEOMETRY
+  const effect = createEffect({ kind: 'chase' }, geometry, () => 0)
+  const out = allocLedColors(geometry.count)
+  effect.render(out, 0)
+
+  const lit = levelsOf(out).map((v, i) => (v > 0.5 ? i : -1)).filter((i) => i >= 0)
+  assert.ok(lit.length > 0, 'something is lit')
+  for (let i = 1; i < lit.length; i++) {
+    assert.equal((lit[i] as number) - (lit[i - 1] as number), 3, 'every third LED, exactly')
+  }
+})
+
+test('every listed effect renders without allocating a surprise', () => {
+  // A kind in the list that the renderer does not handle would leave the buffer
+  // untouched, which on a strip is "the effect did nothing".
+  const geometry = GEOMETRY
+  const out = allocLedColors(geometry.count)
+  for (const kind of EFFECT_KINDS) {
+    out.fill(-1)
+    createEffect({ kind }, geometry, () => 0).render(out, 500)
+    assert.ok([...out].every((v) => v >= 0 && v <= 1), `${kind} wrote valid linear light`)
   }
 })

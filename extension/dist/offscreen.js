@@ -886,7 +886,11 @@ var EFFECT_KINDS = [
   "candle",
   "comet",
   "police",
-  "plasma"
+  "plasma",
+  "twinkle",
+  "scan",
+  "wipe",
+  "chase"
 ];
 function isEffectKind(value) {
   return typeof value === "string" && EFFECT_KINDS.includes(value);
@@ -994,6 +998,7 @@ function createEffect(spec, geometry, clock2) {
   const { count, centres, along } = geometry;
   const start = clock2();
   const flicker = noiseTable(64, 2654435769);
+  const perLed = noiseTable(Math.max(count, 1), 2246822507);
   const base = spec.color ?? { r: 255, g: 160, b: 60 };
   const baseLinear = new Float32Array([
     srgbToLinear(base.r / 255),
@@ -1053,6 +1058,54 @@ function createEffect(spec, geometry, clock2) {
           out[at] = baseLinear[0] * level;
           out[at + 1] = baseLinear[1] * level * (0.75 + 0.25 * n);
           out[at + 2] = baseLinear[2] * level * (0.4 + 0.6 * n * n);
+        }
+        break;
+      }
+      case "twinkle": {
+        for (let i = 0; i < count; i++) {
+          const seed = perLed[i];
+          const period = 1.6 + seed * 2.4;
+          const phase = ((t / period + seed * 7.3) % 1 + 1) % 1;
+          const level = Math.pow(Math.sin(phase * Math.PI), 6) * brightness;
+          const at = i * 3;
+          out[at] = baseLinear[0] * level;
+          out[at + 1] = baseLinear[1] * level;
+          out[at + 2] = baseLinear[2] * level;
+        }
+        break;
+      }
+      case "scan": {
+        const sweep = (t * 0.4 % 2 + 2) % 2;
+        const at01 = sweep > 1 ? 2 - sweep : sweep;
+        for (let i = 0; i < count; i++) {
+          const d = Math.abs(centres[i * 2] - at01);
+          const level = Math.exp(-(d * d) / 0.01) * brightness;
+          const at = i * 3;
+          out[at] = baseLinear[0] * level;
+          out[at + 1] = baseLinear[1] * level;
+          out[at + 2] = baseLinear[2] * level;
+        }
+        break;
+      }
+      case "wipe": {
+        const laps = t * 0.25;
+        const front = (laps % 1 + 1) % 1;
+        const lap = Math.floor(laps);
+        for (let i = 0; i < count; i++) {
+          const behind = along[i] <= front;
+          hue((behind ? lap + 1 : lap) * 0.137, out, i * 3, brightness);
+        }
+        break;
+      }
+      case "chase": {
+        const step = Math.floor(t * 6);
+        for (let i = 0; i < count; i++) {
+          const on = (i + step) % 3 === 0;
+          const level = on ? brightness : 0;
+          const at = i * 3;
+          out[at] = baseLinear[0] * level;
+          out[at + 1] = baseLinear[1] * level;
+          out[at + 2] = baseLinear[2] * level;
         }
         break;
       }

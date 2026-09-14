@@ -37,7 +37,7 @@ doğrusal aktarım, ve firmware tarafında interpolasyon.
 
 ## 2. Gerçek eksikler, etki sırasına göre
 
-### (A) Efekt motoru — **41 efekt, bizde sıfır** ★ en büyük eksik
+### (A) Efekt motoru — ✅ 2026-09-14 · 11 efekt
 
 Hyperion `effects/` altında 41 efekt taşıyor: `rainbow-swirl`, `knight-rider`,
 `fire`, `plasma`, `police-lights`, `candle`, `snake`, `matrix`, `atomic`,

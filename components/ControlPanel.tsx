@@ -176,8 +176,11 @@ function ProfilesSection () {
  * only meaningful when something is being captured.
  */
 function describeRate (stats: EngineStats, t: (key: MessageKey) => string): string {
-  if (stats.audio !== undefined) return stats.audio.kind
-  if (stats.effect !== undefined) return stats.effect
+  // Through the string table, like the layer tags below: an effect's `kind` is
+  // an internal identifier, and "twinkle" in a Turkish panel is the same leak
+  // as showing a component tag.
+  if (stats.audio !== undefined) return t(`audio.kind.${stats.audio.kind}` as MessageKey)
+  if (stats.effect !== undefined) return t(`effects.kind.${stats.effect}` as MessageKey)
   if (stats.pattern !== undefined) return stats.pattern
   // No capture layer means `deliveredFps` counts nothing, and "0 fps" beside a
   // strip that is visibly lit reads as a fault. Naming what is actually

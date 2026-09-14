@@ -45,7 +45,11 @@ export const EFFECT_KINDS = [
   'candle',
   'comet',
   'police',
-  'plasma'
+  'plasma',
+  'twinkle',
+  'scan',
+  'wipe',
+  'chase'
 ] as const
 
 export type EffectKind = (typeof EFFECT_KINDS)[number]
@@ -227,6 +231,15 @@ export function createEffect (spec: EffectSpec, geometry: EffectGeometry, clock:
   // One table per effect instance, seeded from the effect itself so two candles
   // never flicker in lockstep but one candle is the same candle every run.
   const flicker = noiseTable(64, 0x9e3779b9)
+  /**
+   * A per-LED table for the effects where each LED needs its own phase.
+   *
+   * Seeded and built once, like everything random here: a twinkle driven by
+   * `Math.random` cannot be told apart from a twinkle with a bug in it, because
+   * neither repeats. Sized to the rig so every LED gets its own entry rather
+   * than sharing one with the LED 64 places along.
+   */
+  const perLed = noiseTable(Math.max(count, 1), 0x85ebca6b)
   const base = spec.color ?? { r: 255, g: 160, b: 60 }
   const baseLinear = new Float32Array([
     srgbToLinear(base.r / 255),
@@ -310,6 +323,79 @@ export function createEffect (spec: EffectSpec, geometry: EffectGeometry, clock:
           out[at] = (baseLinear[0] as number) * level
           out[at + 1] = (baseLinear[1] as number) * level * (0.75 + 0.25 * n)
           out[at + 2] = (baseLinear[2] as number) * level * (0.4 + 0.6 * n * n)
+        }
+        break
+      }
+
+      case 'twinkle': {
+        // Sparse points lighting and fading on their own schedules. Each LED
+        // gets its own period AND its own phase from the seeded table: with a
+        // shared period the whole strip pulses together, which is `breathe`
+        // and not this.
+        for (let i = 0; i < count; i++) {
+          const seed = perLed[i] as number
+          const period = 1.6 + seed * 2.4
+          const phase = (((t / period) + seed * 7.3) % 1 + 1) % 1
+          // A high power turns a sine into a spark: mostly dark, briefly bright.
+          // A plain sine would leave every LED half-lit most of the time, which
+          // reads as a dim wash rather than as stars.
+          const level = Math.pow(Math.sin(phase * Math.PI), 6) * brightness
+          const at = i * 3
+          out[at] = (baseLinear[0] as number) * level
+          out[at + 1] = (baseLinear[1] as number) * level
+          out[at + 2] = (baseLinear[2] as number) * level
+        }
+        break
+      }
+
+      case 'scan': {
+        // A bar crossing the frame in SPACE, left to right and back. The
+        // difference from `comet` is the axis: a comet follows the wire and
+        // goes round the frame, a scan follows x and reads as something moving
+        // across the screen - which on a monitor is what people mean.
+        //
+        // It bounces rather than wrapping: a bar that reappears on the far side
+        // reads as a glitch, because nothing physical does that.
+        const sweep = ((t * 0.4) % 2 + 2) % 2
+        const at01 = sweep > 1 ? 2 - sweep : sweep
+        for (let i = 0; i < count; i++) {
+          const d = Math.abs((centres[i * 2] as number) - at01)
+          const level = Math.exp(-(d * d) / 0.01) * brightness
+          const at = i * 3
+          out[at] = (baseLinear[0] as number) * level
+          out[at + 1] = (baseLinear[1] as number) * level
+          out[at + 2] = (baseLinear[2] as number) * level
+        }
+        break
+      }
+
+      case 'wipe': {
+        // A colour filling the frame behind a moving front, then the next hue
+        // filling over it. Two hues at a time, never a gradient: the whole
+        // point is the edge, and a soft one would make this `rainbow` slowly.
+        const laps = t * 0.25
+        const front = ((laps % 1) + 1) % 1
+        const lap = Math.floor(laps)
+        for (let i = 0; i < count; i++) {
+          const behind = (along[i] as number) <= front
+          hue((behind ? lap + 1 : lap) * 0.137, out as unknown as Float32Array, i * 3, brightness)
+        }
+        break
+      }
+
+      case 'chase': {
+        // Every third LED, marching along the wire. Deliberately by INDEX and
+        // not by `along`: the look depends on the LEDs being evenly spaced on
+        // the strip, and spacing it in space would break the pattern exactly
+        // where two edges have different densities.
+        const step = Math.floor(t * 6)
+        for (let i = 0; i < count; i++) {
+          const on = (i + step) % 3 === 0
+          const level = on ? brightness : 0
+          const at = i * 3
+          out[at] = (baseLinear[0] as number) * level
+          out[at + 1] = (baseLinear[1] as number) * level
+          out[at + 2] = (baseLinear[2] as number) * level
         }
         break
       }

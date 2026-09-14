@@ -1,6 +1,7 @@
 import { createEngine, type CanvasLike, type Engine } from '#lib/engine/runtime'
 import { createStreamSource, type FrameSource } from '#lib/engine/source'
 import type { EngineConfig } from '#lib/engine/config'
+import { openConfiguredStream } from '#lib/engine/open-source'
 import { isMessage, type EngineState, type EngineStats, type Message } from '#lib/extension/messages'
 
 /**
@@ -43,19 +44,10 @@ let selfTestTimer: ReturnType<typeof setInterval> | null = null
  *   `DISPLAY_MEDIA` reason exists for.
  */
 async function openSource (config: EngineConfig): Promise<FrameSource> {
-  let stream: MediaStream
-  try {
-    stream = await navigator.mediaDevices.getDisplayMedia({
-      audio: false,
-      // A ceiling, not a demand: the pipeline is latest-wins, so a source faster
-      // than the engine costs drops rather than correctness.
-      video: { frameRate: { max: config.capture.fps } }
-    })
-  } catch (error) {
-    // Cancelling the picker is a decision, not a failure.
-    const name = error instanceof Error ? error.name : ''
-    throw new Error(name === 'NotAllowedError' ? 'Ekran seçilmedi.' : describe(error))
-  }
+  const stream = await openConfiguredStream(config, {
+    getDisplayMedia: (c) => navigator.mediaDevices.getDisplayMedia(c as DisplayMediaStreamOptions),
+    getUserMedia: (c) => navigator.mediaDevices.getUserMedia(c as MediaStreamConstraints)
+  })
   const track = stream.getVideoTracks()[0]
   if (track === undefined) throw new Error('yakalama video izi vermedi')
   return createStreamSource({ track, clock })

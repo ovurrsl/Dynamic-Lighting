@@ -1,4 +1,5 @@
 import type { EngineConfig } from '#lib/engine/config'
+import { openConfiguredStream } from '#lib/engine/open-source'
 import { createEngine, type CanvasLike, type Engine, type EngineHost } from '#lib/engine/runtime'
 import {
   createStreamSource,
@@ -106,20 +107,16 @@ export function createPageEngine (onReport: (stats: EngineStats, state: EngineSt
 
     async openSource (config: EngineConfig): Promise<FrameSource> {
       const media = navigator.mediaDevices
-      if (media?.getDisplayMedia === undefined) {
+      if (media === undefined) throw new Error('bu tarayıcı medya cihazlarını desteklemiyor')
+      if (config.capture.source !== 'device' && media.getDisplayMedia === undefined) {
+        // Worth its own sentence: a browser with no screen capture may still
+        // have a capture card, and "switch the source" is the useful advice.
         throw new Error('bu tarayıcı ekran yakalamayı desteklemiyor')
       }
-      let stream: MediaStream
-      try {
-        stream = await media.getDisplayMedia({
-          audio: false,
-          video: { frameRate: { max: config.capture.fps } }
-        })
-      } catch (error) {
-        // Cancelling the picker is a decision, not a failure.
-        const name = error instanceof Error ? error.name : ''
-        throw new Error(name === 'NotAllowedError' ? 'Ekran seçilmedi.' : describe(error))
-      }
+      const stream = await openConfiguredStream(config, {
+        getDisplayMedia: (c) => media.getDisplayMedia(c as DisplayMediaStreamOptions),
+        getUserMedia: (c) => media.getUserMedia(c as MediaStreamConstraints)
+      })
       return await sourceFor(stream, config)
     },
 

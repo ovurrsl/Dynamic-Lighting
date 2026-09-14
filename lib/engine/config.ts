@@ -108,7 +108,35 @@ export interface OutputConfig {
  * keeps up and one that does not, and the crop is what saves anyone whose
  * capture includes a taskbar or a second monitor.
  */
+/**
+ * Where the picture comes from.
+ *
+ * 'screen' is `getDisplayMedia` and is what almost everyone wants.
+ *
+ * 'device' is a video input - a USB capture card, or a webcam. It is here for
+ * two reasons and both are real. On a platform with no screen capture it is the
+ * only source at all; and it is **the only thing that defeats DRM blanking**,
+ * because an HDMI splitter feeding a capture card takes the signal below the
+ * decryption, where there is nothing left to blank. Netflix, Prime and Disney+
+ * reach a desktop already painted black and no software inside the operating
+ * system can change that.
+ */
+export type CaptureSource = 'screen' | 'device'
+
+export const CAPTURE_SOURCES: readonly CaptureSource[] = Object.freeze(['screen', 'device'])
+
 export interface CaptureConfig {
+  /** Screen capture, or a video input. */
+  source?: CaptureSource
+  /**
+   * Which video input, when `source` is 'device'.
+   *
+   * Checked against the current device list rather than trusted: a `deviceId`
+   * is not stable across browsers or profiles and rotates when site data is
+   * cleared, so a stale one must be a sentence rather than a capture that
+   * silently opens the wrong camera.
+   */
+  deviceId?: string
   /**
    * The analysis grid. Not the capture resolution - the source is whatever the
    * screen is - but the size everything downstream sees.
@@ -179,6 +207,7 @@ export function switchTransport (output: OutputConfig, transport: OutputTranspor
 }
 
 export const DEFAULT_CAPTURE: Readonly<CaptureConfig> = Object.freeze({
+  source: 'screen' as CaptureSource,
   gridWidth: 128,
   gridHeight: 72,
   fps: 60,
@@ -274,6 +303,13 @@ function readTransport (value: unknown, path: string): OutputTransport {
     throw new ConfigError(path, `must be one of ${OUTPUT_TRANSPORTS.join(', ')}, got ${describe(value)}`)
   }
   return value as OutputTransport
+}
+
+function readCaptureSource (value: unknown, path: string): CaptureSource {
+  if (typeof value !== 'string' || !CAPTURE_SOURCES.includes(value as CaptureSource)) {
+    throw new ConfigError(path, `must be one of ${CAPTURE_SOURCES.join(', ')}, got ${describe(value)}`)
+  }
+  return value as CaptureSource
 }
 
 function readWireFormat (value: unknown, path: string): WireFormat {
@@ -497,11 +533,27 @@ export function parseEngineConfig (value: unknown): EngineConfig {
   if (crop.top + crop.bottom > 0.9) {
     throw new ConfigError('capture.crop', `top and bottom crop leave ${(1 - crop.top - crop.bottom).toFixed(2)} of the height`)
   }
+  const source = captureRaw.source === undefined
+    ? 'screen'
+    : readCaptureSource(captureRaw.source, 'capture.source')
+  if (source === 'screen' && captureRaw.deviceId !== undefined) {
+    // Refused rather than ignored: a stored device id on a screen capture means
+    // the two halves of the configuration disagree about what is being read,
+    // and silently keeping one is how that survives into a bug report.
+    throw new ConfigError('capture.deviceId', 'is only used when the source is a video input')
+  }
   const capture: CaptureConfig = {
+    source,
     gridWidth: integer(captureRaw.gridWidth ?? DEFAULT_CAPTURE.gridWidth, 'capture.gridWidth', GRID_MIN, GRID_MAX),
     gridHeight: integer(captureRaw.gridHeight ?? DEFAULT_CAPTURE.gridHeight, 'capture.gridHeight', GRID_MIN, GRID_MAX),
     fps: integer(captureRaw.fps ?? DEFAULT_CAPTURE.fps, 'capture.fps', FPS_MIN, FPS_MAX),
     crop
+  }
+  if (source === 'device' && captureRaw.deviceId !== undefined) {
+    if (typeof captureRaw.deviceId !== 'string' || captureRaw.deviceId === '') {
+      throw new ConfigError('capture.deviceId', `must be a non-empty string, got ${describe(captureRaw.deviceId)}`)
+    }
+    capture.deviceId = captureRaw.deviceId
   }
 
   const config: EngineConfig = { layout, blacklist, colorOrder, output, capture }

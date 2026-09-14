@@ -631,6 +631,7 @@ tüm zinciri** ölçen tek yöntem bu.
 | (w) | Sayfa host'u | **yapıldı** — `lib/page-host.ts`; üç kare rotası gerçek tarayıcıda ölçüldü |
 | (x) | Efekt motoru | **yapıldı** — `lib/engine/effects.ts`, yedi efekt, kendi paneli, CPython yok |
 | (y) | Ses görselleştirici | **yapıldı** — `lib/engine/audio{,-input}.ts`, üç görselleştirici, iki giriş, iOS dahil |
+| (z) | Yakalama kartı girişi | **yapıldı** — `lib/engine/devices.ts`, kaynak seçici Yakalama sayfasında |
 
 ### Sıra değiştirmek isteyen için
 

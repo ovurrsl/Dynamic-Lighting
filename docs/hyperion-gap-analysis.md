@@ -376,9 +376,29 @@ katmanını ve ağ sürücüsünü yukarı taşıdı — bir iPhone ekranı okuy
    şey duyuyor mu" sorusu şeride bakmadan cevaplanabilmeli. Nabız yalnız bası
    dinlediği için onun tepkisini göstermek, basssız müzikte düz sıfır okuyup
    kullanıcıyı gayet çalışan bir girişi kontrol etmeye gönderirdi.
-6. **Yakalama kartı girişi** — `enumerateDevices` + `getUserMedia`. Ekran
-   yakalamanın olmadığı platformlarda tek gerçek kaynak, ve **DRM'li içeriği
-   çözen tek yol**: sinyal HDMI splitter'dan sonra şifresiz geliyor.
+6. **Yakalama kartı girişi — ✅ 2026-09-14.** `lib/engine/devices.ts` +
+   yapılandırmada `capture.source` ve `capture.deviceId` + Yakalama sayfasında
+   kaynak seçici.
+
+   Bir yakalama kartı tarayıcıya **kamera** olarak görünüyor, yani akış
+   açıldıktan sonra hiçbir şey değişmiyor — aynı iki kare kaynağı okuyor. İş
+   tamamen BİRİNİ SEÇMEKTE, ve keskin kenarlar orada:
+
+   - **İzin verilene kadar etiketler boş.** `enumerateDevices` izin
+     verilmeden dört tane `""` döndürüyor, ve dört boş satır gösteren bir
+     seçici hiç seçici olmamasından kötü. "Cihaz yok" ile "cihaz var ama
+     adını söyleyemem" farklı cümleler ve farklı düğmeler istiyor.
+   - **Yakalama kartı ile web kamerası ayırt edilemiyor.** İkisi de video
+     girişi ve ad, üreticinin yazdığı her neyse o. Tahminle filtrelemek,
+     kartı beklenmedik bir ad taşıyan herkesin kartını gizlerdi — o yüzden
+     hiçbir şey filtrelenmiyor.
+   - **`deviceId` kalıcı değil**, site verisi temizlenince dönüyor. Saklanan
+     id güncel listeye karşı doğrulanıyor: eksikse cümle kuruluyor, "ilk
+     bulduğuna geç" yapılmıyor. Sessizce başka bir kamerayı açmak, birinin
+     ambilight'ının kendi yüzünü takip etmesinin yolu.
+
+   Gerçek tarayıcıda uçtan uca doğrulandı (Chrome'un sahte cihazı): listele →
+   seç → uygula → başlat, 1920×1080, 0 düşen kare.
 7. **Öncelik katmanları** — ön plan/arka plan efekti, kaynak öncelikleri.
    Efektler ve ses gelince bunlar anlam kazanıyor.
 8. **Olaylar** — sekme gizlenince duraklat, zamanlanmış aç/kapat.

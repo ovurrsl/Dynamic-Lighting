@@ -1,12 +1,13 @@
 'use client'
 
 import { useCallback, useMemo, useState } from 'react'
-import { Button, Card, Label, NumberField, Slider, Surface } from '@heroui/react'
+import { Button, Card, Label, ListBox, NumberField, Select, Slider, Surface } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
 import { useEngineConfig } from '#components/EngineConfig'
 import { useTranslate } from '#components/Preferences'
 import {
+  CAPTURE_SOURCES,
   CROP_MAX,
   FPS_MAX,
   FPS_MIN,
@@ -14,8 +15,10 @@ import {
   GRID_MIN,
   parseEngineConfig,
   type CaptureConfig,
+  type CaptureSource,
   type EngineConfig
 } from '#lib/engine/config'
+import { listVideoDevices, listWithPermission, type VideoDevice } from '#lib/engine/devices'
 import type { MessageKey } from '#lib/i18n/strings'
 
 /**
@@ -56,6 +59,32 @@ export function CaptureCard () {
   const [draft, setDraft] = useState<CaptureConfig | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [devices, setDevices] = useState<VideoDevice[] | null>(null)
+  const [needsPermission, setNeedsPermission] = useState(false)
+  const [listing, setListing] = useState(false)
+  const [deviceError, setDeviceError] = useState<string | null>(null)
+
+  /**
+   * Listed on demand, never on load.
+   *
+   * `enumerateDevices` is harmless, but the button that follows it asks for
+   * camera permission - and a page that pops a camera prompt the moment it
+   * opens is a page people close. Nobody who is capturing their screen ever
+   * needs this list.
+   */
+  const listDevices = useCallback(async (withPermission: boolean) => {
+    setListing(true)
+    setDeviceError(null)
+    try {
+      const list = withPermission ? await listWithPermission() : await listVideoDevices()
+      setDevices(list.devices)
+      setNeedsPermission(list.needsPermission)
+    } catch (error) {
+      setDeviceError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setListing(false)
+    }
+  }, [])
 
   // The draft starts from whatever the engine reported and is only replaced by
   // edits, so opening this page while a capture runs never disturbs it.
@@ -105,8 +134,114 @@ export function CaptureCard () {
     )
   }
 
+  const source: CaptureSource = current.source ?? 'screen'
+  const chosen = devices?.find((device) => device.deviceId === current.deviceId)
+  const missing = source === 'device' && current.deviceId !== undefined && devices !== null && chosen === undefined
+
   return (
     <div className="flex flex-col gap-6">
+      {/*
+        The source comes first, above the grid: everything below it describes
+        how the picture is processed, and this says which picture.
+      */}
+      <Card variant="default">
+        <Card.Header>
+          <Card.Title>{t('capture.source.title')}</Card.Title>
+          <Card.Description>{t('capture.source.description')}</Card.Description>
+        </Card.Header>
+        <Card.Content className="flex flex-col gap-4">
+          <Select
+            className="w-80"
+            value={source}
+            onChange={(value) => {
+              const next = value as CaptureSource
+              // The device id is dropped when going back to the screen: the
+              // validator refuses a setting that would do nothing, and carrying
+              // it would hand the user a config they cannot apply.
+              patch(next === 'screen' ? { source: next, deviceId: undefined } : { source: next })
+              if (next === 'device' && devices === null) void listDevices(false)
+            }}
+          >
+            <Label>{t('capture.source')}</Label>
+            <Select.Trigger>
+              <Select.Value />
+              <Select.Indicator />
+            </Select.Trigger>
+            <Select.Popover>
+              <ListBox>
+                {CAPTURE_SOURCES.map((each) => (
+                  <ListBox.Item id={each} key={each} textValue={t(`capture.source.${each}` as MessageKey)}>
+                    {t(`capture.source.${each}` as MessageKey)}
+                    <ListBox.ItemIndicator />
+                  </ListBox.Item>
+                ))}
+              </ListBox>
+            </Select.Popover>
+          </Select>
+          <p className="text-xs text-muted">{t(`capture.source.${source}.note` as MessageKey)}</p>
+
+          {source === 'device' && (
+            <>
+              <div className="flex flex-wrap items-end gap-3">
+                <Select
+                  className="w-80"
+                  isDisabled={devices === null || devices.length === 0}
+                  value={current.deviceId ?? devices?.[0]?.deviceId ?? ''}
+                  onChange={(value) => { patch({ deviceId: String(value) }) }}
+                >
+                  <Label>{t('capture.device')}</Label>
+                  <Select.Trigger>
+                    <Select.Value />
+                    <Select.Indicator />
+                  </Select.Trigger>
+                  <Select.Popover>
+                    <ListBox>
+                      {(devices ?? []).map((device, index) => {
+                        // An unnamed input is still an input: numbering it is
+                        // better than a blank row nobody can pick between.
+                        const label = device.label === ''
+                          ? t('capture.device.unnamed', { index: index + 1 })
+                          : device.label
+                        return (
+                          <ListBox.Item id={device.deviceId} key={device.deviceId} textValue={label}>
+                            {label}
+                            <ListBox.ItemIndicator />
+                          </ListBox.Item>
+                        )
+                      })}
+                    </ListBox>
+                  </Select.Popover>
+                </Select>
+                <Button
+                  isDisabled={listing}
+                  size="sm"
+                  variant="secondary"
+                  onPress={() => { void listDevices(true) }}
+                >
+                  {t(listing ? 'capture.device.listing' : 'capture.device.list')}
+                </Button>
+              </div>
+
+              {needsPermission && <p className="text-xs text-muted">{t('capture.device.permission')}</p>}
+              {devices !== null && devices.length === 0 && (
+                <p className="text-sm text-muted">{t('capture.device.none')}</p>
+              )}
+              {missing && (
+                <Surface className="rounded-xl p-3 text-sm text-danger" variant="secondary">
+                  {t('capture.device.gone')}
+                </Surface>
+              )}
+              {deviceError !== null && (
+                <Surface className="rounded-xl p-3 text-sm text-danger" variant="secondary">
+                  {t('capture.device.failed', { reason: deviceError })}
+                </Surface>
+              )}
+              <p className="text-xs text-muted">{t('capture.device.note')}</p>
+            </>
+          )}
+        </Card.Content>
+      </Card>
+
       <Card variant="default">
         <Card.Header>
           <Card.Title>{t('capture.grid.title')}</Card.Title>

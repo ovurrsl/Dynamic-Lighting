@@ -479,7 +479,7 @@ function createVisualiser(options) {
   return {
     kind: spec.kind,
     render,
-    level: () => spec.kind === "spectrum" ? follower.value() : smoothLevel
+    level: () => follower.value()
   };
 }
 function parseAudioSpec(value) {
@@ -1208,11 +1208,13 @@ function requireOrder(order) {
 // lib/engine/config.ts
 var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
 var OUTPUT_TRANSPORTS = Object.freeze(["serial", "websocket", "wled"]);
+var CAPTURE_SOURCES = Object.freeze(["screen", "device"]);
 var DEFAULT_OUTPUT = Object.freeze({
   transport: "serial",
   format: "Afx"
 });
 var DEFAULT_CAPTURE = Object.freeze({
+  source: "screen",
   gridWidth: 128,
   gridHeight: 72,
   fps: 60,
@@ -1270,6 +1272,12 @@ function boundedFraction(value, path, min, max, fallback) {
 function readTransport(value, path) {
   if (typeof value !== "string" || !OUTPUT_TRANSPORTS.includes(value)) {
     throw new ConfigError(path, `must be one of ${OUTPUT_TRANSPORTS.join(", ")}, got ${describe2(value)}`);
+  }
+  return value;
+}
+function readCaptureSource(value, path) {
+  if (typeof value !== "string" || !CAPTURE_SOURCES.includes(value)) {
+    throw new ConfigError(path, `must be one of ${CAPTURE_SOURCES.join(", ")}, got ${describe2(value)}`);
   }
   return value;
 }
@@ -1457,12 +1465,23 @@ function parseEngineConfig(value) {
   if (crop.top + crop.bottom > 0.9) {
     throw new ConfigError("capture.crop", `top and bottom crop leave ${(1 - crop.top - crop.bottom).toFixed(2)} of the height`);
   }
+  const source = captureRaw.source === void 0 ? "screen" : readCaptureSource(captureRaw.source, "capture.source");
+  if (source === "screen" && captureRaw.deviceId !== void 0) {
+    throw new ConfigError("capture.deviceId", "is only used when the source is a video input");
+  }
   const capture = {
+    source,
     gridWidth: integer(captureRaw.gridWidth ?? DEFAULT_CAPTURE.gridWidth, "capture.gridWidth", GRID_MIN, GRID_MAX),
     gridHeight: integer(captureRaw.gridHeight ?? DEFAULT_CAPTURE.gridHeight, "capture.gridHeight", GRID_MIN, GRID_MAX),
     fps: integer(captureRaw.fps ?? DEFAULT_CAPTURE.fps, "capture.fps", FPS_MIN, FPS_MAX),
     crop
   };
+  if (source === "device" && captureRaw.deviceId !== void 0) {
+    if (typeof captureRaw.deviceId !== "string" || captureRaw.deviceId === "") {
+      throw new ConfigError("capture.deviceId", `must be a non-empty string, got ${describe2(captureRaw.deviceId)}`);
+    }
+    capture.deviceId = captureRaw.deviceId;
+  }
   const config = { layout, blacklist, colorOrder, output, capture };
   let rects;
   try {
@@ -4098,18 +4117,61 @@ function createStreamSource(options) {
   };
 }
 
-// lib/extension/messages.ts
-function isMessage(value) {
-  return typeof value === "object" && value !== null && typeof value.type === "string" && value.type.startsWith("ambiflux/");
+// lib/engine/devices.ts
+function defaultEnumerate() {
+  const media = globalThis.navigator?.mediaDevices;
+  if (media?.enumerateDevices === void 0) {
+    throw new Error("devices: this browser cannot list media devices");
+  }
+  return media.enumerateDevices();
+}
+async function listVideoDevices(options = {}) {
+  const enumerate = options.enumerate ?? defaultEnumerate;
+  const all = await enumerate();
+  const devices = all.filter((device) => device.kind === "videoinput").map((device) => ({
+    deviceId: device.deviceId,
+    label: device.label,
+    ...device.groupId !== void 0 ? { groupId: device.groupId } : {}
+  }));
+  const usable = devices.filter((device) => device.deviceId !== "");
+  return {
+    devices: usable,
+    needsPermission: usable.length > 0 && usable.every((device) => device.label === "")
+  };
+}
+function resolveDevice(list, deviceId) {
+  if (deviceId === void 0 || deviceId === "") return list[0] ?? null;
+  return list.find((device) => device.deviceId === deviceId) ?? null;
+}
+function deviceConstraints(deviceId, fps) {
+  return {
+    audio: false,
+    video: {
+      deviceId: { exact: deviceId },
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      frameRate: { max: fps }
+    }
+  };
 }
 
-// extension/src/offscreen.ts
-var clock = () => performance.now();
-var selfTestTimer = null;
-async function openSource(config) {
-  let stream;
+// lib/engine/open-source.ts
+async function openConfiguredStream(config, media) {
+  if (config.capture.source === "device") {
+    const { devices } = await listVideoDevices();
+    const device = resolveDevice(devices, config.capture.deviceId);
+    if (device === null) {
+      throw new Error(devices.length === 0 ? "video giri\u015Fi bulunamad\u0131" : "se\xE7ilen video giri\u015Fi art\u0131k yok; Yakalama sayfas\u0131ndan yeniden se\xE7");
+    }
+    try {
+      return await media.getUserMedia(deviceConstraints(device.deviceId, config.capture.fps));
+    } catch (error) {
+      const name = error instanceof Error ? error.name : "";
+      throw new Error(name === "NotAllowedError" ? "Kamera izni verilmedi." : describe4(error));
+    }
+  }
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia({
+    return await media.getDisplayMedia({
       audio: false,
       // A ceiling, not a demand: the pipeline is latest-wins, so a source faster
       // than the engine costs drops rather than correctness.
@@ -4119,6 +4181,25 @@ async function openSource(config) {
     const name = error instanceof Error ? error.name : "";
     throw new Error(name === "NotAllowedError" ? "Ekran se\xE7ilmedi." : describe4(error));
   }
+}
+function describe4(error) {
+  if (!(error instanceof Error)) return String(error);
+  return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
+}
+
+// lib/extension/messages.ts
+function isMessage(value) {
+  return typeof value === "object" && value !== null && typeof value.type === "string" && value.type.startsWith("ambiflux/");
+}
+
+// extension/src/offscreen.ts
+var clock = () => performance.now();
+var selfTestTimer = null;
+async function openSource(config) {
+  const stream = await openConfiguredStream(config, {
+    getDisplayMedia: (c) => navigator.mediaDevices.getDisplayMedia(c),
+    getUserMedia: (c) => navigator.mediaDevices.getUserMedia(c)
+  });
   const track = stream.getVideoTracks()[0];
   if (track === void 0) throw new Error("yakalama video izi vermedi");
   return createStreamSource({ track, clock });
@@ -4164,7 +4245,7 @@ function stopEngine() {
   }
   engine.stop();
 }
-function describe4(error) {
+function describe5(error) {
   if (!(error instanceof Error)) return String(error);
   return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
 }
@@ -4182,7 +4263,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         engine.runPattern(message.spec);
         sendResponse({ state: engine.state(), pattern: engine.stats().pattern });
       } catch (error) {
-        sendResponse({ state: engine.state(), error: describe4(error) });
+        sendResponse({ state: engine.state(), error: describe5(error) });
       }
       return false;
     case "ambiflux/effect":
@@ -4190,13 +4271,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         engine.runEffect(message.spec);
         sendResponse({ state: engine.state(), effect: engine.stats().effect });
       } catch (error) {
-        sendResponse({ state: engine.state(), error: describe4(error) });
+        sendResponse({ state: engine.state(), error: describe5(error) });
       }
       return false;
     case "ambiflux/audio":
       engine.runAudio(message.spec, message.input).then(
         () => sendResponse({ state: engine.state(), error: engine.error() }),
-        (error) => sendResponse({ state: engine.state(), error: describe4(error) })
+        (error) => sendResponse({ state: engine.state(), error: describe5(error) })
       );
       return true;
     case "ambiflux/stop":
@@ -4220,7 +4301,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({
           type: "ambiflux/config-reply",
           config: engine.config(),
-          error: describe4(error)
+          error: describe5(error)
         });
       }
       return false;
@@ -4230,7 +4311,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         (error) => sendResponse({
           type: "ambiflux/control-reply",
           sent: false,
-          error: describe4(error)
+          error: describe5(error)
         })
       );
       return true;

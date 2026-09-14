@@ -272,11 +272,13 @@ var PERMUTATIONS = Object.freeze({
 // lib/engine/config.ts
 var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
 var OUTPUT_TRANSPORTS = Object.freeze(["serial", "websocket", "wled"]);
+var CAPTURE_SOURCES = Object.freeze(["screen", "device"]);
 var DEFAULT_OUTPUT = Object.freeze({
   transport: "serial",
   format: "Afx"
 });
 var DEFAULT_CAPTURE = Object.freeze({
+  source: "screen",
   gridWidth: 128,
   gridHeight: 72,
   fps: 60,
@@ -329,6 +331,12 @@ function boundedFraction(value, path, min, max, fallback) {
 function readTransport(value, path) {
   if (typeof value !== "string" || !OUTPUT_TRANSPORTS.includes(value)) {
     throw new ConfigError(path, `must be one of ${OUTPUT_TRANSPORTS.join(", ")}, got ${describe(value)}`);
+  }
+  return value;
+}
+function readCaptureSource(value, path) {
+  if (typeof value !== "string" || !CAPTURE_SOURCES.includes(value)) {
+    throw new ConfigError(path, `must be one of ${CAPTURE_SOURCES.join(", ")}, got ${describe(value)}`);
   }
   return value;
 }
@@ -516,12 +524,23 @@ function parseEngineConfig(value) {
   if (crop.top + crop.bottom > 0.9) {
     throw new ConfigError("capture.crop", `top and bottom crop leave ${(1 - crop.top - crop.bottom).toFixed(2)} of the height`);
   }
+  const source = captureRaw.source === void 0 ? "screen" : readCaptureSource(captureRaw.source, "capture.source");
+  if (source === "screen" && captureRaw.deviceId !== void 0) {
+    throw new ConfigError("capture.deviceId", "is only used when the source is a video input");
+  }
   const capture = {
+    source,
     gridWidth: integer(captureRaw.gridWidth ?? DEFAULT_CAPTURE.gridWidth, "capture.gridWidth", GRID_MIN, GRID_MAX),
     gridHeight: integer(captureRaw.gridHeight ?? DEFAULT_CAPTURE.gridHeight, "capture.gridHeight", GRID_MIN, GRID_MAX),
     fps: integer(captureRaw.fps ?? DEFAULT_CAPTURE.fps, "capture.fps", FPS_MIN, FPS_MAX),
     crop
   };
+  if (source === "device" && captureRaw.deviceId !== void 0) {
+    if (typeof captureRaw.deviceId !== "string" || captureRaw.deviceId === "") {
+      throw new ConfigError("capture.deviceId", `must be a non-empty string, got ${describe(captureRaw.deviceId)}`);
+    }
+    capture.deviceId = captureRaw.deviceId;
+  }
   const config2 = { layout, blacklist, colorOrder, output, capture };
   let rects;
   try {

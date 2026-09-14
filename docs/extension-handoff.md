@@ -604,7 +604,7 @@ hazır: `Afx` çerçeveleme 1018 karede sıfır redle doğrulandı.
 aynı karede, siyah→beyaz flaş. Firmware gelince, ve **ekran gecikmesi dahil
 tüm zinciri** ölçen tek yöntem bu.
 
-### Durum, 2026-09-13
+### Durum, 2026-09-14
 
 | | Madde | Durum |
 |---|---|---|
@@ -623,6 +623,9 @@ tüm zinciri** ölçen tek yöntem bu.
 | (m) | Kenar algılama modu | açık |
 | (n) | Telemetri paneli | kısmen — sayaçlar ve aşama kırılımı var, grafik yok |
 | (o)-(q) | Dağıtım | açık |
+| (r) | Çıkış katmanı (`FrameSink`) | **yapıldı** — `lib/engine/sink.ts`, renk alıyor, bayt değil |
+| (s) | Ağ sürücüleri | **yapıldı** — `lib/engine/net.ts` (bizim firmware + WLED), panelde taşıma seçici |
+| (t) | Firmware WebSocket sunucusu | açık — (s)'teki soket sink'inin konuşacağı uç |
 
 ### Sıra değiştirmek isteyen için
 

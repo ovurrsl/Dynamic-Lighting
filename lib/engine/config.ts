@@ -66,7 +66,31 @@ export type WireFormat = 'Afx' | 'Awa' | 'Ada'
 
 export const WIRE_FORMATS: readonly WireFormat[] = Object.freeze(['Afx', 'Awa', 'Ada'])
 
+/**
+ * How the frame reaches the device.
+ *
+ * 'serial' is a paired Web Serial port: no network, no configuration, no second
+ * device. It is the default and stays the default.
+ *
+ * 'websocket' is our own firmware over a WebSocket, carrying the same bytes the
+ * serial port does. 'wled' is a WLED device over its own JSON WebSocket. Both
+ * exist because on iOS there is no Web Serial, no WebUSB, no WebHID and no Web
+ * Bluetooth - all four are Chromium-only and Apple requires WebKit - so the
+ * network is not one way to a strip there, it is the only way.
+ */
+export type OutputTransport = 'serial' | 'websocket' | 'wled'
+
+export const OUTPUT_TRANSPORTS: readonly OutputTransport[] = Object.freeze(['serial', 'websocket', 'wled'])
+
 export interface OutputConfig {
+  transport: OutputTransport
+  /**
+   * Host for the two network transports. What a user types - an address, with
+   * or without a scheme - not a URL; the drivers build the URL from it.
+   */
+  host?: string
+  /** WLED only: which segment to write, for a device that has several. */
+  segment?: number
   format: WireFormat
   /**
    * 'Awa' only: the four white-balance bytes HyperHDR's calibrated 'AwA' frame
@@ -120,7 +144,39 @@ export interface EngineConfig {
   capture: CaptureConfig
 }
 
-export const DEFAULT_OUTPUT: Readonly<OutputConfig> = Object.freeze({ format: 'Afx' as WireFormat })
+export const DEFAULT_OUTPUT: Readonly<OutputConfig> = Object.freeze({
+  transport: 'serial' as OutputTransport,
+  format: 'Afx' as WireFormat
+})
+
+/**
+ * Changing the transport changes which of the other output settings mean
+ * anything, and the validator REFUSES a setting that would do nothing - a host
+ * on serial, a segment on anything but WLED, a wire format on WLED. Dropping
+ * them here rather than carrying them keeps the switch from producing a config
+ * the user cannot apply and did not ask for.
+ *
+ * `host` is carried between the two network transports on purpose: someone
+ * comparing our firmware against a WLED on the same board should not have to
+ * retype the address.
+ */
+export function switchTransport (output: OutputConfig, transport: OutputTransport): OutputConfig {
+  if (transport === 'serial') {
+    return { transport, format: output.format, ...(output.calibration !== undefined ? { calibration: output.calibration } : {}) }
+  }
+  const host = output.host ?? ''
+  if (transport === 'wled') {
+    // WLED has its own protocol: the format is meaningless and the calibration
+    // bytes belong to an Awa frame that will never be sent.
+    return { transport, host, segment: output.segment ?? 0, format: 'Afx' }
+  }
+  return {
+    transport,
+    host,
+    format: output.format,
+    ...(output.calibration !== undefined ? { calibration: output.calibration } : {})
+  }
+}
 
 export const DEFAULT_CAPTURE: Readonly<CaptureConfig> = Object.freeze({
   gridWidth: 128,
@@ -211,6 +267,13 @@ function boundedFraction (value: unknown, path: string, min: number, max: number
   const n = fraction(value, path)
   if (n < min || n > max) throw new ConfigError(path, `must be in ${min}..${max}, got ${describe(value)}`)
   return n
+}
+
+function readTransport (value: unknown, path: string): OutputTransport {
+  if (typeof value !== 'string' || !OUTPUT_TRANSPORTS.includes(value as OutputTransport)) {
+    throw new ConfigError(path, `must be one of ${OUTPUT_TRANSPORTS.join(', ')}, got ${describe(value)}`)
+  }
+  return value as OutputTransport
 }
 
 function readWireFormat (value: unknown, path: string): WireFormat {
@@ -372,7 +435,35 @@ export function parseEngineConfig (value: unknown): EngineConfig {
   const format = outputRaw.format === undefined
     ? DEFAULT_OUTPUT.format
     : readWireFormat(outputRaw.format, 'output.format')
-  const output: OutputConfig = { format }
+  const transport = outputRaw.transport === undefined
+    ? DEFAULT_OUTPUT.transport
+    : readTransport(outputRaw.transport, 'output.transport')
+  const output: OutputConfig = { transport, format }
+
+  if (transport === 'serial') {
+    // A host on a serial transport is a setting that does nothing, which is how
+    // someone ends up staring at an address they are sure they typed correctly.
+    if (outputRaw.host !== undefined) throw new ConfigError('output.host', 'is only used by the network transports')
+    if (outputRaw.segment !== undefined) throw new ConfigError('output.segment', 'is only used by WLED')
+  } else {
+    const host = outputRaw.host
+    if (typeof host !== 'string' || host.trim() === '') {
+      throw new ConfigError('output.host', `must be a non-empty address for the ${transport} transport, got ${describe(host)}`)
+    }
+    output.host = host.trim()
+    if (transport === 'wled') {
+      output.segment = outputRaw.segment === undefined ? 0 : integer(outputRaw.segment, 'output.segment', 0)
+    } else if (outputRaw.segment !== undefined) {
+      throw new ConfigError('output.segment', 'is only used by WLED')
+    }
+  }
+
+  // WLED speaks its own JSON and never sees one of our wire formats. Letting the
+  // two be set independently would put a format in the panel that the device
+  // cannot receive, which reads as a setting that is quietly ignored.
+  if (transport === 'wled' && outputRaw.format !== undefined && outputRaw.format !== 'Afx') {
+    throw new ConfigError('output.format', 'is not used by WLED, which has its own JSON protocol')
+  }
   if (outputRaw.calibration !== undefined) {
     if (format !== 'Awa') {
       // Silently dropping it would leave someone staring at a white balance

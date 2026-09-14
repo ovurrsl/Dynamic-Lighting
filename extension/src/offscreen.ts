@@ -4,14 +4,22 @@ import { DEFAULT_ENGINE_CONFIG, parseEngineConfig, resolveLayout, type EngineCon
 import { allocLinearGrid, createRgbaDecoder } from '#lib/engine/decode'
 import { createColorOrder, type ColorOrderStage } from '#lib/engine/order'
 import { createPattern, parsePatternSpec, type Pattern } from '#lib/engine/patterns'
-import { HEADER_SIZE, encodeAda, encodeAfx, encodeAwa, frameSize } from '#lib/engine/protocol'
 import { createSampler, type Sampler } from '#lib/engine/sample'
-import { createLoopbackSink, createSerialWriter, type LoopbackSink, type SerialWriter } from '#lib/engine/serial'
+import { createFrameEncoder, type FrameEncoder } from '#lib/engine/encode'
+import { createSocketSink, createWledSink } from '#lib/engine/net'
+import {
+  createBytesSink,
+  createFrameWriter,
+  createLoopbackSink,
+  type FrameSink,
+  type FrameWriter,
+  type LoopbackSink
+} from '#lib/engine/sink'
+import { wledUrl } from '#lib/engine/wled'
 import { createSmoother, type Smoother } from '#lib/engine/smooth'
 import { createArrivalMeter, createValueMeter } from '#lib/engine/stats'
 import { NO_BORDER, allocLedColors, type Border, type LedColors } from '#lib/engine/types'
 import { isMessage, type EngineState, type EngineStats, type LinkMode, type Message } from '#lib/extension/messages'
-import { encodeLinear16, encodeLinear8 } from '#lib/light'
 
 /**
  * The engine host: the whole pipeline, in the one document Chrome never
@@ -134,22 +142,14 @@ interface Stages {
   order: ColorOrderStage
   smoother: Smoother
   target: LedColors
-  /** One wire buffer; the payload is encoded into it in place. */
-  wire: Uint8Array
-  wirePayload: Uint8Array
+  /** Colours to bytes, in the configured format; owned by lib/engine/encode. */
+  encoder: FrameEncoder
 }
 
 function build (config: EngineConfig): Stages {
   const layout = resolveLayout(config)
   const leds = layout.length
   const { gridWidth, gridHeight } = config.capture
-  const format = config.output.format
-  const calibrated = format === 'Awa' && config.output.calibration !== undefined
-  const wire = new Uint8Array(frameSize(format, leds, calibrated))
-  // Afx carries six bytes per LED, Ada and Awa three. The payload view is sized
-  // to the format so `encodeLinear16`/`encodeLinear8` write in place and the
-  // 120 Hz path stays allocation-free whichever format is chosen.
-  const payloadBytes = leds * (format === 'Afx' ? 6 : 3)
   const canvas = new OffscreenCanvas(gridWidth, gridHeight)
   return {
     config,
@@ -168,8 +168,13 @@ function build (config: EngineConfig): Stages {
     }),
     smoother: createSmoother({ mode: 'asymmetric', count: leds, outputHz: OUTPUT_HZ }, clock),
     target: allocLedColors(leds),
-    wire,
-    wirePayload: wire.subarray(HEADER_SIZE, HEADER_SIZE + payloadBytes)
+    encoder: createFrameEncoder(
+      // WLED never sees one of our wire formats; it gets JSON from its own sink.
+      // The encoder still exists so the loopback has something to parse.
+      config.output.transport === 'wled' ? 'Afx' : config.output.format,
+      leds,
+      config.output.format === 'Awa' ? config.output.calibration : undefined
+    )
   }
 }
 
@@ -184,26 +189,94 @@ function applyConfig (value: unknown): void {
   const config = parseEngineConfig(value)
   const next = build(config)
   next.sampler.setBorder(border)
+  const outputChanged = JSON.stringify(stages.config.output) !== JSON.stringify(config.output)
+  const ledsChanged = stages.leds !== next.leds
   stages = next
+  // The sink holds the encoder it was built with, so an output change - or a
+  // layout change, which changes the LED count and therefore the frame - would
+  // otherwise be accepted by the panel and silently not reach the device.
+  if (outputChanged || ledsChanged) relink()
+}
+
+/**
+ * Rebuilds the output for the configuration now in `stages`.
+ *
+ * An open serial port whose transport has not changed is kept and only the sink
+ * around it is rebuilt: closing and reopening a working port costs a visible
+ * gap on the strip, and nothing about the port itself depends on the encoder.
+ */
+function relink (): void {
+  const writerHandle = portWriter
+  if (stages.config.output.transport === 'serial' && writerHandle !== null) {
+    useSink(
+      createBytesSink({
+        kind: 'serial',
+        label: portLabel ?? 'serial',
+        encoder: stages.encoder,
+        transport: { write: (bytes: Uint8Array) => writerHandle.write(bytes) }
+      }),
+      'port',
+      portLabel
+    )
+    return
+  }
+  // The loopback's encoder is part of the configuration too - it is what proves
+  // the framing - so it is rebuilt rather than left parsing the old format.
+  loopback = createLoopbackSink({ encoder: stages.encoder })
+  void closePort().then(() => connectLink()).catch(() => { useLoopback() })
 }
 
 // ---------------------------------------------------------------------------
-// The link: a paired Web Serial port when there is one, the loopback otherwise.
+// The link: whichever sink the configuration asks for, the loopback otherwise.
 // ---------------------------------------------------------------------------
 
+/**
+ * The output used to be "a Web Serial port, or the loopback". It is now
+ * whichever `FrameSink` the configuration names, and the engine no longer knows
+ * what a serial port is: it hands colours to a writer and the sink decides what
+ * a device receives.
+ *
+ * The loopback is never merely a placeholder. It runs the real encoder through
+ * the real parser, so "no device" still measures the pipeline - which is how
+ * every number in the panel was obtained before any hardware existed.
+ */
 let linkMode: LinkMode = 'none'
-let loopback: LoopbackSink = createLoopbackSink()
-let writer: SerialWriter = createSerialWriter(loopback)
+let loopback: LoopbackSink = createLoopbackSink({ encoder: stagesEncoder() })
+let sink: FrameSink = loopback
+let writer: FrameWriter = createFrameWriter(loopback)
 let port: SerialPort | null = null
 let portWriter: WritableStreamDefaultWriter<Uint8Array> | null = null
 let portLabel: string | undefined
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
+/** The encoder the current configuration implies; read lazily to avoid an init cycle. */
+function stagesEncoder (): FrameEncoder {
+  return stages.encoder
+}
+
 function useLoopback (): void {
-  loopback = createLoopbackSink()
-  writer = createSerialWriter(loopback)
+  loopback = createLoopbackSink({ encoder: stages.encoder })
+  sink = loopback
+  writer = createFrameWriter(loopback)
   linkMode = 'loopback'
   portLabel = undefined
+}
+
+/** Replaces the sink, closing whatever was there. Never leaves the engine without one. */
+function useSink (next: FrameSink, mode: LinkMode, label?: string): void {
+  const previous = sink
+  sink = next
+  linkMode = mode
+  portLabel = label
+  writer = createFrameWriter(next, { onError: (error) => { void onLinkError(error) } })
+  if (previous !== next && previous !== loopback) void previous.close().catch(() => { /* already gone */ })
+}
+
+async function onLinkError (error: unknown): Promise<void> {
+  lastError = `${linkMode}: ${error instanceof Error ? error.message : String(error)}`
+  // A serial port that errors is gone and has to be reopened. The network sinks
+  // reconnect on their own, so an error there is reported and nothing else.
+  if (linkMode === 'port') await dropPort(error)
 }
 
 async function closePort (): Promise<void> {
@@ -217,15 +290,58 @@ async function closePort (): Promise<void> {
 }
 
 /**
+ * Builds the sink the configuration asks for.
+ *
+ * Serial first, because it is what most rigs are and it needs no network, no
+ * address and no second device. The two network transports exist because on iOS
+ * there is no Web Serial, no WebUSB, no WebHID and no Web Bluetooth, so a
+ * captured frame there has nowhere else to go.
+ */
+async function connectLink (): Promise<void> {
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  const output = stages.config.output
+  if (output.transport !== 'serial') {
+    await closePort()
+    const host = output.host
+    if (host === undefined || host.trim() === '') {
+      lastError = 'ağ çıkışı için adres girilmedi'
+      useLoopback()
+      return
+    }
+    try {
+      useSink(
+        output.transport === 'wled'
+          ? createWledSink({ url: wledUrl(host), leds: stages.leds, segment: output.segment ?? 0 })
+          : createSocketSink({ url: socketUrl(host), encoder: stages.encoder }),
+        output.transport,
+        host
+      )
+    } catch (error) {
+      lastError = `${output.transport}: ${error instanceof Error ? error.message : String(error)}`
+      useLoopback()
+    }
+    return
+  }
+  await connectSerial()
+}
+
+/** Our own firmware's endpoint, from whatever address the user typed. */
+function socketUrl (host: string): string {
+  const trimmed = host.trim()
+  if (trimmed.startsWith('ws://') || trimmed.startsWith('wss://')) return trimmed
+  const bare = trimmed.replace(/^https?:\/\//, '').replace(/\/+$/, '')
+  return `${trimmed.startsWith('https://') ? 'wss' : 'ws'}://${bare}`
+}
+
+/**
  * Opens the first port the user paired from the popup. The permission belongs
  * to the extension origin, so getPorts() here sees what requestPort() granted
  * there. No port means loopback: the pipeline runs and is measured either way.
  */
 async function connectSerial (): Promise<void> {
-  if (reconnectTimer !== null) {
-    clearTimeout(reconnectTimer)
-    reconnectTimer = null
-  }
   if (port !== null) return
   const ports = await navigator.serial.getPorts()
   const next = ports[0]
@@ -240,9 +356,17 @@ async function connectSerial (): Promise<void> {
     port = next
     portWriter = w
     const info = next.getInfo()
-    portLabel = `${(info.usbVendorId ?? 0).toString(16).padStart(4, '0')}:${(info.usbProductId ?? 0).toString(16).padStart(4, '0')}`
-    linkMode = 'port'
-    writer = createSerialWriter({ write: (bytes) => w.write(bytes) }, { onError: (error) => { void dropPort(error) } })
+    const label = `${(info.usbVendorId ?? 0).toString(16).padStart(4, '0')}:${(info.usbProductId ?? 0).toString(16).padStart(4, '0')}`
+    useSink(
+      createBytesSink({
+        kind: 'serial',
+        label,
+        encoder: stages.encoder,
+        transport: { write: (bytes: Uint8Array) => w.write(bytes) }
+      }),
+      'port',
+      label
+    )
     next.addEventListener('disconnect', () => { void dropPort(new Error('port disconnected')) }, { once: true })
   } catch (error) {
     lastError = `seri port: ${error instanceof Error ? error.message : String(error)}`
@@ -262,7 +386,7 @@ function scheduleReconnect (): void {
   if (reconnectTimer !== null || state !== 'running') return
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
-    void connectSerial()
+    void connectLink()
   }, RECONNECT_MS)
 }
 
@@ -394,7 +518,7 @@ function startPattern (spec: unknown): void {
   const s = stages
   pattern = createPattern(parsed, s.leds, clock)
   state = 'running'
-  void connectSerial()
+  void connectLink()
   patternTimer = setInterval(emitPattern, Math.round(1000 / OUTPUT_HZ))
   reportTimer = setInterval(report, REPORT_MS)
   emitPattern()
@@ -408,7 +532,7 @@ function emitPattern (): void {
   const now = clock()
   p.render(s.target, now)
   outputs.mark(now)
-  writer.send(encodeFrame(s, s.target))
+  writer.send(s.target)
 }
 
 /** Everything both sources share: start the clocks, the link and the pump. */
@@ -431,7 +555,7 @@ async function begin (open: () => Promise<MediaStreamTrack>): Promise<void> {
     state = 'running'
     tickTimer = setInterval(tick, TICK_MS)
     reportTimer = setInterval(report, REPORT_MS)
-    void connectSerial()
+    void connectLink()
     void pump(video)
     report()
   } catch (error) {
@@ -560,40 +684,13 @@ function tick (): void {
   const out = s.smoother.tick(now)
   if (out === null) return
   outputs.mark(now)
-  // The channel order is the last thing before the bytes: everything above it,
-  // the corner calibration included, works in real colours.
+  // The channel order is the last thing the engine does: everything above it,
+  // the corner calibration included, works in real colours. What those colours
+  // become on the wire is the sink's business, not this file's.
   s.order.apply(out)
-  writer.send(encodeFrame(s, out))
+  writer.send(out)
 }
 
-/**
- * Colours to a frame on the wire, in whichever format is configured.
- *
- * 'Afx' is ours and the only one that carries the 16-bit linear precision the
- * engine works in. The other two exist so AmbiFlux drives hardware somebody
- * already owns: 'Awa' and 'Ada' are Adalight, which is what HyperSerialESP32,
- * HyperSerialWLED and every stock Adalight FastLED sketch speak. That is the
- * difference between "works with your strip" and "reflash your board first".
- *
- * Linear 8-bit rather than sRGB 8-bit for those two, deliberately: an Adalight
- * sketch writes the byte straight to the LED library, and a WS2812's brightness
- * follows PWM duty, which follows the byte. Gamma-encoding here would be applied
- * a second time by the physics and come out roughly squared - the same mistake
- * the port plan catalogues in Hyperion's own pipeline.
- */
-function encodeFrame (s: Stages, colors: LedColors): Uint8Array {
-  switch (s.config.output.format) {
-    case 'Afx':
-      encodeLinear16(colors, s.wirePayload)
-      return encodeAfx(s.wirePayload, s.wire)
-    case 'Awa':
-      encodeLinear8(colors, s.wirePayload)
-      return encodeAwa(s.wirePayload, s.config.output.calibration, s.wire)
-    case 'Ada':
-      encodeLinear8(colors, s.wirePayload)
-      return encodeAda(s.wirePayload, s.wire)
-  }
-}
 
 /**
  * Why a capture ended.
@@ -628,13 +725,11 @@ function stop (reason: StopReason = 'user'): void {
   if (state !== 'error') state = 'idle'
   // One black frame so the strip does not hold the last picture; the port
   // stays open for the next session.
-  if (linkMode === 'port') {
-    const s = stages
-    s.wirePayload.fill(0)
-    // Through the same encoder as every other frame: a black frame in the wrong
-    // format is a frame the strip ignores, and the strip then holds the last
-    // picture - which is exactly what this line exists to prevent.
-    writer.send(encodeFrame(s, s.target.fill(0)))
+  // One black frame so the strip does not hold the last picture. Through the
+  // same sink as every other frame, and for every real link rather than only a
+  // serial one: a WLED left on the last frame is just as stuck.
+  if (linkMode !== 'none' && linkMode !== 'loopback') {
+    writer.send(stages.target.fill(0))
   }
   report()
 }
@@ -644,7 +739,7 @@ function report (): void {
   const o = outputs.snapshot(clock())
   const p = processTimes.snapshot()
   const w = writer.stats()
-  const l = loopback.stats()
+  const l = loopback.loopback()
   const settings = track?.getSettings()
   const stats: EngineStats = {
     state,
@@ -667,9 +762,16 @@ function report (): void {
       written: w.written,
       dropped: w.dropped,
       errors: w.errors,
+      // Loopback-only counters. They stay at their last values on a real link
+      // rather than being reset, because a user who switches from loopback to a
+      // device should still be able to read what the loopback proved.
       accepted: l.accepted,
       rejected: l.rejected,
-      ...(portLabel !== undefined ? { port: portLabel } : {})
+      ...(portLabel !== undefined ? { port: portLabel } : {}),
+      // Whatever this transport counts for itself: bytes on a serial port,
+      // reconnects and drops on a socket. The panel shows them without knowing
+      // which sink produced them.
+      detail: sink.stats()
     },
     border: { unknown: border.unknown, topBottom: border.topBottom, leftRight: border.leftRight },
     ...(settings !== undefined && settings.width !== undefined && settings.height !== undefined

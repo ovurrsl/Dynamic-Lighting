@@ -1,6 +1,6 @@
 // lib/light.ts
-function srgbToLinear(channel) {
-  return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+function srgbToLinear(channel2) {
+  return channel2 <= 0.04045 ? channel2 / 12.92 : ((channel2 + 0.055) / 1.055) ** 2.4;
 }
 function buildSrgbToLinearLut() {
   const lut = new Float32Array(256);
@@ -880,7 +880,11 @@ function requireOrder(order) {
 
 // lib/engine/config.ts
 var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
-var DEFAULT_OUTPUT = Object.freeze({ format: "Afx" });
+var OUTPUT_TRANSPORTS = Object.freeze(["serial", "websocket", "wled"]);
+var DEFAULT_OUTPUT = Object.freeze({
+  transport: "serial",
+  format: "Afx"
+});
 var DEFAULT_CAPTURE = Object.freeze({
   gridWidth: 128,
   gridHeight: 72,
@@ -935,6 +939,12 @@ function boundedFraction(value, path, min, max, fallback) {
   const n = fraction(value, path);
   if (n < min || n > max) throw new ConfigError(path, `must be in ${min}..${max}, got ${describe(value)}`);
   return n;
+}
+function readTransport(value, path) {
+  if (typeof value !== "string" || !OUTPUT_TRANSPORTS.includes(value)) {
+    throw new ConfigError(path, `must be one of ${OUTPUT_TRANSPORTS.join(", ")}, got ${describe(value)}`);
+  }
+  return value;
 }
 function readWireFormat(value, path) {
   if (typeof value !== "string" || !WIRE_FORMATS.includes(value)) {
@@ -1072,7 +1082,26 @@ function parseEngineConfig(value) {
   }
   const outputRaw = raw.output === void 0 ? {} : object(raw.output, "config.output");
   const format = outputRaw.format === void 0 ? DEFAULT_OUTPUT.format : readWireFormat(outputRaw.format, "output.format");
-  const output = { format };
+  const transport = outputRaw.transport === void 0 ? DEFAULT_OUTPUT.transport : readTransport(outputRaw.transport, "output.transport");
+  const output = { transport, format };
+  if (transport === "serial") {
+    if (outputRaw.host !== void 0) throw new ConfigError("output.host", "is only used by the network transports");
+    if (outputRaw.segment !== void 0) throw new ConfigError("output.segment", "is only used by WLED");
+  } else {
+    const host = outputRaw.host;
+    if (typeof host !== "string" || host.trim() === "") {
+      throw new ConfigError("output.host", `must be a non-empty address for the ${transport} transport, got ${describe(host)}`);
+    }
+    output.host = host.trim();
+    if (transport === "wled") {
+      output.segment = outputRaw.segment === void 0 ? 0 : integer(outputRaw.segment, "output.segment", 0);
+    } else if (outputRaw.segment !== void 0) {
+      throw new ConfigError("output.segment", "is only used by WLED");
+    }
+  }
+  if (transport === "wled" && outputRaw.format !== void 0 && outputRaw.format !== "Afx") {
+    throw new ConfigError("output.format", "is not used by WLED, which has its own JSON protocol");
+  }
   if (outputRaw.calibration !== void 0) {
     if (format !== "Awa") {
       throw new ConfigError("output.calibration", `is only carried by the Awa format, not ${format}`);
@@ -1263,12 +1292,12 @@ function parsePatternSpec(value) {
     if (typeof colour !== "object" || colour === null) throw new TypeError("patterns: color must be an object");
     const channels = ["r", "g", "b"];
     const parsed = { r: 0, g: 0, b: 0 };
-    for (const channel of channels) {
-      const v = colour[channel];
+    for (const channel2 of channels) {
+      const v = colour[channel2];
       if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 1) {
-        throw new RangeError(`patterns: color.${channel} must be a number in 0..1, got ${String(v)}`);
+        throw new RangeError(`patterns: color.${channel2} must be a number in 0..1, got ${String(v)}`);
       }
-      parsed[channel] = v;
+      parsed[channel2] = v;
     }
     spec.color = parsed;
   }
@@ -1287,280 +1316,6 @@ var WIZARD_COLORS = Object.freeze({
   green: Object.freeze({ r: 0, g: 1, b: 0 }),
   blue: Object.freeze({ r: 0, g: 0, b: 1 })
 });
-
-// lib/engine/protocol.ts
-var HEADER_SIZE = 6;
-var TRAILER_SIZE = 3;
-var CALIBRATION_SIZE = 4;
-var MAX_LEDS = 65536;
-var BYTES_PER_LED = Object.freeze({ Ada: 3, Awa: 3, Afx: 6 });
-var MAGIC_A = 65;
-var MAGIC_ADA_1 = 100;
-var MAGIC_ADA_2 = 97;
-var MAGIC_AWA_1 = 119;
-var MAGIC_AWA_2 = 97;
-var MAGIC_AWA_2_CALIBRATED = 65;
-var MAGIC_AFX_1 = 102;
-var MAGIC_AFX_2 = 120;
-var HEADER_XOR = 85;
-var FLETCHER_ESCAPE = 65;
-var FLETCHER_ESCAPED = 170;
-function fletcherInto(bytes, start, end, out, at) {
-  let fletcher1 = 0;
-  let fletcher2 = 0;
-  let fletcherExt = 0;
-  let position = 0;
-  for (let i = start; i < end; i++) {
-    const b = bytes[i];
-    fletcherExt = (fletcherExt + (b ^ position)) % 255;
-    position = position + 1 & 255;
-    fletcher1 = (fletcher1 + b) % 255;
-    fletcher2 = (fletcher2 + fletcher1) % 255;
-  }
-  out[at] = fletcher1;
-  out[at + 1] = fletcher2;
-  out[at + 2] = fletcherExt !== FLETCHER_ESCAPE ? fletcherExt : FLETCHER_ESCAPED;
-}
-function frameSize(kind, count, calibrated = false) {
-  const body = HEADER_SIZE + count * BYTES_PER_LED[kind];
-  switch (kind) {
-    case "Ada":
-      return body;
-    case "Awa":
-      return body + (calibrated ? CALIBRATION_SIZE : 0) + TRAILER_SIZE;
-    case "Afx":
-      return body + TRAILER_SIZE;
-  }
-}
-function encodeAda(rgb8, out) {
-  const count = validatePayload("Ada", rgb8);
-  const frame = prepareOut("Ada", out, frameSize("Ada", count));
-  placePayload(frame, rgb8);
-  writeHeader(frame, MAGIC_ADA_1, MAGIC_ADA_2, count);
-  return frame;
-}
-function encodeAwa(rgb8, calibration, out) {
-  const count = validatePayload("Awa", rgb8);
-  const calibrated = calibration !== void 0;
-  if (calibrated) validateCalibration(calibration);
-  const frame = prepareOut("Awa", out, frameSize("Awa", count, calibrated));
-  placePayload(frame, rgb8);
-  writeHeader(frame, MAGIC_AWA_1, calibrated ? MAGIC_AWA_2_CALIBRATED : MAGIC_AWA_2, count);
-  let end = HEADER_SIZE + rgb8.length;
-  if (calibrated) {
-    frame[end] = calibration.limit;
-    frame[end + 1] = calibration.red;
-    frame[end + 2] = calibration.green;
-    frame[end + 3] = calibration.blue;
-    end += CALIBRATION_SIZE;
-  }
-  fletcherInto(frame, HEADER_SIZE, end, frame, end);
-  return frame;
-}
-function encodeAfx(linear16be, out) {
-  const count = validatePayload("Afx", linear16be);
-  const frame = prepareOut("Afx", out, frameSize("Afx", count));
-  placePayload(frame, linear16be);
-  writeHeader(frame, MAGIC_AFX_1, MAGIC_AFX_2, count);
-  const end = HEADER_SIZE + linear16be.length;
-  fletcherInto(frame, HEADER_SIZE, end, frame, end);
-  return frame;
-}
-function writeHeader(frame, magic1, magic2, count) {
-  const encoded = count - 1;
-  const hi = encoded >> 8;
-  const lo = encoded & 255;
-  frame[0] = MAGIC_A;
-  frame[1] = magic1;
-  frame[2] = magic2;
-  frame[3] = hi;
-  frame[4] = lo;
-  frame[5] = hi ^ lo ^ HEADER_XOR;
-}
-function placePayload(frame, payload) {
-  if (payload.buffer === frame.buffer && payload.byteOffset === frame.byteOffset + HEADER_SIZE) return;
-  frame.set(payload, HEADER_SIZE);
-}
-function validatePayload(kind, payload) {
-  const stride = BYTES_PER_LED[kind];
-  if (payload.length === 0 || payload.length % stride !== 0) {
-    throw new RangeError(`protocol: ${kind} payload must be a non-empty multiple of ${stride} bytes, got ${payload.length}`);
-  }
-  const count = payload.length / stride;
-  if (count > MAX_LEDS) throw new RangeError(`protocol: ${kind} carries at most ${MAX_LEDS} LEDs, got ${count}`);
-  return count;
-}
-function validateCalibration(calibration) {
-  for (const key of ["limit", "red", "green", "blue"]) {
-    const v = calibration[key];
-    if (!Number.isInteger(v) || v < 0 || v > 255) {
-      throw new RangeError(`protocol: calibration ${key} must be an integer in 0..255, got ${v}`);
-    }
-  }
-}
-function prepareOut(kind, out, size) {
-  if (out === void 0) return new Uint8Array(size);
-  if (out.length < size) throw new RangeError(`protocol: ${kind} frame needs ${size} bytes, output holds ${out.length}`);
-  return out.length === size ? out : out.subarray(0, size);
-}
-var MAGIC0 = 0;
-var MAGIC1 = 1;
-var MAGIC2 = 2;
-var HI = 3;
-var LO = 4;
-var CHK = 5;
-var PAYLOAD = 6;
-var CALIB = 7;
-var TRAILER = 8;
-var FrameParser = class {
-  stats = { frames: 0, resyncs: 0, badChecksum: 0, countMismatch: 0 };
-  maxLeds;
-  state = MAGIC0;
-  kind = "Ada";
-  calibrated = false;
-  hi = 0;
-  lo = 0;
-  count = 0;
-  /** Payload bytes; `need` adds the calibration bytes, which share `scratch`. */
-  payloadLength = 0;
-  need = 0;
-  filled = 0;
-  trailerAt = 0;
-  /**
-   * Reused across frames and grown to the largest frame seen; the copy handed
-   * out in `Frame.payload` is the one allocation per frame.
-   */
-  scratch = new Uint8Array(108 * 6 + CALIBRATION_SIZE);
-  expected = new Uint8Array(TRAILER_SIZE);
-  constructor(options = {}) {
-    const maxLeds = options.maxLeds ?? MAX_LEDS;
-    if (!Number.isInteger(maxLeds) || maxLeds < 1 || maxLeds > MAX_LEDS) {
-      throw new RangeError(`protocol: maxLeds must be an integer 1..${MAX_LEDS}, got ${maxLeds}`);
-    }
-    this.maxLeds = maxLeds;
-  }
-  /** Back to hunting for magic; keeps the statistics. For a reopened port. */
-  reset() {
-    this.state = MAGIC0;
-  }
-  push(chunk) {
-    const frames = [];
-    let i = 0;
-    while (i < chunk.length) {
-      if (this.state === PAYLOAD || this.state === CALIB) {
-        const stop2 = this.state === PAYLOAD ? this.payloadLength : this.need;
-        const take = Math.min(stop2 - this.filled, chunk.length - i);
-        this.scratch.set(chunk.subarray(i, i + take), this.filled);
-        this.filled += take;
-        i += take;
-        if (this.filled < stop2) break;
-        if (this.state === PAYLOAD) {
-          if (this.kind === "Ada") {
-            frames.push(this.emit());
-            this.state = MAGIC0;
-          } else {
-            this.state = this.calibrated ? CALIB : TRAILER;
-          }
-        } else {
-          this.state = TRAILER;
-        }
-        if (this.state === TRAILER) {
-          fletcherInto(this.scratch, 0, this.need, this.expected, 0);
-          this.trailerAt = 0;
-        }
-        continue;
-      }
-      const b = chunk[i];
-      i++;
-      switch (this.state) {
-        case MAGIC0:
-          if (b === MAGIC_A) this.state = MAGIC1;
-          break;
-        case MAGIC1:
-          if (b === MAGIC_ADA_1) this.kind = "Ada";
-          else if (b === MAGIC_AWA_1) this.kind = "Awa";
-          else if (b === MAGIC_AFX_1) this.kind = "Afx";
-          else {
-            this.resync(b);
-            break;
-          }
-          this.state = MAGIC2;
-          break;
-        case MAGIC2:
-          if (this.kind === "Awa" && (b === MAGIC_AWA_2 || b === MAGIC_AWA_2_CALIBRATED)) {
-            this.calibrated = b === MAGIC_AWA_2_CALIBRATED;
-            this.state = HI;
-          } else if (this.kind === "Ada" && b === MAGIC_ADA_2 || this.kind === "Afx" && b === MAGIC_AFX_2) {
-            this.calibrated = false;
-            this.state = HI;
-          } else {
-            this.resync(b);
-          }
-          break;
-        case HI:
-          this.hi = b;
-          this.state = LO;
-          break;
-        case LO:
-          this.lo = b;
-          this.state = CHK;
-          break;
-        case CHK:
-          if (b !== (this.hi ^ this.lo ^ HEADER_XOR)) {
-            this.stats.countMismatch++;
-            this.resync(b);
-            break;
-          }
-          this.count = (this.hi << 8 | this.lo) + 1;
-          if (this.count > this.maxLeds) {
-            this.stats.countMismatch++;
-            this.resync(b);
-            break;
-          }
-          this.payloadLength = this.count * BYTES_PER_LED[this.kind];
-          this.need = this.payloadLength + (this.calibrated ? CALIBRATION_SIZE : 0);
-          if (this.scratch.length < this.need) this.scratch = new Uint8Array(this.need);
-          this.filled = 0;
-          this.state = PAYLOAD;
-          break;
-        case TRAILER:
-          if (b !== this.expected[this.trailerAt]) {
-            this.stats.badChecksum++;
-            this.resync(b);
-            break;
-          }
-          if (++this.trailerAt === TRAILER_SIZE) {
-            frames.push(this.emit());
-            this.state = MAGIC0;
-          }
-          break;
-      }
-    }
-    return frames;
-  }
-  resync(b) {
-    this.stats.resyncs++;
-    this.state = b === MAGIC_A ? MAGIC1 : MAGIC0;
-  }
-  emit() {
-    this.stats.frames++;
-    const payload = this.scratch.slice(0, this.payloadLength);
-    if (!this.calibrated) return { kind: this.kind, count: this.count, payload };
-    const at = this.payloadLength;
-    const s = this.scratch;
-    return {
-      kind: this.kind,
-      count: this.count,
-      payload,
-      calibration: {
-        limit: s[at],
-        red: s[at + 1],
-        green: s[at + 2],
-        blue: s[at + 3]
-      }
-    };
-  }
-};
 
 // lib/engine/sample.ts
 var SAMPLE_MODES = Object.freeze([
@@ -1996,34 +1751,536 @@ function validateRect(rect, led) {
   return Object.freeze({ xMin: rect.xMin, xMax: rect.xMax, yMin: rect.yMin, yMax: rect.yMax });
 }
 
-// lib/engine/serial.ts
-function createSerialWriter(sink, options = {}) {
+// lib/engine/protocol.ts
+var HEADER_SIZE = 6;
+var TRAILER_SIZE = 3;
+var CALIBRATION_SIZE = 4;
+var MAX_LEDS = 65536;
+var BYTES_PER_LED = Object.freeze({ Ada: 3, Awa: 3, Afx: 6 });
+var MAGIC_A = 65;
+var MAGIC_ADA_1 = 100;
+var MAGIC_ADA_2 = 97;
+var MAGIC_AWA_1 = 119;
+var MAGIC_AWA_2 = 97;
+var MAGIC_AWA_2_CALIBRATED = 65;
+var MAGIC_AFX_1 = 102;
+var MAGIC_AFX_2 = 120;
+var HEADER_XOR = 85;
+var FLETCHER_ESCAPE = 65;
+var FLETCHER_ESCAPED = 170;
+function fletcherInto(bytes, start, end, out, at) {
+  let fletcher1 = 0;
+  let fletcher2 = 0;
+  let fletcherExt = 0;
+  let position = 0;
+  for (let i = start; i < end; i++) {
+    const b = bytes[i];
+    fletcherExt = (fletcherExt + (b ^ position)) % 255;
+    position = position + 1 & 255;
+    fletcher1 = (fletcher1 + b) % 255;
+    fletcher2 = (fletcher2 + fletcher1) % 255;
+  }
+  out[at] = fletcher1;
+  out[at + 1] = fletcher2;
+  out[at + 2] = fletcherExt !== FLETCHER_ESCAPE ? fletcherExt : FLETCHER_ESCAPED;
+}
+function frameSize(kind, count, calibrated = false) {
+  const body = HEADER_SIZE + count * BYTES_PER_LED[kind];
+  switch (kind) {
+    case "Ada":
+      return body;
+    case "Awa":
+      return body + (calibrated ? CALIBRATION_SIZE : 0) + TRAILER_SIZE;
+    case "Afx":
+      return body + TRAILER_SIZE;
+  }
+}
+function encodeAda(rgb8, out) {
+  const count = validatePayload("Ada", rgb8);
+  const frame = prepareOut("Ada", out, frameSize("Ada", count));
+  placePayload(frame, rgb8);
+  writeHeader(frame, MAGIC_ADA_1, MAGIC_ADA_2, count);
+  return frame;
+}
+function encodeAwa(rgb8, calibration, out) {
+  const count = validatePayload("Awa", rgb8);
+  const calibrated = calibration !== void 0;
+  if (calibrated) validateCalibration(calibration);
+  const frame = prepareOut("Awa", out, frameSize("Awa", count, calibrated));
+  placePayload(frame, rgb8);
+  writeHeader(frame, MAGIC_AWA_1, calibrated ? MAGIC_AWA_2_CALIBRATED : MAGIC_AWA_2, count);
+  let end = HEADER_SIZE + rgb8.length;
+  if (calibrated) {
+    frame[end] = calibration.limit;
+    frame[end + 1] = calibration.red;
+    frame[end + 2] = calibration.green;
+    frame[end + 3] = calibration.blue;
+    end += CALIBRATION_SIZE;
+  }
+  fletcherInto(frame, HEADER_SIZE, end, frame, end);
+  return frame;
+}
+function encodeAfx(linear16be, out) {
+  const count = validatePayload("Afx", linear16be);
+  const frame = prepareOut("Afx", out, frameSize("Afx", count));
+  placePayload(frame, linear16be);
+  writeHeader(frame, MAGIC_AFX_1, MAGIC_AFX_2, count);
+  const end = HEADER_SIZE + linear16be.length;
+  fletcherInto(frame, HEADER_SIZE, end, frame, end);
+  return frame;
+}
+function writeHeader(frame, magic1, magic2, count) {
+  const encoded = count - 1;
+  const hi = encoded >> 8;
+  const lo = encoded & 255;
+  frame[0] = MAGIC_A;
+  frame[1] = magic1;
+  frame[2] = magic2;
+  frame[3] = hi;
+  frame[4] = lo;
+  frame[5] = hi ^ lo ^ HEADER_XOR;
+}
+function placePayload(frame, payload) {
+  if (payload.buffer === frame.buffer && payload.byteOffset === frame.byteOffset + HEADER_SIZE) return;
+  frame.set(payload, HEADER_SIZE);
+}
+function validatePayload(kind, payload) {
+  const stride = BYTES_PER_LED[kind];
+  if (payload.length === 0 || payload.length % stride !== 0) {
+    throw new RangeError(`protocol: ${kind} payload must be a non-empty multiple of ${stride} bytes, got ${payload.length}`);
+  }
+  const count = payload.length / stride;
+  if (count > MAX_LEDS) throw new RangeError(`protocol: ${kind} carries at most ${MAX_LEDS} LEDs, got ${count}`);
+  return count;
+}
+function validateCalibration(calibration) {
+  for (const key of ["limit", "red", "green", "blue"]) {
+    const v = calibration[key];
+    if (!Number.isInteger(v) || v < 0 || v > 255) {
+      throw new RangeError(`protocol: calibration ${key} must be an integer in 0..255, got ${v}`);
+    }
+  }
+}
+function prepareOut(kind, out, size) {
+  if (out === void 0) return new Uint8Array(size);
+  if (out.length < size) throw new RangeError(`protocol: ${kind} frame needs ${size} bytes, output holds ${out.length}`);
+  return out.length === size ? out : out.subarray(0, size);
+}
+var MAGIC0 = 0;
+var MAGIC1 = 1;
+var MAGIC2 = 2;
+var HI = 3;
+var LO = 4;
+var CHK = 5;
+var PAYLOAD = 6;
+var CALIB = 7;
+var TRAILER = 8;
+var FrameParser = class {
+  stats = { frames: 0, resyncs: 0, badChecksum: 0, countMismatch: 0 };
+  maxLeds;
+  state = MAGIC0;
+  kind = "Ada";
+  calibrated = false;
+  hi = 0;
+  lo = 0;
+  count = 0;
+  /** Payload bytes; `need` adds the calibration bytes, which share `scratch`. */
+  payloadLength = 0;
+  need = 0;
+  filled = 0;
+  trailerAt = 0;
+  /**
+   * Reused across frames and grown to the largest frame seen; the copy handed
+   * out in `Frame.payload` is the one allocation per frame.
+   */
+  scratch = new Uint8Array(108 * 6 + CALIBRATION_SIZE);
+  expected = new Uint8Array(TRAILER_SIZE);
+  constructor(options = {}) {
+    const maxLeds = options.maxLeds ?? MAX_LEDS;
+    if (!Number.isInteger(maxLeds) || maxLeds < 1 || maxLeds > MAX_LEDS) {
+      throw new RangeError(`protocol: maxLeds must be an integer 1..${MAX_LEDS}, got ${maxLeds}`);
+    }
+    this.maxLeds = maxLeds;
+  }
+  /** Back to hunting for magic; keeps the statistics. For a reopened port. */
+  reset() {
+    this.state = MAGIC0;
+  }
+  push(chunk) {
+    const frames = [];
+    let i = 0;
+    while (i < chunk.length) {
+      if (this.state === PAYLOAD || this.state === CALIB) {
+        const stop2 = this.state === PAYLOAD ? this.payloadLength : this.need;
+        const take = Math.min(stop2 - this.filled, chunk.length - i);
+        this.scratch.set(chunk.subarray(i, i + take), this.filled);
+        this.filled += take;
+        i += take;
+        if (this.filled < stop2) break;
+        if (this.state === PAYLOAD) {
+          if (this.kind === "Ada") {
+            frames.push(this.emit());
+            this.state = MAGIC0;
+          } else {
+            this.state = this.calibrated ? CALIB : TRAILER;
+          }
+        } else {
+          this.state = TRAILER;
+        }
+        if (this.state === TRAILER) {
+          fletcherInto(this.scratch, 0, this.need, this.expected, 0);
+          this.trailerAt = 0;
+        }
+        continue;
+      }
+      const b = chunk[i];
+      i++;
+      switch (this.state) {
+        case MAGIC0:
+          if (b === MAGIC_A) this.state = MAGIC1;
+          break;
+        case MAGIC1:
+          if (b === MAGIC_ADA_1) this.kind = "Ada";
+          else if (b === MAGIC_AWA_1) this.kind = "Awa";
+          else if (b === MAGIC_AFX_1) this.kind = "Afx";
+          else {
+            this.resync(b);
+            break;
+          }
+          this.state = MAGIC2;
+          break;
+        case MAGIC2:
+          if (this.kind === "Awa" && (b === MAGIC_AWA_2 || b === MAGIC_AWA_2_CALIBRATED)) {
+            this.calibrated = b === MAGIC_AWA_2_CALIBRATED;
+            this.state = HI;
+          } else if (this.kind === "Ada" && b === MAGIC_ADA_2 || this.kind === "Afx" && b === MAGIC_AFX_2) {
+            this.calibrated = false;
+            this.state = HI;
+          } else {
+            this.resync(b);
+          }
+          break;
+        case HI:
+          this.hi = b;
+          this.state = LO;
+          break;
+        case LO:
+          this.lo = b;
+          this.state = CHK;
+          break;
+        case CHK:
+          if (b !== (this.hi ^ this.lo ^ HEADER_XOR)) {
+            this.stats.countMismatch++;
+            this.resync(b);
+            break;
+          }
+          this.count = (this.hi << 8 | this.lo) + 1;
+          if (this.count > this.maxLeds) {
+            this.stats.countMismatch++;
+            this.resync(b);
+            break;
+          }
+          this.payloadLength = this.count * BYTES_PER_LED[this.kind];
+          this.need = this.payloadLength + (this.calibrated ? CALIBRATION_SIZE : 0);
+          if (this.scratch.length < this.need) this.scratch = new Uint8Array(this.need);
+          this.filled = 0;
+          this.state = PAYLOAD;
+          break;
+        case TRAILER:
+          if (b !== this.expected[this.trailerAt]) {
+            this.stats.badChecksum++;
+            this.resync(b);
+            break;
+          }
+          if (++this.trailerAt === TRAILER_SIZE) {
+            frames.push(this.emit());
+            this.state = MAGIC0;
+          }
+          break;
+      }
+    }
+    return frames;
+  }
+  resync(b) {
+    this.stats.resyncs++;
+    this.state = b === MAGIC_A ? MAGIC1 : MAGIC0;
+  }
+  emit() {
+    this.stats.frames++;
+    const payload = this.scratch.slice(0, this.payloadLength);
+    if (!this.calibrated) return { kind: this.kind, count: this.count, payload };
+    const at = this.payloadLength;
+    const s = this.scratch;
+    return {
+      kind: this.kind,
+      count: this.count,
+      payload,
+      calibration: {
+        limit: s[at],
+        red: s[at + 1],
+        green: s[at + 2],
+        blue: s[at + 3]
+      }
+    };
+  }
+};
+
+// lib/engine/encode.ts
+function createFrameEncoder(format, leds, calibration) {
+  if (!Number.isInteger(leds) || leds < 1) {
+    throw new RangeError(`encode: leds must be a positive integer, got ${String(leds)}`);
+  }
+  if (format !== "Afx" && format !== "Awa" && format !== "Ada") {
+    throw new RangeError(`encode: unknown format ${String(format)}`);
+  }
+  if (calibration !== void 0 && format !== "Awa") {
+    throw new RangeError(`encode: calibration is only carried by Awa, not ${format}`);
+  }
+  const calibrated = calibration !== void 0;
+  const frameBytes = frameSize(format, leds, calibrated);
+  const wire = new Uint8Array(frameBytes);
+  const payloadBytes = leds * (format === "Afx" ? 6 : 3);
+  const payload = wire.subarray(HEADER_SIZE, HEADER_SIZE + payloadBytes);
+  return {
+    format,
+    leds,
+    frameBytes,
+    encode(colors) {
+      if (colors.length < leds * 3) {
+        throw new RangeError(`encode: colors holds ${colors.length} floats, needs ${leds * 3}`);
+      }
+      const view = colors.length === leds * 3 ? colors : colors.subarray(0, leds * 3);
+      switch (format) {
+        case "Afx":
+          encodeLinear16(view, payload);
+          return encodeAfx(payload, wire);
+        case "Awa":
+          encodeLinear8(view, payload);
+          return encodeAwa(payload, calibration, wire);
+        case "Ada":
+          encodeLinear8(view, payload);
+          return encodeAda(payload, wire);
+      }
+    }
+  };
+}
+
+// lib/engine/wled.ts
+var HEX = "0123456789ABCDEF";
+function channel(value) {
+  return Math.round(clamp01(value) * 255);
+}
+function hex2(value) {
+  return `${HEX[value >> 4]}${HEX[value & 15]}`;
+}
+function wledFrame(colors, leds, options = {}) {
+  if (!Number.isInteger(leds) || leds < 1) {
+    throw new RangeError(`wled: leds must be a positive integer, got ${String(leds)}`);
+  }
+  if (colors.length < leds * 3) {
+    throw new RangeError(`wled: colors holds ${colors.length} floats, needs ${leds * 3}`);
+  }
+  const segment = options.segment ?? 0;
+  if (!Number.isInteger(segment) || segment < 0) {
+    throw new RangeError(`wled: segment must be a non-negative integer, got ${String(segment)}`);
+  }
+  const encoding = options.encoding ?? "hex";
+  const parts = [];
+  for (let led = 0; led < leds; led++) {
+    const at = led * 3;
+    const r = channel(colors[at] ?? 0);
+    const g = channel(colors[at + 1] ?? 0);
+    const b = channel(colors[at + 2] ?? 0);
+    parts.push(encoding === "hex" ? `"${hex2(r)}${hex2(g)}${hex2(b)}"` : `[${r},${g},${b}]`);
+  }
+  const body = `{"id":${segment},"i":[${parts.join(",")}]}`;
+  return options.keepOn === false ? `{"seg":${body}}` : `{"on":true,"seg":${body}}`;
+}
+function wledHello(options = {}) {
+  const segment = options.segment ?? 0;
+  return `{"on":true,"live":true,"seg":{"id":${segment}}}`;
+}
+function wledUrl(host) {
+  const trimmed = host.trim();
+  if (trimmed === "") throw new RangeError("wled: host is empty");
+  if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) {
+    return trimmed.endsWith("/ws") ? trimmed : `${trimmed.replace(/\/+$/, "")}/ws`;
+  }
+  const bare = trimmed.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  const scheme = trimmed.startsWith("https://") ? "wss" : "ws";
+  return `${scheme}://${bare}/ws`;
+}
+
+// lib/engine/net.ts
+var SOCKET_OPEN = 1;
+var DEFAULT_RETRY_MS = 1e3;
+var DEFAULT_MAX_RETRY_MS = 15e3;
+function defaultFactory(url) {
+  const ctor = globalThis.WebSocket;
+  if (ctor === void 0) throw new Error("net: this runtime has no WebSocket");
+  return new ctor(url);
+}
+function connect(options, onOpen) {
+  const factory = options.factory ?? defaultFactory;
+  const baseRetry = options.retryMs ?? DEFAULT_RETRY_MS;
+  const maxRetry = options.maxRetryMs ?? DEFAULT_MAX_RETRY_MS;
+  const schedule = options.schedule ?? ((fn, ms) => setTimeout(fn, ms));
+  const cancel = options.cancel ?? ((handle) => {
+    clearTimeout(handle);
+  });
+  let socket = null;
+  let state2 = "idle";
+  let retryMs = baseRetry;
+  let timer = null;
+  let closed = false;
+  let connects = 0;
+  let drops = 0;
+  let closes = 0;
+  const send = (data) => {
+    if (socket === null || socket.readyState !== SOCKET_OPEN) {
+      drops++;
+      return false;
+    }
+    try {
+      socket.send(data);
+      return true;
+    } catch {
+      drops++;
+      return false;
+    }
+  };
+  const open = () => {
+    if (closed) return;
+    state2 = "connecting";
+    let next;
+    try {
+      next = factory(options.url);
+    } catch {
+      state2 = "error";
+      retry();
+      return;
+    }
+    socket = next;
+    next.binaryType = "arraybuffer";
+    next.onopen = () => {
+      state2 = "open";
+      connects++;
+      retryMs = baseRetry;
+      onOpen?.(send);
+    };
+    next.onclose = () => {
+      closes++;
+      if (socket === next) socket = null;
+      if (!closed) {
+        state2 = "connecting";
+        retry();
+      }
+    };
+    next.onerror = () => {
+      state2 = "error";
+    };
+  };
+  const retry = () => {
+    if (closed || timer !== null) return;
+    const delay = retryMs;
+    retryMs = Math.min(maxRetry, retryMs * 2);
+    timer = schedule(() => {
+      timer = null;
+      open();
+    }, delay);
+  };
+  open();
+  return {
+    state: () => state2,
+    send,
+    close() {
+      closed = true;
+      state2 = "idle";
+      if (timer !== null) {
+        cancel(timer);
+        timer = null;
+      }
+      const current = socket;
+      socket = null;
+      try {
+        current?.close();
+      } catch {
+      }
+    },
+    stats: () => ({ connects, drops, closes, retryMs })
+  };
+}
+function createSocketSink(options) {
+  const { encoder } = options;
+  const link = connect(options);
+  let sent = 0;
+  return {
+    kind: "websocket",
+    describe: () => options.url,
+    state: link.state,
+    async send(colors) {
+      const frame = encoder.encode(colors);
+      if (link.send(frame.slice())) sent++;
+    },
+    async close() {
+      link.close();
+    },
+    stats: () => ({ sent, format: encoder.format, ...link.stats() })
+  };
+}
+function createWledSink(options) {
+  const { leds } = options;
+  if (!Number.isInteger(leds) || leds < 1) {
+    throw new RangeError(`net: leds must be a positive integer, got ${String(leds)}`);
+  }
+  const link = connect(options, (send) => {
+    send(wledHello(options));
+  });
+  let sent = 0;
+  let bytes = 0;
+  return {
+    kind: "wled",
+    describe: () => options.url,
+    state: link.state,
+    async send(colors) {
+      const text = wledFrame(colors, leds, options);
+      if (link.send(text)) {
+        sent++;
+        bytes += text.length;
+      }
+    },
+    async close() {
+      link.close();
+    },
+    stats: () => ({ sent, bytes, leds, ...link.stats() })
+  };
+}
+
+// lib/engine/sink.ts
+function createFrameWriter(sink2, options = {}) {
   const onError = options.onError;
-  let owned = new Uint8Array(0);
+  let owned = new Float32Array(0);
   let inFlight = null;
   let written = 0;
   let dropped = 0;
   let errors = 0;
-  let bytes = 0;
   return {
-    send(frame) {
+    send(colors) {
       if (inFlight !== null) {
         dropped++;
         return false;
       }
-      if (owned.length !== frame.length) owned = new Uint8Array(frame.length);
-      owned.set(frame);
-      const length = frame.length;
+      if (owned.length !== colors.length) owned = new Float32Array(colors.length);
+      owned.set(colors);
       let pending;
       try {
-        pending = sink.write(owned);
+        pending = sink2.send(owned);
       } catch (error) {
         pending = Promise.reject(error);
       }
       inFlight = pending.then(
         () => {
           written++;
-          bytes += length;
         },
         (error) => {
           errors++;
@@ -2035,14 +2292,40 @@ function createSerialWriter(sink, options = {}) {
       return true;
     },
     stats() {
-      return { written, dropped, errors, bytes, inFlight: inFlight !== null };
+      return { written, dropped, errors, inFlight: inFlight !== null };
     },
     idle() {
       return inFlight ?? Promise.resolve();
     }
   };
 }
-function createLoopbackSink(options = {}) {
+function createBytesSink(options) {
+  const { kind, label, encoder, transport } = options;
+  let state2 = "open";
+  let bytes = 0;
+  return {
+    kind,
+    describe: () => label,
+    state: () => state2,
+    async send(colors) {
+      const frame = encoder.encode(colors);
+      try {
+        await transport.write(frame);
+      } catch (error) {
+        state2 = "error";
+        throw error;
+      }
+      bytes += frame.length;
+    },
+    async close() {
+      state2 = "idle";
+      await transport.close?.();
+    },
+    stats: () => ({ bytes, format: encoder.format, frameBytes: encoder.frameBytes })
+  };
+}
+function createLoopbackSink(options) {
+  const { encoder } = options;
   const latencyMs = options.latencyMs ?? 0;
   const wait = options.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const parser = new FrameParser();
@@ -2051,7 +2334,11 @@ function createLoopbackSink(options = {}) {
   let bytes = 0;
   let lastPayload = null;
   return {
-    async write(frame) {
+    kind: "loopback",
+    describe: () => "loopback",
+    state: () => "open",
+    async send(colors) {
+      const frame = encoder.encode(colors);
       bytes += frame.length;
       const frames = parser.push(frame);
       if (frames.length === 0) {
@@ -2062,9 +2349,10 @@ function createLoopbackSink(options = {}) {
       }
       if (latencyMs > 0) await wait(latencyMs);
     },
-    stats() {
-      return { accepted, rejected, bytes, parser: { ...parser.stats }, lastPayload };
-    }
+    async close() {
+    },
+    stats: () => ({ accepted, rejected, bytes }),
+    loopback: () => ({ accepted, rejected, bytes, parser: { ...parser.stats }, lastPayload })
   };
 }
 
@@ -2516,10 +2804,6 @@ function build(config) {
   const layout = resolveLayout(config);
   const leds = layout.length;
   const { gridWidth, gridHeight } = config.capture;
-  const format = config.output.format;
-  const calibrated = format === "Awa" && config.output.calibration !== void 0;
-  const wire = new Uint8Array(frameSize(format, leds, calibrated));
-  const payloadBytes = leds * (format === "Afx" ? 6 : 3);
   const canvas = new OffscreenCanvas(gridWidth, gridHeight);
   return {
     config,
@@ -2538,8 +2822,13 @@ function build(config) {
     }),
     smoother: createSmoother({ mode: "asymmetric", count: leds, outputHz: OUTPUT_HZ }, clock),
     target: allocLedColors(leds),
-    wire,
-    wirePayload: wire.subarray(HEADER_SIZE, HEADER_SIZE + payloadBytes)
+    encoder: createFrameEncoder(
+      // WLED never sees one of our wire formats; it gets JSON from its own sink.
+      // The encoder still exists so the loopback has something to parse.
+      config.output.transport === "wled" ? "Afx" : config.output.format,
+      leds,
+      config.output.format === "Awa" ? config.output.calibration : void 0
+    )
   };
 }
 var stages = build(DEFAULT_ENGINE_CONFIG);
@@ -2547,20 +2836,63 @@ function applyConfig(value) {
   const config = parseEngineConfig(value);
   const next = build(config);
   next.sampler.setBorder(border2);
+  const outputChanged = JSON.stringify(stages.config.output) !== JSON.stringify(config.output);
+  const ledsChanged = stages.leds !== next.leds;
   stages = next;
+  if (outputChanged || ledsChanged) relink();
+}
+function relink() {
+  const writerHandle = portWriter;
+  if (stages.config.output.transport === "serial" && writerHandle !== null) {
+    useSink(
+      createBytesSink({
+        kind: "serial",
+        label: portLabel ?? "serial",
+        encoder: stages.encoder,
+        transport: { write: (bytes) => writerHandle.write(bytes) }
+      }),
+      "port",
+      portLabel
+    );
+    return;
+  }
+  loopback = createLoopbackSink({ encoder: stages.encoder });
+  void closePort().then(() => connectLink()).catch(() => {
+    useLoopback();
+  });
 }
 var linkMode = "none";
-var loopback = createLoopbackSink();
-var writer = createSerialWriter(loopback);
+var loopback = createLoopbackSink({ encoder: stagesEncoder() });
+var sink = loopback;
+var writer = createFrameWriter(loopback);
 var port = null;
 var portWriter = null;
 var portLabel;
 var reconnectTimer = null;
+function stagesEncoder() {
+  return stages.encoder;
+}
 function useLoopback() {
-  loopback = createLoopbackSink();
-  writer = createSerialWriter(loopback);
+  loopback = createLoopbackSink({ encoder: stages.encoder });
+  sink = loopback;
+  writer = createFrameWriter(loopback);
   linkMode = "loopback";
   portLabel = void 0;
+}
+function useSink(next, mode, label) {
+  const previous = sink;
+  sink = next;
+  linkMode = mode;
+  portLabel = label;
+  writer = createFrameWriter(next, { onError: (error) => {
+    void onLinkError(error);
+  } });
+  if (previous !== next && previous !== loopback) void previous.close().catch(() => {
+  });
+}
+async function onLinkError(error) {
+  lastError = `${linkMode}: ${error instanceof Error ? error.message : String(error)}`;
+  if (linkMode === "port") await dropPort(error);
 }
 async function closePort() {
   const w = portWriter;
@@ -2580,11 +2912,41 @@ async function closePort() {
   } catch {
   }
 }
-async function connectSerial() {
+async function connectLink() {
   if (reconnectTimer !== null) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  const output = stages.config.output;
+  if (output.transport !== "serial") {
+    await closePort();
+    const host = output.host;
+    if (host === void 0 || host.trim() === "") {
+      lastError = "a\u011F \xE7\u0131k\u0131\u015F\u0131 i\xE7in adres girilmedi";
+      useLoopback();
+      return;
+    }
+    try {
+      useSink(
+        output.transport === "wled" ? createWledSink({ url: wledUrl(host), leds: stages.leds, segment: output.segment ?? 0 }) : createSocketSink({ url: socketUrl(host), encoder: stages.encoder }),
+        output.transport,
+        host
+      );
+    } catch (error) {
+      lastError = `${output.transport}: ${error instanceof Error ? error.message : String(error)}`;
+      useLoopback();
+    }
+    return;
+  }
+  await connectSerial();
+}
+function socketUrl(host) {
+  const trimmed = host.trim();
+  if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) return trimmed;
+  const bare = trimmed.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  return `${trimmed.startsWith("https://") ? "wss" : "ws"}://${bare}`;
+}
+async function connectSerial() {
   if (port !== null) return;
   const ports = await navigator.serial.getPorts();
   const next = ports[0];
@@ -2599,11 +2961,17 @@ async function connectSerial() {
     port = next;
     portWriter = w;
     const info = next.getInfo();
-    portLabel = `${(info.usbVendorId ?? 0).toString(16).padStart(4, "0")}:${(info.usbProductId ?? 0).toString(16).padStart(4, "0")}`;
-    linkMode = "port";
-    writer = createSerialWriter({ write: (bytes) => w.write(bytes) }, { onError: (error) => {
-      void dropPort(error);
-    } });
+    const label = `${(info.usbVendorId ?? 0).toString(16).padStart(4, "0")}:${(info.usbProductId ?? 0).toString(16).padStart(4, "0")}`;
+    useSink(
+      createBytesSink({
+        kind: "serial",
+        label,
+        encoder: stages.encoder,
+        transport: { write: (bytes) => w.write(bytes) }
+      }),
+      "port",
+      label
+    );
     next.addEventListener("disconnect", () => {
       void dropPort(new Error("port disconnected"));
     }, { once: true });
@@ -2623,7 +2991,7 @@ function scheduleReconnect() {
   if (reconnectTimer !== null || state !== "running") return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    void connectSerial();
+    void connectLink();
   }, RECONNECT_MS);
 }
 async function openCapture() {
@@ -2685,7 +3053,7 @@ function startPattern(spec) {
   const s = stages;
   pattern = createPattern(parsed, s.leds, clock);
   state = "running";
-  void connectSerial();
+  void connectLink();
   patternTimer = setInterval(emitPattern, Math.round(1e3 / OUTPUT_HZ));
   reportTimer = setInterval(report, REPORT_MS);
   emitPattern();
@@ -2698,7 +3066,7 @@ function emitPattern() {
   const now = clock();
   p.render(s.target, now);
   outputs.mark(now);
-  writer.send(encodeFrame(s, s.target));
+  writer.send(s.target);
 }
 async function begin(open) {
   if (state === "running" || state === "starting") stop("restart");
@@ -2716,7 +3084,7 @@ async function begin(open) {
     state = "running";
     tickTimer = setInterval(tick, TICK_MS);
     reportTimer = setInterval(report, REPORT_MS);
-    void connectSerial();
+    void connectLink();
     void pump(video);
     report();
   } catch (error) {
@@ -2821,20 +3189,7 @@ function tick() {
   if (out === null) return;
   outputs.mark(now);
   s.order.apply(out);
-  writer.send(encodeFrame(s, out));
-}
-function encodeFrame(s, colors) {
-  switch (s.config.output.format) {
-    case "Afx":
-      encodeLinear16(colors, s.wirePayload);
-      return encodeAfx(s.wirePayload, s.wire);
-    case "Awa":
-      encodeLinear8(colors, s.wirePayload);
-      return encodeAwa(s.wirePayload, s.config.output.calibration, s.wire);
-    case "Ada":
-      encodeLinear8(colors, s.wirePayload);
-      return encodeAda(s.wirePayload, s.wire);
-  }
+  writer.send(out);
 }
 function stop(reason = "user") {
   if (reason === "lost") captureLost = true;
@@ -2856,10 +3211,8 @@ function stop(reason = "user") {
   track?.stop();
   track = null;
   if (state !== "error") state = "idle";
-  if (linkMode === "port") {
-    const s = stages;
-    s.wirePayload.fill(0);
-    writer.send(encodeFrame(s, s.target.fill(0)));
+  if (linkMode !== "none" && linkMode !== "loopback") {
+    writer.send(stages.target.fill(0));
   }
   report();
 }
@@ -2868,7 +3221,7 @@ function report() {
   const o = outputs.snapshot(clock());
   const p = processTimes.snapshot();
   const w = writer.stats();
-  const l = loopback.stats();
+  const l = loopback.loopback();
   const settings = track?.getSettings();
   const stats = {
     state,
@@ -2891,9 +3244,16 @@ function report() {
       written: w.written,
       dropped: w.dropped,
       errors: w.errors,
+      // Loopback-only counters. They stay at their last values on a real link
+      // rather than being reset, because a user who switches from loopback to a
+      // device should still be able to read what the loopback proved.
       accepted: l.accepted,
       rejected: l.rejected,
-      ...portLabel !== void 0 ? { port: portLabel } : {}
+      ...portLabel !== void 0 ? { port: portLabel } : {},
+      // Whatever this transport counts for itself: bytes on a serial port,
+      // reconnects and drops on a socket. The panel shows them without knowing
+      // which sink produced them.
+      detail: sink.stats()
     },
     border: { unknown: border2.unknown, topBottom: border2.topBottom, leftRight: border2.leftRight },
     ...settings !== void 0 && settings.width !== void 0 && settings.height !== void 0 ? { source: { width: settings.width, height: settings.height, ...settings.frameRate !== void 0 ? { frameRate: settings.frameRate } : {} } } : {},

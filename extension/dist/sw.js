@@ -271,7 +271,11 @@ var PERMUTATIONS = Object.freeze({
 
 // lib/engine/config.ts
 var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
-var DEFAULT_OUTPUT = Object.freeze({ format: "Afx" });
+var OUTPUT_TRANSPORTS = Object.freeze(["serial", "websocket", "wled"]);
+var DEFAULT_OUTPUT = Object.freeze({
+  transport: "serial",
+  format: "Afx"
+});
 var DEFAULT_CAPTURE = Object.freeze({
   gridWidth: 128,
   gridHeight: 72,
@@ -321,6 +325,12 @@ function boundedFraction(value, path, min, max, fallback) {
   const n = fraction(value, path);
   if (n < min || n > max) throw new ConfigError(path, `must be in ${min}..${max}, got ${describe(value)}`);
   return n;
+}
+function readTransport(value, path) {
+  if (typeof value !== "string" || !OUTPUT_TRANSPORTS.includes(value)) {
+    throw new ConfigError(path, `must be one of ${OUTPUT_TRANSPORTS.join(", ")}, got ${describe(value)}`);
+  }
+  return value;
 }
 function readWireFormat(value, path) {
   if (typeof value !== "string" || !WIRE_FORMATS.includes(value)) {
@@ -458,7 +468,26 @@ function parseEngineConfig(value) {
   }
   const outputRaw = raw.output === void 0 ? {} : object(raw.output, "config.output");
   const format = outputRaw.format === void 0 ? DEFAULT_OUTPUT.format : readWireFormat(outputRaw.format, "output.format");
-  const output = { format };
+  const transport = outputRaw.transport === void 0 ? DEFAULT_OUTPUT.transport : readTransport(outputRaw.transport, "output.transport");
+  const output = { transport, format };
+  if (transport === "serial") {
+    if (outputRaw.host !== void 0) throw new ConfigError("output.host", "is only used by the network transports");
+    if (outputRaw.segment !== void 0) throw new ConfigError("output.segment", "is only used by WLED");
+  } else {
+    const host = outputRaw.host;
+    if (typeof host !== "string" || host.trim() === "") {
+      throw new ConfigError("output.host", `must be a non-empty address for the ${transport} transport, got ${describe(host)}`);
+    }
+    output.host = host.trim();
+    if (transport === "wled") {
+      output.segment = outputRaw.segment === void 0 ? 0 : integer(outputRaw.segment, "output.segment", 0);
+    } else if (outputRaw.segment !== void 0) {
+      throw new ConfigError("output.segment", "is only used by WLED");
+    }
+  }
+  if (transport === "wled" && outputRaw.format !== void 0 && outputRaw.format !== "Afx") {
+    throw new ConfigError("output.format", "is not used by WLED, which has its own JSON protocol");
+  }
   if (outputRaw.calibration !== void 0) {
     if (format !== "Awa") {
       throw new ConfigError("output.calibration", `is only carried by the Awa format, not ${format}`);

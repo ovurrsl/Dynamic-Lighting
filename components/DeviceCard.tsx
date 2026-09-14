@@ -5,7 +5,7 @@ import { Button, Card, Surface } from '@heroui/react'
 import { useEngine } from '#components/Engine'
 import { useTranslate } from '#components/Preferences'
 import type { MessageKey } from '#lib/i18n/strings'
-import type { EngineState } from '#lib/extension/messages'
+import type { EngineState, EngineStats } from '#lib/extension/messages'
 
 /**
  * The state and link names are keys, not text: the engine reports an enum and
@@ -23,8 +23,10 @@ const STATE_KEY: Record<EngineState, MessageKey> = {
 const LINK_KEY = {
   none: 'device.link.none',
   loopback: 'device.link.loopback',
-  port: 'device.link.port'
-} as const satisfies Record<string, MessageKey>
+  port: 'device.link.port',
+  websocket: 'device.link.websocket',
+  wled: 'device.link.wled'
+} as const satisfies Record<EngineStats['link']['mode'], MessageKey>
 
 const fmt = (n: number, digits = 1): string => (Number.isFinite(n) ? n.toFixed(digits) : '–')
 
@@ -39,6 +41,7 @@ const fmt = (n: number, digits = 1): string => (Number.isFinite(n) ? n.toFixed(d
 export function DeviceCard () {
   const t = useTranslate()
   const { probe, state, stats, version, reprobe, stop } = useEngine()
+  const detail = describeDetail(stats?.link.detail)
 
   return (
     <Card variant="default">
@@ -92,6 +95,14 @@ export function DeviceCard () {
                 {stats.link.mode === 'loopback' && (
                   <Stat label={t('device.stat.loopback')} value={`${stats.link.accepted} / ${stats.link.rejected}`} />
                 )}
+                {/*
+                  Whatever the transport counts for itself. Rendered generically
+                  on purpose: a socket's reconnects and drops are the numbers
+                  that say "the device is switched off" rather than "the engine
+                  is broken", and a new transport should not need a change here
+                  to be diagnosable.
+                */}
+                {detail !== null && <Stat className="col-span-2 sm:col-span-3" label={t('device.stat.detail')} value={detail} />}
                 {stats.source !== undefined && (
                   <Stat label={t('device.stat.source')} value={`${stats.source.width}×${stats.source.height}`} />
                 )}
@@ -123,9 +134,29 @@ export function DeviceCard () {
   )
 }
 
-function Stat ({ label, value }: { label: string, value: string }) {
+/**
+ * The transport's own counters as one line.
+ *
+ * Booleans are shown as the bare key when true and omitted when false, because
+ * every one of them so far reads that way ("inFlight", "open"), and a column of
+ * `x=false` says nothing a missing entry does not.
+ */
+function describeDetail (detail: EngineStats['link']['detail']): string | null {
+  if (detail === undefined) return null
+  const parts: string[] = []
+  for (const [key, value] of Object.entries(detail)) {
+    if (typeof value === 'boolean') {
+      if (value) parts.push(key)
+    } else {
+      parts.push(`${key}=${typeof value === 'number' ? String(Math.round(value * 100) / 100) : value}`)
+    }
+  }
+  return parts.length === 0 ? null : parts.join(' ')
+}
+
+function Stat ({ label, value, className = '' }: { label: string, value: string, className?: string }) {
   return (
-    <div className="flex justify-between gap-3">
+    <div className={`flex justify-between gap-3 ${className}`}>
       <span className="text-muted">{label}</span>
       <span className="text-right">{value}</span>
     </div>

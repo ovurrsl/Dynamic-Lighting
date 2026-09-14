@@ -82,8 +82,16 @@ export type Message =
 
 export type EngineState = 'idle' | 'starting' | 'running' | 'error'
 
-/** How frames leave the engine. */
-export type LinkMode = 'none' | 'loopback' | 'port'
+/**
+ * How frames leave the engine.
+ *
+ * 'port' is a paired Web Serial port; 'websocket' is our own firmware over a
+ * socket, carrying the same bytes; 'wled' is a WLED device over its own JSON
+ * protocol. The last two exist because a browser on iOS has none of Web Serial,
+ * WebUSB, WebHID or Web Bluetooth, so the network is the only way to a strip
+ * there.
+ */
+export type LinkMode = 'none' | 'loopback' | 'port' | 'websocket' | 'wled'
 
 /**
  * Separate counters, because the stages fail in different ways and a single
@@ -148,8 +156,15 @@ export interface EngineStats {
     /** Loopback only: frames the reference parser accepted / refused. */
     accepted: number
     rejected: number
-    /** `usbVendorId:usbProductId` in hex when a port is open. */
+    /** `usbVendorId:usbProductId` in hex when a port is open, or the host. */
     port?: string
+    /**
+     * Whatever the transport counts for itself - bytes on a serial port,
+     * reconnects and drops on a socket. Open-ended on purpose: the panel shows
+     * these without knowing which sink produced them, so a new transport needs
+     * no change here and no change in the device page.
+     */
+    detail?: Record<string, number | string | boolean>
   }
   /**
    * The test pattern running, if one is. Distinct from `state`, which only says

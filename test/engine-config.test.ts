@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ConfigError, DEFAULT_CAPTURE, DEFAULT_ENGINE_CONFIG, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, type EngineConfig } from '#lib/engine/config'
+import { ConfigError, DEFAULT_CAPTURE, DEFAULT_ENGINE_CONFIG, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, switchTransport, type EngineConfig } from '#lib/engine/config'
 import { DARK_RECT, REFERENCE_LAYOUT, classicLayout, matrixLayout } from '#lib/engine/layout'
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
@@ -227,4 +227,128 @@ test('an old stored config with neither section still loads', () => {
   assert.equal(config.output.format, 'Afx')
   assert.deepEqual(config.capture, DEFAULT_CAPTURE)
   assert.equal(config.colorOrder.order, 'grb')
+})
+
+test('the transport defaults to serial and network transports demand an address', () => {
+  assert.equal(parseEngineConfig(DEFAULT_ENGINE_CONFIG).output.transport, 'serial')
+
+  const ws = parseEngineConfig({
+    ...DEFAULT_ENGINE_CONFIG,
+    output: { transport: 'websocket', host: ' strip.local ', format: 'Afx' }
+  })
+  assert.equal(ws.output.transport, 'websocket')
+  assert.equal(ws.output.host, 'strip.local', 'the address should be trimmed')
+
+  for (const transport of ['websocket', 'wled'] as const) {
+    for (const host of [undefined, '', '   ', 42]) {
+      assert.throws(
+        () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport, host } }),
+        /output.host/,
+        `${transport} accepted ${JSON.stringify(host)}`
+      )
+    }
+  }
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'carrier-pigeon' } }),
+    /output.transport/
+  )
+})
+
+test('settings that would do nothing are refused rather than silently ignored', () => {
+  // This is how someone ends up staring at an address they are sure they typed
+  // correctly, on a transport that never reads it.
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'serial', host: 'strip.local' } }),
+    /only used by the network transports/
+  )
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'serial', segment: 1 } }),
+    /only used by WLED/
+  )
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'websocket', host: 'x', segment: 1 } }),
+    /only used by WLED/
+  )
+  // WLED speaks its own JSON and never sees one of our wire formats.
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'wled', host: 'x', format: 'Awa' } }),
+    /not used by WLED/
+  )
+})
+
+test('a WLED output defaults to segment 0 and accepts another', () => {
+  const zero = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'wled', host: '192.168.1.40' } })
+  assert.equal(zero.output.segment, 0)
+  const two = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'wled', host: 'x', segment: 2 } })
+  assert.equal(two.output.segment, 2)
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'wled', host: 'x', segment: -1 } }),
+    /output.segment/
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Switching transport in the panel.
+// ---------------------------------------------------------------------------
+
+/**
+ * The point of these: the validator refuses a setting that would do nothing, so
+ * a picker that merely changed `transport` would hand the user a config they
+ * cannot apply and did not ask for. Every result below is pushed back through
+ * `parseEngineConfig`, which is the only assertion that actually matters.
+ */
+const withOutput = (output: unknown): unknown => ({ ...clone(DEFAULT_ENGINE_CONFIG), output })
+
+test('switching to a network transport keeps the format and asks only for an address', () => {
+  const next = switchTransport({ transport: 'serial', format: 'Awa' }, 'websocket')
+  assert.equal(next.transport, 'websocket')
+  assert.equal(next.format, 'Awa', 'our firmware over a socket carries the same bytes')
+  assert.equal(next.host, '')
+  // Empty is deliberately INVALID: the panel says "type an address" rather than
+  // inventing one, and an invented address would silently dial the wrong device.
+  assert.throws(() => parseEngineConfig(withOutput(next)), /output.host/)
+  assert.equal(parseEngineConfig(withOutput({ ...next, host: '192.168.1.40' })).output.host, '192.168.1.40')
+})
+
+test('switching to WLED drops the wire format and the calibration the validator refuses', () => {
+  const calibration = { white: 1, limit: 2, red: 3, green: 4, blue: 5 }
+  const next = switchTransport({ transport: 'serial', format: 'Awa', calibration }, 'wled')
+  assert.equal(next.format, 'Afx', 'WLED has its own protocol; Awa would be refused')
+  assert.equal(next.calibration, undefined)
+  assert.equal(next.segment, 0)
+  assert.ok(parseEngineConfig(withOutput({ ...next, host: 'wled.local' })))
+})
+
+test('switching back to serial drops the address and the segment', () => {
+  const next = switchTransport({ transport: 'wled', host: 'wled.local', segment: 3, format: 'Afx' }, 'serial')
+  assert.equal(next.host, undefined)
+  assert.equal(next.segment, undefined)
+  assert.ok(parseEngineConfig(withOutput(next)))
+})
+
+test('the address survives a move between the two network transports', () => {
+  // Someone comparing our firmware against a WLED on the same board should not
+  // have to retype the address.
+  const ws = switchTransport({ transport: 'serial', format: 'Afx' }, 'websocket')
+  const wled = switchTransport({ ...ws, host: '10.0.0.7' }, 'wled')
+  assert.equal(wled.host, '10.0.0.7')
+  assert.equal(switchTransport(wled, 'websocket').host, '10.0.0.7')
+})
+
+test('every transport, from every other, produces something applicable', () => {
+  const starts = [
+    { transport: 'serial', format: 'Afx' },
+    { transport: 'serial', format: 'Awa', calibration: { white: 0, limit: 0, red: 0, green: 0, blue: 0 } },
+    { transport: 'websocket', host: 'strip.local', format: 'Ada' },
+    { transport: 'wled', host: 'wled.local', segment: 2, format: 'Afx' }
+  ] as const
+  for (const from of starts) {
+    for (const to of ['serial', 'websocket', 'wled'] as const) {
+      const next = switchTransport(from, to)
+      // An empty address is the one thing the panel still has to collect; fill
+      // it here so the rest of the shape is what is being asserted.
+      const filled = next.host === '' ? { ...next, host: 'x' } : next
+      assert.ok(parseEngineConfig(withOutput(filled)), `${from.transport} -> ${to}`)
+    }
+  }
 })

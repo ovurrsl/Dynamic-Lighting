@@ -4,13 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Button,
   Card,
+  Input,
   Label,
   ListBox,
   NumberField,
   Select,
   Slider,
   Surface,
-  Switch
+  Switch,
+  TextField
 } from '@heroui/react'
 
 import { LedFrame } from '#components/LedFrame'
@@ -18,12 +20,15 @@ import { useTranslate } from '#components/Preferences'
 import { clearStoredConfig, loadStoredConfig, storeConfig } from '#lib/config-store'
 import {
   DEFAULT_ENGINE_CONFIG,
+  OUTPUT_TRANSPORTS,
   WIRE_FORMATS,
   MATRIX_ENGINE_CONFIG,
   parseEngineConfig,
   resolveLayout,
+  switchTransport,
   type EngineConfig,
   type LayoutConfig,
+  type OutputTransport,
   type WireFormat
 } from '#lib/engine/config'
 import { CORNERS, LAYOUT_DEFAULTS, NO_KEYSTONE, type Corner, type Keystone } from '#lib/engine/layout'
@@ -238,6 +243,7 @@ export function LayoutCard ({
 
   const shown = resolved.ok ? resolved.value : lastGood.current
   const layout = draft.layout
+  const hostMissing = draft.output.transport !== 'serial' && (draft.output.host ?? '').trim() === ''
 
   const patchLayout = useCallback((partial: Partial<LayoutConfig>) => {
     setNotice(null)
@@ -708,6 +714,85 @@ export function LayoutCard ({
         <p className="text-xs text-muted">{t('layout.orderNote')}</p>
 
         {/*
+          How the device is REACHED, above what is put on the wire, because the
+          transport decides whether the format question exists at all: WLED has
+          its own protocol and no wire format to choose.
+
+          The two network transports are not a convenience. On iOS there is no
+          Web Serial, no WebUSB, no WebHID and no Web Bluetooth - all four are
+          Chromium-only and Apple requires WebKit - so a frame captured on an
+          iPhone has nowhere else to go.
+        */}
+        <div className="mt-2">
+          <h3 className="text-sm font-medium">{t('output.transport.title')}</h3>
+          <p className="mt-1 text-xs text-muted">{t('output.transport.description')}</p>
+        </div>
+        <Select
+          className="w-80"
+          value={draft.output.transport}
+          onChange={(value) => {
+            setNotice(null)
+            setDraft((current) => ({ ...current, output: switchTransport(current.output, value as OutputTransport) }))
+          }}
+        >
+          <Label>{t('output.transport')}</Label>
+          <Select.Trigger>
+            <Select.Value />
+            <Select.Indicator />
+          </Select.Trigger>
+          <Select.Popover>
+            <ListBox>
+              {OUTPUT_TRANSPORTS.map((transport) => (
+                <ListBox.Item id={transport} key={transport} textValue={t(`output.transport.${transport}`)}>
+                  {t(`output.transport.${transport}`)}
+                  <ListBox.ItemIndicator />
+                </ListBox.Item>
+              ))}
+            </ListBox>
+          </Select.Popover>
+        </Select>
+        <p className="text-xs text-muted">{t(`output.transportNote.${draft.output.transport}`)}</p>
+
+        {draft.output.transport !== 'serial' && (
+          <>
+            <TextField
+              className="w-80"
+              value={draft.output.host ?? ''}
+              variant="secondary"
+              onChange={(value) => {
+                setNotice(null)
+                // Kept as typed, trimmed by the validator. Trimming on every
+                // keystroke would make a leading space impossible to delete.
+                setDraft((current) => ({ ...current, output: { ...current.output, host: value } }))
+              }}
+            >
+              <Label>{t('output.host')}</Label>
+              <Input placeholder={t('output.host.placeholder')} />
+            </TextField>
+            <p className="text-xs text-muted">
+              {t(draft.output.transport === 'wled' ? 'output.host.note.wled' : 'output.host.note.websocket')}
+            </p>
+          </>
+        )}
+
+        {draft.output.transport === 'wled' && (
+          <>
+            <div className="w-40">
+              <EdgeCount
+                label={t('output.segment')}
+                value={draft.output.segment ?? 0}
+                onChange={(value) => {
+                  setNotice(null)
+                  setDraft((current) => ({ ...current, output: { ...current.output, segment: value } }))
+                }}
+              />
+            </div>
+            <p className="text-xs text-muted">{t('output.segment.note')}</p>
+            <p className="text-xs text-muted">{t('output.wledFormat')}</p>
+          </>
+        )}
+
+        {/*
           The wire format sits with the channel order because both describe how
           the DEVICE is spoken to rather than what the screen looks like. Afx is
           ours; the other two are Adalight, which is what HyperSerialESP32,
@@ -715,6 +800,8 @@ export function LayoutCard ({
           the difference between "works with the strip you already own" and
           "reflash your board first".
         */}
+        {draft.output.transport !== 'wled' && (
+        <>
         <Select
           className="w-80"
           value={draft.output.format}
@@ -725,13 +812,16 @@ export function LayoutCard ({
               // The calibration bytes only exist on Awa; carrying them onto
               // another format is refused by the parser, so they are dropped
               // here rather than turned into an error the user cannot act on.
-              // Awa is the only format that carries the four calibration bytes, so
-              // switching TO it keeps them and switching away drops them. Keeping
-              // `current.output` wholesale would keep the old FORMAT too, which
-              // is the bug this line replaces.
+              // Only the format changes: the transport, host and segment belong to
+              // the output section too and carrying `{ format }` alone would drop
+              // whichever device the user had configured.
+              //
+              // Awa is the only format that carries the four calibration bytes,
+              // so switching away from it drops them rather than sending them
+              // where they cannot be read.
               output: value === 'Awa'
                 ? { ...current.output, format: 'Awa' }
-                : { format: value as WireFormat }
+                : { ...current.output, format: value as WireFormat, calibration: undefined }
             }))
           }}
         >
@@ -752,11 +842,18 @@ export function LayoutCard ({
           </Select.Popover>
         </Select>
         <p className="text-xs text-muted">{t(`output.note.${draft.output.format}`)}</p>
+        </>
+        )}
 
+        {/*
+          An empty address is the expected state the moment a network transport
+          is chosen, so it is said as the next thing to do rather than as the
+          validator's own sentence about `output.host`.
+        */}
         {!resolved.ok && (
           <Surface className="rounded-xl p-3 text-sm text-danger" variant="secondary">
-            {resolved.message}
-            <span className="block text-xs text-muted">{t('layout.lastDrawable')}</span>
+            {hostMissing ? t('output.host.required') : resolved.message}
+            {!hostMissing && <span className="block text-xs text-muted">{t('layout.lastDrawable')}</span>}
           </Surface>
         )}
         {notice !== null && (

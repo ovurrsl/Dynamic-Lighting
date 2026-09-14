@@ -260,13 +260,27 @@ Sıra etkiye göre. **2026-09-14'te yeniden sıralandı:** iOS bulgusu (§3) ç�
 katmanını ve ağ sürücüsünü yukarı taşıdı — bir iPhone ekranı okuyabiliyorsa ama
 şeride ulaşamıyorsa bulgunun hiçbir değeri yok.
 
-1. **Çıkış katmanını soyutla** — `FrameSink` arayüzü; seri port onu zaten
-   uyguluyor. Hem ağ sürücüsünün hem sayfa içi host'un önkoşulu, yani artık
-   ertelenebilir değil.
-2. **Ağ sürücüsü (WLED)** — kendi firmware'imizi zorunlu olmaktan çıkarıyor ve
-   Web Serial'ı olmayan **her** platformu açıyor. iOS'tan bir şeride giden tek
-   yol bu: orada Web Serial, WebUSB, WebHID ve Web Bluetooth'un dördü de yok ve
-   hiçbiri bizim düzeltebileceğimiz bir şey değil.
+1. **Çıkış katmanını soyutla — ✅ 2026-09-14.** `lib/engine/sink.ts`:
+   `FrameSink` **renk alıyor, bayt değil**, çünkü her cihaz bizim baytlarımızı
+   konuşmuyor — WLED'e bir `Afx` karesi vermek, kendi kodlamamızı renklere geri
+   çözüp metin olarak yeniden kodlamak demekti. Kodlama da eklentiden çıkıp
+   test edilen koda taşındı (`lib/engine/encode.ts`). Kuyruk yok: aynı anda tek
+   kare uçuşta, gerisi düşürülüp sayılıyor — bir WiFi takılması bir saniyelik
+   geçmişi teslim etmesin diye, ki bu bir seri porttan daha çok ağda önemli.
+2. **Ağ sürücüsü — ✅ 2026-09-14.** `lib/engine/net.ts` iki sink veriyor:
+   `createSocketSink` **seri portun taşıdığı baytların aynısını** bir
+   WebSocket'e yazıyor (aynı ayrıştırıcı, aynı firmware testleri, yeni protokol
+   yok), `createWledSink` ise WLED'in kendi JSON soketini konuşuyor
+   (`lib/engine/wled.ts`). Soket enjekte ediliyor, bu yüzden bağlanma, yeniden
+   bağlanma, backoff, kapalıyken gönderme ve uçuş ortasında kapanma Node'da
+   sahte bir soketle koşuluyor — gerçek bir cihaza karşı güvenilir biçimde
+   provoke edilemeyecek yollar bunlar. Panel tarafı da bitti: LED donanımı
+   sayfasında taşıma seçici, adres alanı ve WLED segmenti var, cihaz sayfası da
+   taşımanın kendi sayaçlarını (yeniden bağlanma, düşen kare) gösteriyor.
+
+   **Kalan:** firmware'in WebSocket sunucusu — `createSocketSink`'in
+   konuşacağı uç. Ölçülmemiş: WLED'in JSON'la ulaşılabilir kare hızı
+   (`docs/firmware-and-devices.md` N1).
 3. **Motoru host'tan ayır** — Chromium masaüstünde eklenti (kısıtlanmama
    uğruna), diğer her yerde sayfa. `lib/live-sampler.ts` yakalama yarısını
    zaten yapıyor; eksik olan çıkış yarısı ve host seçimi. §3'teki (2) numaralı

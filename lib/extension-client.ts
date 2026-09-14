@@ -152,6 +152,25 @@ export async function selfTestEngine (): Promise<StartOutcome> {
  * the channel-order stage inside the engine - see extension/src/offscreen.ts
  * startPattern for why the last of those is not optional.
  */
+export async function setStripColor (
+  color: { r: number, g: number, b: number },
+  durationMs?: number
+): Promise<StartOutcome> {
+  try {
+    return outcome(await send({ type: 'ambiflux/color', target: 'sw', color, durationMs }))
+  } catch (error) {
+    return { state: 'error', error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export async function clearLayer (priority: number): Promise<StartOutcome> {
+  try {
+    return outcome(await send({ type: 'ambiflux/clear-layer', target: 'sw', priority }))
+  } catch (error) {
+    return { state: 'error', error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 export async function runAudio (spec: AudioSpec, input: AudioInputKind): Promise<StartOutcome> {
   try {
     return outcome(await send({ type: 'ambiflux/audio', target: 'sw', spec, input }))

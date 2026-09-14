@@ -153,6 +153,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         (error: unknown) => sendResponse({ state: engine.state(), error: describe(error) })
       )
       return true
+    case 'ambiflux/color':
+      engine.setColor(message.color, message.durationMs)
+      sendResponse({ state: engine.state() })
+      return false
+    case 'ambiflux/clear-layer':
+      engine.clearLayer(message.priority)
+      sendResponse({ state: engine.state() })
+      return false
     case 'ambiflux/stop':
       stopEngine()
       sendResponse({ state: engine.state() })

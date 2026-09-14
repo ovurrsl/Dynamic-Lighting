@@ -399,8 +399,32 @@ katmanını ve ağ sürücüsünü yukarı taşıdı — bir iPhone ekranı okuy
 
    Gerçek tarayıcıda uçtan uca doğrulandı (Chrome'un sahte cihazı): listele →
    seç → uygula → başlat, 1920×1080, 0 düşen kare.
-7. **Öncelik katmanları** — ön plan/arka plan efekti, kaynak öncelikleri.
-   Efektler ve ses gelince bunlar anlam kazanıyor.
+7. **Öncelik katmanları — ✅ 2026-09-14.** Muxer (`lib/engine/priority.ts`)
+   yazıldığından beri duruyordu ve 48 testi vardı; eksik olan onu besleyecek
+   bir şeydi. Artık yakalama, efekt, ses, test deseni ve renk birer KATMAN:
+
+   | Öncelik | Kaynak | Neden orada |
+   |---|---|---|
+   | 50 | test deseni | bir ölçüm; her şeyin önüne geçmeli |
+   | 100 | süreli renk | bir kesinti; üstüne efekt oturamamalı |
+   | 150 | efekt | |
+   | 160 | ses | |
+   | 200 | süresiz renk | bir ZEMİN; efektten sonra dönülecek yer |
+   | 240 | yakalama | açık bıraktığın şey, gerisi "bunun yerine" |
+
+   **Bir efekti başlatmak artık yakalamayı durdurmuyor** — üstünde duruyor, ve
+   efekti durdurmak yakalamayı geri veriyor. Süreli renk kendiliğinden sona
+   erip altındakini ortaya çıkarıyor.
+
+   Renk/süreli renk ayrımı yazarken yanlış yaptığım ve testin yakaladığı
+   yer: `setColor`'a süre verilip verilmemesi PRİORİTEYİ belirliyor, çağıran
+   bir sayı seçmiyor. "Şeridi sıcak beyaza ayarla" efektten sonra dönülecek
+   bir zemin; "kırmızı yak" bir efektin içinden geçmesi gereken bir bildirim.
+   Aynı çağrı ikisini de yapıyor.
+
+   Arayüz: Genel bakış sayfasında katman listesi, kazanan işaretli, her
+   katmanda kendi durdurma düğmesi. Renk sayfası da gerçekten şeride
+   bağlandı — "Şeride gönder" ve "5 saniye yak".
 8. **Olaylar** — sekme gizlenince duraklat, zamanlanmış aç/kapat.
 9. **Çoklu örnek** — mimariyi en çok değiştiren madde, o yüzden en sonda.
 

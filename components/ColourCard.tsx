@@ -1,7 +1,8 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import {
+  Button,
   Card,
   ColorArea,
   ColorField,
@@ -16,6 +17,7 @@ import {
   type Color
 } from '@heroui/react'
 
+import { useEngine } from '#components/Engine'
 import { useEngineConfig } from '#components/EngineConfig'
 import { LedFrame } from '#components/LedFrame'
 import { useTranslate } from '#components/Preferences'
@@ -65,8 +67,30 @@ function StripPreview ({ config, color, brightness }: { config: EngineConfig, co
 export function ColourCard ({ enabled }: { enabled: boolean }) {
   const t = useTranslate()
   const { config } = useEngineConfig()
+  const { probe, host, pageCapable, setColor: sendColor } = useEngine()
   const [color, setColor] = useState<Color>(parseColor('#3b82f6'))
   const [brightness, setBrightness] = useState(70)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const hosted = host === 'page' ? pageCapable : probe === null || probe.available === true
+
+  /**
+   * Sends the picked colour, at the picked brightness.
+   *
+   * Scaled in sRGB, because that is the space the slider lives in and the
+   * engine decodes what it is given: scaling after the decode would make 50%
+   * brightness look like about 22%, which is not what the slider promises.
+   */
+  const send = useCallback(async (durationMs?: number) => {
+    const rgb = toRgb8(color)
+    const scale = brightness / 100
+    const result = await sendColor({
+      r: Math.round(rgb.r * scale),
+      g: Math.round(rgb.g * scale),
+      b: Math.round(rgb.b * scale)
+    }, durationMs)
+    setNotice(result.error ?? t('colour.sent'))
+  }, [brightness, color, sendColor, t])
 
   // What would go on the wire. Shown because it is the fastest way to see that
   // the linear decode is doing something: a mid sRGB value lands far lower in
@@ -140,6 +164,28 @@ export function ColourCard ({ enabled }: { enabled: boolean }) {
               <Slider.Thumb />
             </Slider.Track>
           </Slider>
+
+          {/*
+            The two buttons are the same call with and without a duration, and
+            that difference is the whole of priority layers in one place: one is
+            a base that effects run on top of, the other cuts through them and
+            gives them back on its own.
+          */}
+          {hosted
+            ? (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  <Button onPress={() => { void send() }}>{t('colour.send')}</Button>
+                  <Button variant="secondary" onPress={() => { void send(5000) }}>{t('colour.flash')}</Button>
+                </div>
+                <p className="text-xs text-muted">{t('colour.sendNote')}</p>
+                <p className="text-xs text-muted">{t('colour.flashNote')}</p>
+                {notice !== null && (
+                  <Surface className="rounded-xl p-3 text-sm" variant="secondary">{notice}</Surface>
+                )}
+              </>
+              )
+            : <p className="text-xs text-muted">{t('colour.needEngine')}</p>}
         </Card.Content>
       </Card>
 

@@ -12,6 +12,7 @@ import { BoardNetworkCard } from '#components/BoardNetworkCard'
 import { DeviceCard } from '#components/DeviceCard'
 import { EffectsCard } from '#components/EffectsCard'
 import { HostCard } from '#components/HostCard'
+import { LayersCard } from '#components/LayersCard'
 import { useEngine } from '#components/Engine'
 import { EngineConfigProvider, useEngineConfig } from '#components/EngineConfig'
 import { GuideCard } from '#components/GuideCard'
@@ -50,7 +51,7 @@ import type { MessageKey } from '#lib/i18n/strings'
 
 function sectionBody (id: SectionId, enabled: boolean) {
   switch (id) {
-    case 'overview': return <OverviewCard />
+    case 'overview': return <OverviewSection />
     case 'colour': return <ColourCard enabled={enabled} />
     case 'layout': return <LayoutSection />
     case 'capture': return <CaptureCard />
@@ -82,6 +83,22 @@ function DeviceSection () {
       <DeviceCard />
       <BoardNetworkCard />
       <CapabilitiesCard />
+    </div>
+  )
+}
+
+/**
+ * The overview: what the engine is doing, and what the strip is showing.
+ *
+ * The layer list sits here rather than on the device page because it is a
+ * CONTROL, not a diagnostic - it is where someone stops the effect that is
+ * covering their capture.
+ */
+function OverviewSection () {
+  return (
+    <div className="flex flex-col gap-6">
+      <OverviewCard />
+      <LayersCard />
     </div>
   )
 }

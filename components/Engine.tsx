@@ -10,11 +10,13 @@ import type { PatternSpec } from '#lib/engine/patterns'
 import {
   fetchStatus,
   probeExtension,
+  clearLayer as clearLayerInExtension,
   runAudio as runAudioInExtension,
   runEffect as runEffectInExtension,
   runPattern as runPatternInExtension,
   saveConfig as saveConfigInExtension,
   selfTestEngine,
+  setStripColor,
   sendControl as sendControlToExtension,
   startEngine,
   stopEngine,
@@ -68,6 +70,13 @@ export interface Engine {
   runEffect: (spec: EffectSpec) => Promise<StartOutcome>
   /** Starts an audio visualiser on the microphone or on tab audio. */
   runAudio: (spec: AudioSpec, input: AudioInputKind) => Promise<StartOutcome>
+  /**
+   * Drives the strip with one colour. With a duration it interrupts whatever
+   * is showing and expires on its own; without, it is a base underneath it.
+   */
+  setColor: (color: { r: number, g: number, b: number }, durationMs?: number) => Promise<StartOutcome>
+  /** Drops one priority layer, revealing whatever was under it. */
+  clearLayer: (priority: number) => Promise<StartOutcome>
   /** Applies a configuration to whichever host is live. Null on success. */
   saveConfig: (config: EngineConfig) => Promise<string | null>
   /** One AxC control frame to the board. Null on success. */
@@ -250,6 +259,24 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
     }
   ), [run, pageEngine])
 
+  const setColor = useCallback((color: { r: number, g: number, b: number }, durationMs?: number) => run(
+    async () => await setStripColor(color, durationMs),
+    async () => {
+      const { engine } = pageEngine()
+      engine.setColor(color, durationMs)
+      return { state: engine.state() }
+    }
+  ), [run, pageEngine])
+
+  const clearLayer = useCallback((priority: number) => run(
+    async () => await clearLayerInExtension(priority),
+    async () => {
+      const { engine } = pageEngine()
+      engine.clearLayer(priority)
+      return { state: engine.state() }
+    }
+  ), [run, pageEngine])
+
   const stop = useCallback(async () => {
     if (hostRef.current === 'page') pageRef.current?.engine.stop()
     else await stopEngine()
@@ -279,10 +306,12 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
   const value = useMemo<Engine>(
     () => ({
       probe, host, pageCapable, setHost, state, stats, version, busy,
-      reprobe, start, selfTest, stop, runPattern, runEffect, runAudio, saveConfig, sendControl
+      reprobe, start, selfTest, stop, runPattern, runEffect, runAudio, setColor, clearLayer,
+      saveConfig, sendControl
     }),
     [probe, host, pageCapable, setHost, state, stats, version, busy,
-      reprobe, start, selfTest, stop, runPattern, runEffect, runAudio, saveConfig, sendControl]
+      reprobe, start, selfTest, stop, runPattern, runEffect, runAudio, setColor, clearLayer,
+      saveConfig, sendControl]
   )
 
   return <EngineContext value={value}>{children}</EngineContext>

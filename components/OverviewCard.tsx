@@ -40,6 +40,7 @@ export function OverviewCard () {
   // "nothing can run": a browser that can capture a screen can run the engine
   // in this page, and on iOS that is the only route there has ever been.
   const hosted = host === 'page' ? pageCapable : installed
+  const capturing = stats?.layers?.some((layer) => layer.component === 'capture') ?? false
 
   const act = (call: () => Promise<{ state: string, error?: string }>, pending: string) => {
     setNotice(pending)
@@ -117,7 +118,15 @@ export function OverviewCard () {
 
               {stats !== null && (
                 <Surface className="grid grid-cols-2 gap-x-6 gap-y-1 rounded-xl p-3 font-mono text-xs sm:grid-cols-4" variant="secondary">
-                  <Stat label={t('device.stat.delivered')} value={`${fmt(stats.deliveredFps)} fps`} />
+                  {/*
+                    Only while something is actually being captured.
+                    `deliveredFps` counts CAPTURE arrivals, so beside a running
+                    effect it reads a perfectly correct 0.0 - which looks like a
+                    fault next to a strip that is visibly animating.
+                  */}
+                  {capturing && (
+                    <Stat label={t('device.stat.delivered')} value={`${fmt(stats.deliveredFps)} fps`} />
+                  )}
                   <Stat label={t('device.stat.output')} value={`${fmt(stats.outputFps)} fps`} />
                   <Stat label={t('layout.leds', { count: stats.leds })} value="" />
                   <Stat

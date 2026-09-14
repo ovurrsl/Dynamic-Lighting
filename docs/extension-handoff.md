@@ -632,6 +632,7 @@ tüm zinciri** ölçen tek yöntem bu.
 | (x) | Efekt motoru | **yapıldı** — `lib/engine/effects.ts`, yedi efekt, kendi paneli, CPython yok |
 | (y) | Ses görselleştirici | **yapıldı** — `lib/engine/audio{,-input}.ts`, üç görselleştirici, iki giriş, iOS dahil |
 | (z) | Yakalama kartı girişi | **yapıldı** — `lib/engine/devices.ts`, kaynak seçici Yakalama sayfasında |
+| (aa) | Öncelik katmanları | **yapıldı** — muxer motora bağlandı, katman listesi Genel bakış'ta, renk kaynağı gerçek |
 
 ### Sıra değiştirmek isteyen için
 

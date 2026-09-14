@@ -2534,6 +2534,278 @@ var WIZARD_COLORS = Object.freeze({
   blue: Object.freeze({ r: 0, g: 0, b: 1 })
 });
 
+// lib/engine/priority.ts
+var HIGHEST_PRIORITY = 1;
+var BACKGROUND_PRIORITY = 255;
+var DEFAULT_STREAM_TIMEOUT_MS = Object.freeze({ capture: 5e3, video: 1e3, audio: 1e3 });
+var PriorityMuxer = class {
+  /** Hyperion's `_activeInputs`, keyed by priority. */
+  inputs = /* @__PURE__ */ new Map();
+  listeners = /* @__PURE__ */ new Set();
+  /** The pinned priority, or null for automatic selection. */
+  manual = null;
+  /** What the last tick() decided; what the LEDs are showing. */
+  winner = null;
+  /** True while listeners are being called; a tick() from inside one is refused. */
+  dispatching = false;
+  clock;
+  // Not a parameter property: Node's type stripping runs the tests without a
+  // build step and cannot lower that syntax (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX).
+  constructor(clock2) {
+    this.clock = clock2;
+  }
+  /**
+   * Adds a source at `priority`, replacing any source already there.
+   *
+   * A new source is registered but not a candidate until its first setInput():
+   * Hyperion marks it TIMEOUT_NOT_ACTIVE_PRIO (:214) and skips it during
+   * selection (:423-427), and so do we, because a grabber that has registered
+   * but not yet produced a frame has nothing the LEDs could show.
+   *
+   * Replacing is a deliberate departure. Hyperion re-registering an occupied
+   * priority keeps the previous input and timeout (:199-227, "Reuse input"), so
+   * a new effect started on the priority of an old one shows the old effect's
+   * last frame until the new one delivers. Here the slot starts clean: the old
+   * input is gone, and `registeredAt` and the duration restart from now. The
+   * constraint that buys: re-register and the first setInput() must land in
+   * the same frame, or the next-best source shows for the frame in between.
+   */
+  register(priority, options) {
+    checkPriority(priority);
+    checkComponent(options.component);
+    checkSpan("timeoutMs", options.timeoutMs);
+    checkSpan("durationMs", options.durationMs);
+    const now = this.clock();
+    this.inputs.set(priority, {
+      priority,
+      component: options.component,
+      registeredAt: now,
+      expiresAt: options.durationMs === void 0 ? Infinity : now + options.durationMs,
+      timeoutMs: options.timeoutMs ?? Infinity,
+      input: null,
+      lastSeen: now
+    });
+  }
+  /**
+   * Delivers input to a registered source and restarts its inactivity clock,
+   * as every frame in Hyperion restarts the grabber's inactive timer
+   * (CaptureCont.cpp:121-122).
+   *
+   * Throws on an unregistered priority. Hyperion logs an error and returns
+   * false (:232-236), which lets a capture loop run for ever feeding a source
+   * that timed out minutes ago and quietly lights nothing. A streaming source
+   * that was dropped for inactivity must be registered again before it is fed;
+   * has() is the cheap check to make before each frame.
+   */
+  setInput(priority, input) {
+    const source = this.inputs.get(priority);
+    if (source === void 0) {
+      throw new Error(`muxer: setInput on unregistered priority ${priority}; register it first (it may have timed out)`);
+    }
+    checkInput(input);
+    source.input = input;
+    source.lastSeen = this.clock();
+  }
+  /**
+   * Removes one source; returns whether there was one. The background can be
+   * removed too, because it is a real source here and not Hyperion's fixed
+   * sentinel (:357 refuses to clear 255). The removal shows at the next tick();
+   * a pin on the removed priority is released at once, so that a source
+   * registered at that priority before the next frame does not inherit it.
+   */
+  clear(priority) {
+    const removed = this.inputs.delete(priority);
+    if (removed && this.manual === priority) this.manual = null;
+    return removed;
+  }
+  /**
+   * Removes every source except the background, capture included: this is
+   * "back to the background", and a capture that survived it would win again
+   * on the next frame. Hyperion's non-forced clearAll (:377-385) spares
+   * grabbers and its background slot 254 because its grabbers never re-register
+   * on their own; ours are expected to check has() before each frame. A pin on
+   * anything but the background is released with its source.
+   */
+  clearAll() {
+    for (const priority of this.inputs.keys()) {
+      if (priority !== BACKGROUND_PRIORITY) this.inputs.delete(priority);
+    }
+    if (this.manual !== null && this.manual !== BACKGROUND_PRIORITY) this.manual = null;
+  }
+  /**
+   * Pins one priority, or null to return to automatic selection.
+   *
+   * The priority must be registered, as Hyperion's setPriority requires
+   * (:120-130); pinning something that does not exist is a typo, not a wish.
+   * Once pinned, the pin holds for as long as the source stays registered and
+   * is released the moment it is gone (:452-461) - cleared, expired or timed
+   * out - so the LEDs never sit dark waiting for a source that will not return.
+   * Pinning the background is allowed and is the one case where 255 beats a
+   * live source: it is how "show me the background" is expressed.
+   */
+  setManual(priority) {
+    if (priority === null) {
+      this.manual = null;
+      return;
+    }
+    checkPriority(priority);
+    if (!this.inputs.has(priority)) {
+      throw new Error(`muxer: cannot select unregistered priority ${priority}`);
+    }
+    this.manual = priority;
+  }
+  /** The pinned priority, or null under automatic selection. */
+  manualPriority() {
+    return this.manual;
+  }
+  has(priority) {
+    return this.inputs.has(priority);
+  }
+  /** Every registered source, highest priority first. */
+  sources() {
+    return [...this.inputs.values()].sort((a, b) => a.priority - b.priority).map((s) => ({ priority: s.priority, component: s.component, registeredAt: s.registeredAt, active: s.input !== null }));
+  }
+  /** What the last tick() decided. Null until the first tick(). */
+  current() {
+    return this.winner;
+  }
+  /**
+   * Fires when, and only when, the winner changes: a different priority, a
+   * different component at the same priority, or a live source appearing where
+   * there was none or vice versa. A winner refreshing its own input is not a
+   * change. Returns the unsubscribe function.
+   */
+  onChange(listener) {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+  /**
+   * Arbitrates for this frame: sweeps dead sources, picks the winner, reports a
+   * change if there was one, and returns the winner - or null when nothing is
+   * live, which is the device layer's cue to switch the LEDs off.
+   *
+   * Order mirrors updatePriorities (:388-484): sweep first, so nothing that has
+   * already died can win this frame; honour the pin second; otherwise take the
+   * lowest number. `now` defaults to the injected clock and exists so a caller
+   * that already read the clock for this frame can pass the same instant - it
+   * must be a reading of THAT clock, since `lastSeen` is stamped from it and a
+   * timestamp from another timebase would silently break every deadline. A
+   * non-finite instant is refused: NaN compares false against every deadline
+   * and would keep an overdue source alive for ever, Infinity would sweep
+   * exactly the sources that were promised to be endless.
+   *
+   * Listeners must not tick() from inside a change callback; a re-entrant
+   * tick() throws rather than hand later listeners two edges in the wrong order.
+   */
+  tick(now = this.clock()) {
+    if (!Number.isFinite(now)) throw new RangeError(`muxer: tick needs a finite instant, got ${now}`);
+    if (this.dispatching) throw new Error("muxer: tick() called from inside an onChange listener");
+    for (const [priority, source] of this.inputs) {
+      if (isDead(source, now)) this.inputs.delete(priority);
+    }
+    let chosen = null;
+    if (this.manual !== null) {
+      const pinned = this.inputs.get(this.manual);
+      if (pinned === void 0) {
+        this.manual = null;
+      } else if (pinned.input !== null) {
+        chosen = pinned;
+      }
+    }
+    if (chosen === null) {
+      for (const source of this.inputs.values()) {
+        if (source.input !== null && (chosen === null || source.priority < chosen.priority)) chosen = source;
+      }
+    }
+    const previous = this.winner;
+    const next = snapshot(previous, chosen);
+    this.winner = next;
+    if (!sameWinner(previous, next)) this.dispatch({ previous, current: next });
+    return next;
+  }
+  /**
+   * Delivers one edge to every listener subscribed when it began. The winner
+   * is already committed, so an edge that fails to reach a listener is never
+   * re-delivered - and for the device layer the null <-> non-null edge is
+   * "switch the LEDs on". Every listener therefore runs even if an earlier one
+   * throws; the first error is rethrown once all of them have seen the edge.
+   */
+  dispatch(change) {
+    const listeners = [...this.listeners];
+    let failure;
+    let failed = false;
+    this.dispatching = true;
+    try {
+      for (const listener of listeners) {
+        try {
+          listener(change);
+        } catch (error) {
+          if (!failed) {
+            failed = true;
+            failure = error;
+          }
+        }
+      }
+    } finally {
+      this.dispatching = false;
+    }
+    if (failed) throw failure;
+  }
+};
+function isDead(source, now) {
+  if (now >= source.expiresAt) return true;
+  return source.input !== null && now >= source.lastSeen + source.timeoutMs;
+}
+function sameWinner(a, b) {
+  if (a === null || b === null) return a === b;
+  return a.priority === b.priority && a.component === b.component;
+}
+function snapshot(previous, chosen) {
+  if (chosen === null || chosen.input === null) return null;
+  if (previous !== null && previous.priority === chosen.priority && previous.component === chosen.component && previous.registeredAt === chosen.registeredAt && previous.input === chosen.input) {
+    return previous;
+  }
+  return { priority: chosen.priority, component: chosen.component, input: chosen.input, registeredAt: chosen.registeredAt };
+}
+function checkPriority(priority) {
+  if (!Number.isInteger(priority) || priority < HIGHEST_PRIORITY || priority > BACKGROUND_PRIORITY) {
+    throw new RangeError(`muxer: priority must be an integer ${HIGHEST_PRIORITY}..${BACKGROUND_PRIORITY}, got ${priority}`);
+  }
+}
+function checkComponent(component) {
+  if (typeof component !== "string" || component.length === 0) {
+    throw new TypeError(`muxer: component must be a non-empty string, got ${String(component)}`);
+  }
+}
+function checkSpan(name, ms) {
+  if (ms === void 0) return;
+  if (!(Number.isFinite(ms) && ms >= 1)) {
+    throw new RangeError(`muxer: ${name} must be a finite number of milliseconds of at least 1, or absent, got ${ms}`);
+  }
+}
+function checkInput(input) {
+  if (typeof input !== "object" || input === null) {
+    throw new TypeError(`muxer: input must be a SourceInput object, got ${String(input)}`);
+  }
+  const kind = input.kind;
+  if (kind === "grid") {
+    const grid = input.grid;
+    if (typeof grid !== "object" || grid === null || !(grid.data instanceof Float32Array)) {
+      throw new TypeError("muxer: a grid input needs a LinearGrid with Float32Array data");
+    }
+    return;
+  }
+  if (kind === "colors") {
+    if (!(input.colors instanceof Float32Array)) {
+      throw new TypeError("muxer: a colors input needs a Float32Array");
+    }
+    return;
+  }
+  throw new TypeError(`muxer: input kind must be 'grid' or 'colors', got ${String(kind)}`);
+}
+
 // lib/engine/sample.ts
 var SAMPLE_MODES = Object.freeze([
   "mean",
@@ -3477,6 +3749,32 @@ function createArrivalMeter(options = {}) {
 }
 
 // lib/engine/runtime.ts
+var PRIORITY = Object.freeze({
+  /** A test pattern outranks everything, because it is a measurement. */
+  pattern: 50,
+  /**
+   * A colour with a time limit: "red for ten seconds, then back to whatever
+   * was showing".
+   *
+   * Above the effects, because that is what interrupting MEANS - a
+   * notification that an effect could sit on top of would not be one.
+   */
+  flash: 100,
+  effect: 150,
+  audio: 160,
+  /**
+   * A colour with no time limit, which is a BASE rather than an interruption.
+   *
+   * Below the effects on purpose, and this is the pair of decisions that took a
+   * failing test to get right. "Set the strip to warm white" is a thing you
+   * want to come back to after an effect; "flash red" is a thing that has to
+   * cut through one. The same call does both, and which it is depends on
+   * whether a duration was given - not on the caller remembering a number.
+   */
+  color: 200,
+  /** The thing you leave running, so everything else is "instead of this". */
+  capture: 240
+});
 var OUTPUT_HZ = 120;
 var TICK_MS = 4;
 var REPORT_MS = 1e3;
@@ -3509,9 +3807,24 @@ function createEngine(host) {
   let effect = null;
   let effectSpec = null;
   let effectTimer = null;
+  let audioTimer = null;
   let visualiser = null;
   let audio = null;
   let bins = new Float32Array(0);
+  const muxer = new PriorityMuxer(clock2);
+  let captureTarget = allocLedColors(1);
+  let effectTarget = allocLedColors(1);
+  let audioTarget = allocLedColors(1);
+  let patternTarget = allocLedColors(1);
+  let colorTarget = allocLedColors(1);
+  function sizeBuffers(leds) {
+    if (captureTarget.length === leds * 3) return;
+    captureTarget = allocLedColors(leds);
+    effectTarget = allocLedColors(leds);
+    audioTarget = allocLedColors(leds);
+    patternTarget = allocLedColors(leds);
+    colorTarget = allocLedColors(leds);
+  }
   function build2(config) {
     const layout = resolveLayout(config);
     const leds = layout.length;
@@ -3730,7 +4043,8 @@ function createEngine(host) {
       s.sampler.setBorder(border2);
       s.sampler.sample(s.grid, s.target, "mean");
       s.adjustment.apply(s.target);
-      s.smoother.setTarget(s.target, t3);
+      captureTarget.set(s.target);
+      feed(PRIORITY.capture, "capture", captureTarget, DEFAULT_STREAM_TIMEOUT_MS.capture);
       const t4 = clock2();
       downscaleTimes.add(t1 - t0);
       readbackTimes.add(t2 - t1);
@@ -3761,43 +4075,54 @@ function createEngine(host) {
     if (state !== "running") return;
     const s = stages;
     const now = clock2();
+    const won = muxer.tick(now);
+    if (won === null) return;
+    if (won.input.kind !== "colors") return;
+    if (won.component === "pattern") {
+      outputs.mark(now);
+      s.order.apply(won.input.colors);
+      writer.send(won.input.colors);
+      return;
+    }
+    s.smoother.setTarget(won.input.colors, now);
     const out = s.smoother.tick(now);
     if (out === null) return;
     outputs.mark(now);
     s.order.apply(out);
     writer.send(out);
   }
+  function feed(priority, component, colors, timeoutMs) {
+    if (!muxer.has(priority)) {
+      muxer.register(priority, { component, ...timeoutMs !== void 0 ? { timeoutMs } : {} });
+    }
+    muxer.setInput(priority, { kind: "colors", colors });
+  }
   function emitEffect() {
     const e = effect;
     if (e === null || state !== "running") return;
-    const s = stages;
-    e.render(s.target, clock2());
-    s.smoother.setTarget(s.target, clock2());
+    e.render(effectTarget, clock2());
+    feed(PRIORITY.effect, "effect", effectTarget);
     tick();
   }
   function emitAudio() {
     const v = visualiser;
-    const source2 = audio;
-    if (v === null || source2 === null || state !== "running") return;
-    if (!source2.read(bins)) {
+    const input = audio;
+    if (v === null || input === null || state !== "running") return;
+    if (!input.read(bins)) {
       lastError = "ses kayna\u011F\u0131 kayboldu";
-      stop("lost");
+      stopAudio();
       return;
     }
-    const s = stages;
-    const now = clock2();
-    v.render(bins, s.target, now);
-    s.smoother.setTarget(s.target, now);
+    v.render(bins, audioTarget, clock2());
+    feed(PRIORITY.audio, "audio", audioTarget, DEFAULT_STREAM_TIMEOUT_MS.audio);
     tick();
   }
   function emitPattern() {
     const p = pattern;
     if (p === null || state !== "running") return;
-    const s = stages;
-    const now = clock2();
-    p.render(s.target, now);
-    outputs.mark(now);
-    writer.send(s.target);
+    p.render(patternTarget, clock2());
+    feed(PRIORITY.pattern, "pattern", patternTarget);
+    tick();
   }
   function resetCounters() {
     arrivals.reset();
@@ -3813,8 +4138,97 @@ function createEngine(host) {
     detector.reset();
     stages.smoother.reset();
   }
+  function stopAudio() {
+    if (audioTimer !== null) {
+      clearInterval(audioTimer);
+      audioTimer = null;
+    }
+    visualiser = null;
+    const a = audio;
+    audio = null;
+    void a?.stop().catch(() => {
+    });
+    muxer.clear(PRIORITY.audio);
+    idleIfEmpty();
+  }
+  function stopEffect() {
+    effect = null;
+    effectSpec = null;
+    if (effectTimer !== null) {
+      clearInterval(effectTimer);
+      effectTimer = null;
+    }
+    muxer.clear(PRIORITY.effect);
+    idleIfEmpty();
+  }
+  function stopPattern() {
+    pattern = null;
+    if (patternTimer !== null) {
+      clearInterval(patternTimer);
+      patternTimer = null;
+    }
+    muxer.clear(PRIORITY.pattern);
+    idleIfEmpty();
+  }
+  function stopCapture(lost) {
+    if (lost) captureLost = true;
+    const s = source;
+    source = null;
+    sourceKind = void 0;
+    void s?.stop().catch(() => {
+    });
+    muxer.clear(PRIORITY.capture);
+    idleIfEmpty();
+  }
+  function clearLayer(priority) {
+    switch (priority) {
+      case PRIORITY.capture:
+        stopCapture(false);
+        return;
+      case PRIORITY.effect:
+        stopEffect();
+        return;
+      case PRIORITY.audio:
+        stopAudio();
+        return;
+      case PRIORITY.pattern:
+        stopPattern();
+        return;
+      default:
+        muxer.clear(priority);
+        idleIfEmpty();
+    }
+  }
+  function idleIfEmpty() {
+    if (muxer.sources().some((info) => info.priority !== BACKGROUND_PRIORITY)) {
+      tick();
+      report();
+      return;
+    }
+    stopClocks();
+    if (state !== "error") state = "idle";
+    blackout();
+    report();
+  }
+  function stopClocks() {
+    if (tickTimer !== null) clearInterval(tickTimer);
+    if (reportTimer !== null) clearInterval(reportTimer);
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    tickTimer = null;
+    reportTimer = null;
+    reconnectTimer = null;
+  }
+  function blackout() {
+    if (linkMode !== "none" && linkMode !== "loopback") {
+      writer.send(stages.target.fill(0));
+    }
+  }
+  function startClocks() {
+    tickTimer ??= setInterval(tick, TICK_MS);
+    reportTimer ??= setInterval(report, REPORT_MS);
+  }
   async function begin(open) {
-    if (state === "running" || state === "starting") stop("restart");
+    stopCapture(false);
     state = "starting";
     lastError = void 0;
     captureLost = false;
@@ -3824,13 +4238,13 @@ function createEngine(host) {
       source = next;
       sourceKind = next.kind;
       resetCounters();
+      sizeBuffers(stages.leds);
       state = "running";
-      tickTimer = setInterval(tick, TICK_MS);
-      reportTimer = setInterval(report, REPORT_MS);
+      startClocks();
       void connectLink();
       next.start(onFrame, (error) => {
         if (error !== void 0) lastError = describe3(error);
-        if (state === "running") stop("lost");
+        stopCapture(true);
       });
       report();
     } catch (error) {
@@ -3841,16 +4255,13 @@ function createEngine(host) {
   }
   function stop(reason = "user") {
     if (reason === "lost") captureLost = true;
-    if (tickTimer !== null) clearInterval(tickTimer);
-    if (reportTimer !== null) clearInterval(reportTimer);
+    stopClocks();
     if (patternTimer !== null) clearInterval(patternTimer);
     if (effectTimer !== null) clearInterval(effectTimer);
-    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
-    tickTimer = null;
-    reportTimer = null;
+    if (audioTimer !== null) clearInterval(audioTimer);
     patternTimer = null;
     effectTimer = null;
-    reconnectTimer = null;
+    audioTimer = null;
     pattern = null;
     effect = null;
     effectSpec = null;
@@ -3861,15 +4272,16 @@ function createEngine(host) {
     });
     const s = source;
     source = null;
+    sourceKind = void 0;
     void s?.stop().catch(() => {
     });
+    muxer.clearAll();
+    muxer.clear(BACKGROUND_PRIORITY);
     if (state !== "error") state = "idle";
-    if (linkMode !== "none" && linkMode !== "loopback") {
-      writer.send(stages.target.fill(0));
-    }
+    blackout();
     report();
   }
-  function snapshot() {
+  function snapshot2() {
     const a = arrivals.snapshot(clock2());
     const o = outputs.snapshot(clock2());
     const p = processTimes.snapshot();
@@ -3910,6 +4322,7 @@ function createEngine(host) {
       ...pattern !== null ? { pattern: pattern.kind } : {},
       ...effect !== null ? { effect: effect.kind } : {},
       ...visualiser !== null ? { audio: { kind: visualiser.kind, input: audio?.kind ?? "microphone", level: visualiser.level() } } : {},
+      layers: describeLayers(),
       ...captureLost ? { lost: true } : {},
       ...lastError !== void 0 ? { error: lastError } : {}
     };
@@ -3925,12 +4338,21 @@ function createEngine(host) {
       }
     };
   }
+  function describeLayers() {
+    const won = muxer.current();
+    return muxer.sources().map((info) => ({
+      priority: info.priority,
+      component: String(info.component),
+      active: info.active,
+      winning: won !== null && won.priority === info.priority
+    }));
+  }
   function report() {
-    host.onReport?.(snapshot(), state);
+    host.onReport?.(snapshot2(), state);
   }
   return {
     state: () => state,
-    stats: snapshot,
+    stats: snapshot2,
     config: () => stages.config,
     error: () => lastError,
     link: () => ({ mode: linkMode, ...portLabel !== void 0 ? { label: portLabel } : {} }),
@@ -3976,17 +4398,15 @@ function createEngine(host) {
      */
     runEffect(spec) {
       const parsed = parseEffectSpec(spec);
-      if (state === "running" || state === "starting") stop("restart");
+      stopEffect();
       lastError = void 0;
-      captureLost = false;
-      sourceKind = void 0;
       effectSpec = parsed;
+      sizeBuffers(stages.leds);
       effect = createEffect(parsed, stages.geometry, clock2);
       state = "running";
       void connectLink();
       effectTimer = setInterval(emitEffect, Math.round(1e3 / OUTPUT_HZ));
-      tickTimer = setInterval(tick, TICK_MS);
-      reportTimer = setInterval(report, REPORT_MS);
+      startClocks();
       emitEffect();
       report();
     },
@@ -3999,56 +4419,90 @@ function createEngine(host) {
      */
     async runAudio(spec, input = "microphone") {
       const parsed = parseAudioSpec(spec);
-      if (state === "running" || state === "starting") stop("restart");
+      stopAudio();
       lastError = void 0;
-      captureLost = false;
-      sourceKind = void 0;
-      state = "starting";
+      if (state === "idle") state = "starting";
       report();
       try {
-        const source2 = input === "display" ? await openDisplayAudio() : await openMicrophone();
-        audio = source2;
-        bins = new Float32Array(source2.binCount);
+        const opened = input === "display" ? await openDisplayAudio() : await openMicrophone();
+        audio = opened;
+        bins = new Float32Array(opened.binCount);
+        sizeBuffers(stages.leds);
         visualiser = createVisualiser({
           spec: parsed,
           geometry: stages.geometry,
-          sampleRate: source2.sampleRate,
-          binCount: source2.binCount,
+          sampleRate: opened.sampleRate,
+          binCount: opened.binCount,
           outputHz: OUTPUT_HZ
         });
         state = "running";
         void connectLink();
-        effectTimer = setInterval(emitAudio, Math.round(1e3 / OUTPUT_HZ));
-        tickTimer = setInterval(tick, TICK_MS);
-        reportTimer = setInterval(report, REPORT_MS);
+        audioTimer = setInterval(emitAudio, Math.round(1e3 / OUTPUT_HZ));
+        startClocks();
         emitAudio();
       } catch (error) {
-        state = "error";
+        state = muxer.sources().length > 0 ? "running" : "error";
         lastError = describe3(error);
       }
       report();
     },
     runPattern(spec) {
       const parsed = parsePatternSpec(spec);
-      if (state === "running" || state === "starting") stop("restart");
+      stopPattern();
       lastError = void 0;
-      captureLost = false;
-      sourceKind = void 0;
+      sizeBuffers(stages.leds);
       pattern = createPattern(parsed, stages.leds, clock2);
       state = "running";
       void connectLink();
       patternTimer = setInterval(emitPattern, Math.round(1e3 / OUTPUT_HZ));
-      reportTimer = setInterval(report, REPORT_MS);
+      startClocks();
       emitPattern();
       report();
     },
     stop,
+    clearLayer,
+    /**
+     * A solid colour, at the highest content priority.
+     *
+     * `durationMs` is what makes this more than a colour picker: "red for ten
+     * seconds, then back to whatever was showing" is one call, and the muxer
+     * drops the layer on its own when the time is up. Nothing underneath is
+     * touched.
+     */
+    setColor(color, durationMs) {
+      const priority = durationMs === void 0 ? PRIORITY.color : PRIORITY.flash;
+      sizeBuffers(stages.leds);
+      const r = srgbToLinear(clampByte(color.r) / 255);
+      const g = srgbToLinear(clampByte(color.g) / 255);
+      const b = srgbToLinear(clampByte(color.b) / 255);
+      for (let i = 0; i < stages.leds; i++) {
+        const at = i * 3;
+        colorTarget[at] = r;
+        colorTarget[at + 1] = g;
+        colorTarget[at + 2] = b;
+      }
+      muxer.clear(priority);
+      muxer.register(priority, {
+        component: durationMs === void 0 ? "color" : "flash",
+        ...durationMs !== void 0 ? { durationMs } : {}
+      });
+      muxer.setInput(priority, { kind: "colors", colors: colorTarget });
+      state = "running";
+      void connectLink();
+      startClocks();
+      tick();
+      report();
+    },
     async relink() {
       await closePort();
       await connectLink();
     },
     sendControl
   };
+}
+function clampByte(value) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(255, Math.max(0, Math.round(value)));
 }
 function describe3(error) {
   if (!(error instanceof Error)) return String(error);
@@ -4280,6 +4734,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         (error) => sendResponse({ state: engine.state(), error: describe5(error) })
       );
       return true;
+    case "ambiflux/color":
+      engine.setColor(message.color, message.durationMs);
+      sendResponse({ state: engine.state() });
+      return false;
+    case "ambiflux/clear-layer":
+      engine.clearLayer(message.priority);
+      sendResponse({ state: engine.state() });
+      return false;
     case "ambiflux/stop":
       stopEngine();
       sendResponse({ state: engine.state() });

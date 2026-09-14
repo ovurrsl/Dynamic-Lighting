@@ -183,6 +183,8 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
     case 'ambiflux/pattern':
     case 'ambiflux/effect':
     case 'ambiflux/audio':
+    case 'ambiflux/color':
+    case 'ambiflux/clear-layer':
     case 'ambiflux/serial':
     case 'ambiflux/control':
       relayToOffscreen({ ...message, target: 'offscreen' })

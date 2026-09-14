@@ -695,6 +695,8 @@ function handle(message, sendResponse) {
     case "ambiflux/pattern":
     case "ambiflux/effect":
     case "ambiflux/audio":
+    case "ambiflux/color":
+    case "ambiflux/clear-layer":
     case "ambiflux/serial":
     case "ambiflux/control":
       relayToOffscreen({ ...message, target: "offscreen" }).then(sendResponse, (error) => sendResponse({ error: String(error) }));

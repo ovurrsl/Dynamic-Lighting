@@ -68,6 +68,13 @@ export type Message =
   | { type: 'ambiflux/effect'; target: Target; spec: unknown }
   /** Starts an audio visualiser. `input` picks the microphone or tab audio. */
   | { type: 'ambiflux/audio'; target: Target; spec: unknown; input?: 'microphone' | 'display' }
+  /**
+   * Drives the strip with one colour. With `durationMs` it is an interruption
+   * that expires on its own; without, it is a base that effects run on top of.
+   */
+  | { type: 'ambiflux/color'; target: Target; color: { r: number, g: number, b: number }; durationMs?: number }
+  /** Drops one priority layer, leaving the rest running. */
+  | { type: 'ambiflux/clear-layer'; target: Target; priority: number }
   /** Asks the worker for the engine's state and its latest statistics. */
   | { type: 'ambiflux/status'; target: Target }
   | { type: 'ambiflux/status-reply'; version: string; state: EngineState; stats: EngineStats | null }
@@ -219,6 +226,14 @@ export interface EngineStats {
    * strip across the room cannot.
    */
   audio?: { kind: string, input: string, level: number }
+  /**
+   * Every registered source, highest priority first, with the winner marked.
+   *
+   * Reported by the engine rather than worked out here: which one the strip is
+   * actually showing is the muxer's decision, and a panel that derived it
+   * separately would disagree with the strip exactly when it mattered.
+   */
+  layers?: Array<{ priority: number, component: string, active: boolean, winning: boolean }>
   /** The black-border inset currently applied, in grid pixels. */
   border: { unknown: boolean; topBottom: number; leftRight: number }
   /** Capture source size as the track reports it. */

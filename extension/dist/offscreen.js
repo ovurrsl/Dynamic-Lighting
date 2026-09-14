@@ -1765,6 +1765,8 @@ var MAGIC_AWA_2 = 97;
 var MAGIC_AWA_2_CALIBRATED = 65;
 var MAGIC_AFX_1 = 102;
 var MAGIC_AFX_2 = 120;
+var MAGIC_AXC_1 = 120;
+var MAGIC_AXC_2 = 67;
 var HEADER_XOR = 85;
 var FLETCHER_ESCAPE = 65;
 var FLETCHER_ESCAPED = 170;
@@ -1826,6 +1828,20 @@ function encodeAfx(linear16be, out) {
   placePayload(frame, linear16be);
   writeHeader(frame, MAGIC_AFX_1, MAGIC_AFX_2, count);
   const end = HEADER_SIZE + linear16be.length;
+  fletcherInto(frame, HEADER_SIZE, end, frame, end);
+  return frame;
+}
+function encodeAxc(tlv, out) {
+  if (tlv.length < 1 || tlv.length > MAX_LEDS) {
+    throw new RangeError(`protocol: an AxC body is 1..${MAX_LEDS} bytes, got ${tlv.length}`);
+  }
+  const total = HEADER_SIZE + tlv.length + TRAILER_SIZE;
+  const frame = out === void 0 ? new Uint8Array(total) : out.length < total ? (() => {
+    throw new RangeError(`protocol: out holds ${out.length} bytes, needs ${total}`);
+  })() : out.subarray(0, total);
+  placePayload(frame, tlv);
+  writeHeader(frame, MAGIC_AXC_1, MAGIC_AXC_2, tlv.length);
+  const end = HEADER_SIZE + tlv.length;
   fletcherInto(frame, HEADER_SIZE, end, frame, end);
   return frame;
 }
@@ -2210,8 +2226,18 @@ function connect(options, onOpen) {
     stats: () => ({ connects, drops, closes, retryMs })
   };
 }
+var AFX_PATH = "/afx";
+function afxUrl(host) {
+  const trimmed = host.trim();
+  if (trimmed === "") throw new RangeError("net: host is empty");
+  const scheme = trimmed.startsWith("wss://") || trimmed.startsWith("https://") ? "wss" : "ws";
+  const bare = trimmed.replace(/^(wss?|https?):\/\//, "").replace(/\/+$/, "");
+  if (bare === "") throw new RangeError("net: host is empty");
+  const slash = bare.indexOf("/");
+  return slash === -1 ? `${scheme}://${bare}${AFX_PATH}` : `${scheme}://${bare}`;
+}
 function createSocketSink(options) {
-  const { encoder } = options;
+  const { encoder: encoder2 } = options;
   const link = connect(options);
   let sent = 0;
   return {
@@ -2219,13 +2245,16 @@ function createSocketSink(options) {
     describe: () => options.url,
     state: link.state,
     async send(colors) {
-      const frame = encoder.encode(colors);
+      const frame = encoder2.encode(colors);
       if (link.send(frame.slice())) sent++;
+    },
+    async sendBytes(raw) {
+      if (!link.send(raw.slice())) throw new Error("net: the socket is not open");
     },
     async close() {
       link.close();
     },
-    stats: () => ({ sent, format: encoder.format, ...link.stats() })
+    stats: () => ({ sent, format: encoder2.format, ...link.stats() })
   };
 }
 function createWledSink(options) {
@@ -2254,6 +2283,88 @@ function createWledSink(options) {
     },
     stats: () => ({ sent, bytes, leds, ...link.stats() })
   };
+}
+
+// lib/engine/control.ts
+var TLV = Object.freeze({
+  version: 1,
+  runBench: 2,
+  ledCount: 3,
+  budgetMa: 4,
+  idleBrightness: 5,
+  benchOnBoot: 6,
+  queryConfig: 7,
+  save: 8,
+  resetDefaults: 9,
+  wifiSsid: 10,
+  wifiPassphrase: 11,
+  wifiEnabled: 12,
+  queryNet: 13
+});
+var MAX_SSID_BYTES = 32;
+var MIN_PASSPHRASE_BYTES = 8;
+var MAX_PASSPHRASE_BYTES = 63;
+var encoder = new TextEncoder();
+function tlvAction(type) {
+  return { type, value: new Uint8Array(0) };
+}
+function tlvU8(type, value) {
+  if (!Number.isInteger(value) || value < 0 || value > 255) {
+    throw new RangeError(`control: ${type} takes 0..255, got ${String(value)}`);
+  }
+  return { type, value: Uint8Array.of(value) };
+}
+function tlvText(type, text, maxBytes) {
+  const value = encoder.encode(text);
+  if (value.length > maxBytes) {
+    throw new RangeError(`control: ${value.length} bytes is over the ${maxBytes} the firmware accepts`);
+  }
+  if (value.includes(0)) throw new RangeError("control: a NUL cannot be sent in a text field");
+  return { type, value };
+}
+function encodeControl(items) {
+  if (items.length === 0) throw new RangeError("control: nothing to send");
+  let length = 0;
+  for (const item of items) {
+    if (item.value.length > 255) {
+      throw new RangeError(`control: a TLV value is at most 255 bytes, got ${item.value.length}`);
+    }
+    length += 2 + item.value.length;
+  }
+  const body = new Uint8Array(length);
+  let at = 0;
+  for (const item of items) {
+    body[at] = item.type;
+    body[at + 1] = item.value.length;
+    body.set(item.value, at + 2);
+    at += 2 + item.value.length;
+  }
+  return encodeAxc(body);
+}
+function wifiControl(credentials, save = true) {
+  const ssid = tlvText(TLV.wifiSsid, credentials.ssid.trim(), MAX_SSID_BYTES);
+  const passphrase = tlvText(TLV.wifiPassphrase, credentials.passphrase, MAX_PASSPHRASE_BYTES);
+  if (passphrase.value.length !== 0 && (passphrase.value.length < MIN_PASSPHRASE_BYTES || passphrase.value.length > MAX_PASSPHRASE_BYTES)) {
+    throw new RangeError(
+      `control: a WPA2 passphrase is ${MIN_PASSPHRASE_BYTES}..${MAX_PASSPHRASE_BYTES} bytes, got ${passphrase.value.length}`
+    );
+  }
+  if (credentials.enabled && ssid.value.length === 0) {
+    throw new RangeError("control: a network cannot be joined without a name");
+  }
+  const items = [
+    ssid,
+    passphrase,
+    tlvU8(TLV.wifiEnabled, credentials.enabled ? 1 : 0),
+    // Saved, because credentials that do not survive a power cut are not
+    // credentials - the board would come back on the cable only.
+    ...save ? [tlvAction(TLV.save)] : [],
+    tlvAction(TLV.queryNet)
+  ];
+  return encodeControl(items);
+}
+function queryControl() {
+  return encodeControl([tlvAction(TLV.queryConfig), tlvAction(TLV.queryNet)]);
 }
 
 // lib/engine/sink.ts
@@ -2300,7 +2411,7 @@ function createFrameWriter(sink2, options = {}) {
   };
 }
 function createBytesSink(options) {
-  const { kind, label, encoder, transport } = options;
+  const { kind, label, encoder: encoder2, transport } = options;
   let state2 = "open";
   let bytes = 0;
   return {
@@ -2308,7 +2419,7 @@ function createBytesSink(options) {
     describe: () => label,
     state: () => state2,
     async send(colors) {
-      const frame = encoder.encode(colors);
+      const frame = encoder2.encode(colors);
       try {
         await transport.write(frame);
       } catch (error) {
@@ -2317,15 +2428,18 @@ function createBytesSink(options) {
       }
       bytes += frame.length;
     },
+    async sendBytes(raw) {
+      await transport.write(raw);
+    },
     async close() {
       state2 = "idle";
       await transport.close?.();
     },
-    stats: () => ({ bytes, format: encoder.format, frameBytes: encoder.frameBytes })
+    stats: () => ({ bytes, format: encoder2.format, frameBytes: encoder2.frameBytes })
   };
 }
 function createLoopbackSink(options) {
-  const { encoder } = options;
+  const { encoder: encoder2 } = options;
   const latencyMs = options.latencyMs ?? 0;
   const wait = options.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const parser = new FrameParser();
@@ -2338,7 +2452,7 @@ function createLoopbackSink(options) {
     describe: () => "loopback",
     state: () => "open",
     async send(colors) {
-      const frame = encoder.encode(colors);
+      const frame = encoder2.encode(colors);
       bytes += frame.length;
       const frames = parser.push(frame);
       if (frames.length === 0) {
@@ -2928,7 +3042,7 @@ async function connectLink() {
     }
     try {
       useSink(
-        output.transport === "wled" ? createWledSink({ url: wledUrl(host), leds: stages.leds, segment: output.segment ?? 0 }) : createSocketSink({ url: socketUrl(host), encoder: stages.encoder }),
+        output.transport === "wled" ? createWledSink({ url: wledUrl(host), leds: stages.leds, segment: output.segment ?? 0 }) : createSocketSink({ url: afxUrl(host), encoder: stages.encoder }),
         output.transport,
         host
       );
@@ -2939,12 +3053,6 @@ async function connectLink() {
     return;
   }
   await connectSerial();
-}
-function socketUrl(host) {
-  const trimmed = host.trim();
-  if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) return trimmed;
-  const bare = trimmed.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  return `${trimmed.startsWith("https://") ? "wss" : "ws"}://${bare}`;
 }
 async function connectSerial() {
   if (port !== null) return;
@@ -2980,6 +3088,12 @@ async function connectSerial() {
     if (linkMode !== "loopback") useLoopback();
     scheduleReconnect();
   }
+}
+async function sendControl(request) {
+  const send = sink.sendBytes;
+  if (send === void 0) throw new Error(`${linkMode}: bu ba\u011Flant\u0131n\u0131n kontrol kanal\u0131 yok`);
+  const frame = request.kind === "wifi" ? wifiControl({ ssid: request.ssid, passphrase: request.passphrase, enabled: request.enabled }) : queryControl();
+  await send(frame);
 }
 async function dropPort(error) {
   lastError = `seri port: ${error instanceof Error ? error.message : String(error)}`;
@@ -3302,6 +3416,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         });
       }
       return false;
+    case "ambiflux/control":
+      sendControl(message.control).then(
+        () => sendResponse({ type: "ambiflux/control-reply", sent: true }),
+        (error) => sendResponse({
+          type: "ambiflux/control-reply",
+          sent: false,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      );
+      return true;
     case "ambiflux/config-get":
       sendResponse({ type: "ambiflux/config-reply", config: stages.config });
       return false;

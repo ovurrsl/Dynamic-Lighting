@@ -75,10 +75,26 @@ export type Message =
   | { type: 'ambiflux/config'; target: Target; config: unknown }
   /** Asks for the configuration in force. */
   | { type: 'ambiflux/config-get'; target: Target }
+  /**
+   * The BOARD's own configuration, over the AxC control channel - a different
+   * thing from the engine's config above, which never leaves this machine.
+   *
+   * Sent as an intent rather than as bytes: the frame is built in the engine
+   * with the same tested encoder either side would use, so the message bus
+   * never carries a half-validated byte array, and a passphrase is not turned
+   * into a number array that outlives the call in some log.
+   */
+  | { type: 'ambiflux/control'; target: Target; control: ControlRequest }
+  | { type: 'ambiflux/control-reply'; sent: boolean; error?: string }
   | { type: 'ambiflux/config-reply'; config: EngineConfig | null; error?: string }
   /** Offscreen -> worker: the latest statistics, kept for whoever asks next. */
   | { type: 'ambiflux/stats'; target: Target; stats: EngineStats }
   | { type: 'ambiflux/state'; target: Target; state: EngineState }
+
+/** What the panel can ask the board to change about itself. */
+export type ControlRequest =
+  | { kind: 'query' }
+  | { kind: 'wifi'; ssid: string; passphrase: string; enabled: boolean }
 
 export type EngineState = 'idle' | 'starting' | 'running' | 'error'
 

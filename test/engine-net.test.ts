@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createFrameEncoder } from '#lib/engine/encode'
-import { createSocketSink, createWledSink, SOCKET_OPEN, type Socket } from '#lib/engine/net'
+import { AFX_PATH, afxUrl, createSocketSink, createWledSink, SOCKET_OPEN, type Socket } from '#lib/engine/net'
 import { allocLedColors } from '#lib/engine/types'
 import { wledFrame, wledHello, wledUrl } from '#lib/engine/wled'
 
@@ -106,6 +106,18 @@ test('a socket sink sends the same bytes the serial port would', async () => {
   // Byte-for-byte what the serial path carries: no second protocol, no second
   // parser, and the firmware's own tests already cover it.
   assert.deepEqual(Array.from(sent), Array.from(encoder.encode(colours(0.5, 8))))
+})
+
+test('the board URL accepts what a user would actually type, and lands on the firmware’s path', () => {
+  assert.equal(afxUrl('192.168.1.41'), `ws://192.168.1.41${AFX_PATH}`)
+  assert.equal(afxUrl('  192.168.1.41  '), `ws://192.168.1.41${AFX_PATH}`)
+  assert.equal(afxUrl('http://strip.local/'), `ws://strip.local${AFX_PATH}`)
+  assert.equal(afxUrl('https://strip.local'), `wss://strip.local${AFX_PATH}`)
+  assert.equal(afxUrl('ws://strip.local'), `ws://strip.local${AFX_PATH}`)
+  // A path the user typed is theirs: someone behind a reverse proxy has put the
+  // board somewhere else and knows where.
+  assert.equal(afxUrl('ws://gateway.local/boards/1'), 'ws://gateway.local/boards/1')
+  assert.throws(() => afxUrl('   '), /host is empty/)
 })
 
 test('a frame sent before the socket opens is dropped, not queued', async () => {

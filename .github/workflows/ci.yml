@@ -78,9 +78,10 @@ jobs:
         working-directory: firmware
         run: pio test -e native
 
-      # Both output methods, because an option that does not compile is not an
-      # option. This check has already earned itself once: the obvious "use I2S"
-      # is compiled out on the ESP32-S3, whose DMA path is the LCD peripheral.
-      - name: ESP32-S3 derlemesi (RMT ve DMA)
+      # Every output method and both transports, because an option that does not
+      # compile is not an option. This check has already earned itself once: the
+      # obvious "use I2S" is compiled out on the ESP32-S3, whose DMA path is the
+      # LCD peripheral instead.
+      - name: ESP32-S3 derlemesi (RMT, DMA ve ağ)
         working-directory: firmware
-        run: pio run -e nano_esp32 -e nano_esp32_dma
+        run: pio run -e nano_esp32 -e nano_esp32_dma -e nano_esp32_net

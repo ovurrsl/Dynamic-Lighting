@@ -236,6 +236,8 @@ Bunları bu ortamda yapamam: burada kart yok, GPU yok, gerçek şerit yok.
 | F4 | Uçtan uca gecikme | 240 fps telefon, flaş deseni (panelde hazır) | bütün zincir |
 | F5 | Giriş gecikmesi | `usleep(100)` öncesi/sonrası varış p50 | bu turun değişikliği doğru muydu |
 | N1 | WLED WS kare hızı | 108 LED, JSON over WS, kare say | WLED sürücüsü kullanılabilir mi |
+| N2 | WiFi linkliyken `shortFrames` | `nano_esp32_net`, 1 saat soak, sayacı oku | ağ derlemesi RMT'yi bozuyor mu — bozuyorsa DMA varsayılan olur |
+| N3 | Kendi WS'imizin kare hızı | `ws://kart/afx`, aynı Afx baytları, kare say | ağ üzerinden 120 Hz mümkün mü |
 
 `shortFrames`, `resyncs`, `badChecksum` sağlıklı bir sistemde **tam olarak 0**.
 Sıfır değilse bir kablo, bir sürücü ya da bir ayrıştırıcı hatası var — asla

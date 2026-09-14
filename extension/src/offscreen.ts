@@ -6,7 +6,8 @@ import { createColorOrder, type ColorOrderStage } from '#lib/engine/order'
 import { createPattern, parsePatternSpec, type Pattern } from '#lib/engine/patterns'
 import { createSampler, type Sampler } from '#lib/engine/sample'
 import { createFrameEncoder, type FrameEncoder } from '#lib/engine/encode'
-import { createSocketSink, createWledSink } from '#lib/engine/net'
+import { afxUrl, createSocketSink, createWledSink } from '#lib/engine/net'
+import { queryControl, wifiControl } from '#lib/engine/control'
 import {
   createBytesSink,
   createFrameWriter,
@@ -19,7 +20,7 @@ import { wledUrl } from '#lib/engine/wled'
 import { createSmoother, type Smoother } from '#lib/engine/smooth'
 import { createArrivalMeter, createValueMeter } from '#lib/engine/stats'
 import { NO_BORDER, allocLedColors, type Border, type LedColors } from '#lib/engine/types'
-import { isMessage, type EngineState, type EngineStats, type LinkMode, type Message } from '#lib/extension/messages'
+import { isMessage, type ControlRequest, type EngineState, type EngineStats, type LinkMode, type Message } from '#lib/extension/messages'
 
 /**
  * The engine host: the whole pipeline, in the one document Chrome never
@@ -315,7 +316,7 @@ async function connectLink (): Promise<void> {
       useSink(
         output.transport === 'wled'
           ? createWledSink({ url: wledUrl(host), leds: stages.leds, segment: output.segment ?? 0 })
-          : createSocketSink({ url: socketUrl(host), encoder: stages.encoder }),
+          : createSocketSink({ url: afxUrl(host), encoder: stages.encoder }),
         output.transport,
         host
       )
@@ -326,14 +327,6 @@ async function connectLink (): Promise<void> {
     return
   }
   await connectSerial()
-}
-
-/** Our own firmware's endpoint, from whatever address the user typed. */
-function socketUrl (host: string): string {
-  const trimmed = host.trim()
-  if (trimmed.startsWith('ws://') || trimmed.startsWith('wss://')) return trimmed
-  const bare = trimmed.replace(/^https?:\/\//, '').replace(/\/+$/, '')
-  return `${trimmed.startsWith('https://') ? 'wss' : 'ws'}://${bare}`
 }
 
 /**
@@ -373,6 +366,24 @@ async function connectSerial (): Promise<void> {
     if (linkMode !== 'loopback') useLoopback()
     scheduleReconnect()
   }
+}
+
+/**
+ * Sends one AxC control frame to the board.
+ *
+ * Down the SAME link the pixels take, because the firmware reads both from the
+ * same parser - so a board on WiFi can be reconfigured over WiFi, and one on
+ * the cable over the cable. A link with no control channel (the loopback, a
+ * WLED, nothing connected) says so rather than pretending it sent something:
+ * this is the one message where a silent drop would be a lie the user acts on.
+ */
+async function sendControl (request: ControlRequest): Promise<void> {
+  const send = sink.sendBytes
+  if (send === undefined) throw new Error(`${linkMode}: bu bağlantının kontrol kanalı yok`)
+  const frame = request.kind === 'wifi'
+    ? wifiControl({ ssid: request.ssid, passphrase: request.passphrase, enabled: request.enabled })
+    : queryControl()
+  await send(frame)
 }
 
 async function dropPort (error: unknown): Promise<void> {
@@ -827,6 +838,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         } satisfies Message)
       }
       return false
+    case 'ambiflux/control':
+      sendControl(message.control).then(
+        () => sendResponse({ type: 'ambiflux/control-reply', sent: true } satisfies Message),
+        (error: unknown) => sendResponse({
+          type: 'ambiflux/control-reply',
+          sent: false,
+          error: error instanceof Error ? error.message : String(error)
+        } satisfies Message)
+      )
+      return true
     case 'ambiflux/config-get':
       sendResponse({ type: 'ambiflux/config-reply', config: stages.config } satisfies Message)
       return false

@@ -51,6 +51,17 @@ export interface FrameSink {
    * one buffer - so a sink that defers must copy or encode first.
    */
   send: (colors: LedColors) => Promise<void>
+  /**
+   * Puts bytes on the link that are not a picture - the AxC control channel.
+   *
+   * Optional because not every transport has one. Our own bytes go wherever our
+   * bytes go, so the serial port and the socket to our firmware both have it
+   * and both reach the same parser on the board. WLED speaks its own JSON and
+   * has no control channel of ours; the loopback has no board to configure.
+   * Absent therefore means "this link cannot be asked", which is exactly what
+   * the panel needs to know before it offers the option.
+   */
+  sendBytes?: (bytes: Uint8Array) => Promise<void>
   close: () => Promise<void>
   /** Whatever this transport counts; merged into the panel's link statistics. */
   stats: () => Record<string, number | string | boolean>
@@ -187,6 +198,9 @@ export function createBytesSink (options: BytesSinkOptions): FrameSink {
         throw error
       }
       bytes += frame.length
+    },
+    async sendBytes (raw: Uint8Array): Promise<void> {
+      await transport.write(raw)
     },
     async close (): Promise<void> {
       state = 'idle'

@@ -625,7 +625,8 @@ tüm zinciri** ölçen tek yöntem bu.
 | (o)-(q) | Dağıtım | açık |
 | (r) | Çıkış katmanı (`FrameSink`) | **yapıldı** — `lib/engine/sink.ts`, renk alıyor, bayt değil |
 | (s) | Ağ sürücüleri | **yapıldı** — `lib/engine/net.ts` (bizim firmware + WLED), panelde taşıma seçici |
-| (t) | Firmware WebSocket sunucusu | açık — (s)'teki soket sink'inin konuşacağı uç |
+| (t) | Firmware WebSocket sunucusu | **yapıldı** — `nano_esp32_net`, `ws://<adres>/afx`, aynı baytlar aynı ayrıştırıcıya |
+| (u) | `AxC` kontrol kanalı, host tarafı | **yapıldı** — `lib/engine/control.ts`; WiFi kimlik bilgileri Cihaz sayfasından |
 
 ### Sıra değiştirmek isteyen için
 

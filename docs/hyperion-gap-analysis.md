@@ -278,9 +278,17 @@ katmanını ve ağ sürücüsünü yukarı taşıdı — bir iPhone ekranı okuy
    sayfasında taşıma seçici, adres alanı ve WLED segmenti var, cihaz sayfası da
    taşımanın kendi sayaçlarını (yeniden bağlanma, düşen kare) gösteriyor.
 
-   **Kalan:** firmware'in WebSocket sunucusu — `createSocketSink`'in
-   konuşacağı uç. Ölçülmemiş: WLED'in JSON'la ulaşılabilir kare hızı
-   (`docs/firmware-and-devices.md` N1).
+   Firmware'in ucu da bitti: `pio run -e nano_esp32_net` WiFi'ı linkleyip
+   `ws://<adres>/afx` üzerinde bir WebSocket sunuyor, ve soket handler'ı karenin
+   ne olduğunu **bilmiyor** — aldığı baytları kablonun beslediği ayrıştırıcının
+   ikizine itiyor. Ayrı bir env, çünkü WiFi'ı linklemenin bedeli fiziksel: LED
+   çekirdeğine düşen WiFi kesme işi RMT bozulmasının en yaygın sebebi. Kimlik
+   bilgileri paneldeki Cihaz sayfasından `AxC` ile giriliyor; kart SSID'yi ve
+   adresini bildiriyor, parolayı asla.
+
+   **Ölçülmemiş:** WLED'in JSON'la ulaşılabilir kare hızı (N1), WiFi
+   linkliyken `shortFrames` (N2) ve kendi soketimizin kare hızı (N3) —
+   üçü de `docs/firmware-and-devices.md` §5'te.
 3. **Motoru host'tan ayır** — Chromium masaüstünde eklenti (kısıtlanmama
    uğruna), diğer her yerde sayfa. `lib/live-sampler.ts` yakalama yarısını
    zaten yapıyor; eksik olan çıkış yarısı ve host seçimi. §3'teki (2) numaralı

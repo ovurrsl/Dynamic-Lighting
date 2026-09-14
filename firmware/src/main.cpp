@@ -8,9 +8,22 @@
 
 #include "afx_config.h"
 #include "afx_idle.h"
+#include "afx_net.h"
 #include "afx_patterns.h"
 #include "afx_protocol.h"
 #include "afx_render.h"
+
+/*
+ * The network build is a SEPARATE build, not a runtime switch, and the reason
+ * is physical rather than tidy: the USB build unlinks the WiFi stack entirely
+ * because WiFi interrupt work on the LED's core is the usual cause of RMT
+ * corruption on an ESP32. Linking it back is a real cost, and a board driven
+ * over a cable should not pay it. `-D AMBIFLUX_NET` is what asks for it.
+ */
+#if defined(AMBIFLUX_NET)
+#include <WiFi.h>
+#include <esp_http_server.h>
+#endif
 
 /**
  * AmbiFlux firmware. The only layer that touches the board.
@@ -37,6 +50,14 @@ constexpr uint32_t kOutputHz = 120;
 constexpr uint32_t kOutputPeriodUs = 1000000 / kOutputHz;   // 8333, not 8000
 constexpr uint8_t kDataPin = 2;
 constexpr uint32_t kTelemetryMs = 1000;
+
+/**
+ * The WebSocket endpoint, matching what the panel dials.
+ *
+ * `/afx` rather than `/`, so a future status page or an OTA endpoint can live
+ * on the same server without the pixel socket having claimed the root.
+ */
+constexpr const char *kWsPath = "/afx";
 
 /**
  * RMT generates the bit timing in HARDWARE, which is the whole reason for this
@@ -128,7 +149,25 @@ constexpr const char *kPrefsKey = "cfg";
 uint16_t ledCount = config.ledCount;
 uint32_t frameSequence = 0;
 
-afx::FrameParser<kMaxLeds * 6 + afx::kCalibrationSize> parser;
+using Parser = afx::FrameParser<kMaxLeds * 6 + afx::kCalibrationSize>;
+Parser parser;
+
+#if defined(AMBIFLUX_NET)
+/**
+ * The network's own parser.
+ *
+ * NOT the serial one. A stream parser is a state machine over one stream;
+ * feeding it from two sources would interleave them and desynchronise both,
+ * which is the kind of fault that shows up as an occasional dropped frame and
+ * takes a week to find. Two instances cost about 3 KB each on a part with 512.
+ */
+Parser netParser;
+afx::NetworkConfig netConfig;
+constexpr const char *kNetPrefsKey = "net";
+httpd_handle_t httpServer = nullptr;
+std::atomic<uint32_t> wsClients{0};
+bool wifiStarted = false;
+#endif
 afx::Interpolator interpolator;
 afx::Dither<kMaxLeds * 3> dither;
 afx::PowerLimiter limiter;
@@ -171,6 +210,10 @@ void IRAM_ATTR onOutputTimer (void *) { outputDue = true; }
 // what calls them, and it is declared first.
 void applyConfig ();
 void saveConfig ();
+#if defined(AMBIFLUX_NET)
+void applyNetwork ();
+void saveNetwork ();
+#endif
 
 /**
  * The control channel: version, configuration, and whatever else the host asks
@@ -187,11 +230,31 @@ void handleControl (const uint8_t *tlv, size_t length) {
   bool report = false;
   unsigned refused = 0;
 
-  afx::walkTlv(config, tlv, length, [&](uint8_t type, const uint8_t *, uint8_t, afx::Applied applied) {
+#if defined(AMBIFLUX_NET)
+  bool netChanged = false;
+#endif
+
+  afx::walkTlv(config, tlv, length, [&](uint8_t type, const uint8_t *value, uint8_t size, afx::Applied applied) {
     switch (applied) {
       case afx::Applied::Changed: changed = true; break;
       case afx::Applied::Invalid: refused++; break;
-      case afx::Applied::Unknown: break;
+      case afx::Applied::Unknown:
+        // Not a device field. The network table is walked from here rather than
+        // from its own magic, so a host sends one AxC frame and the board sorts
+        // it out - and a USB build simply does not know these types, which is
+        // the correct answer there: it has no radio to point at a network.
+#if defined(AMBIFLUX_NET)
+        switch (afx::applyNetTlv(netConfig, type, value, size)) {
+          case afx::Applied::Changed: netChanged = true; break;
+          case afx::Applied::Invalid: refused++; break;
+          case afx::Applied::Action: report = true; break;
+          case afx::Applied::Unknown: break;
+        }
+#else
+        (void) value;
+        (void) size;
+#endif
+        break;
       case afx::Applied::Action:
         switch (static_cast<afx::Tlv>(type)) {
           case afx::Tlv::Version: report = true; break;
@@ -207,25 +270,60 @@ void handleControl (const uint8_t *tlv, size_t length) {
 
   if (changed) applyConfig();
   if (save) saveConfig();
+#if defined(AMBIFLUX_NET)
+  if (netChanged) applyNetwork();
+  if (netChanged && save) saveNetwork();
+  if (netChanged) report = true;
+#endif
 
   if (report || changed || refused > 0) {
     Serial.printf(
         "{\"axc\":\"config\",\"v\":\"%s\",\"leds\":%u,\"budgetMa\":%u,"
-        "\"idle\":%u,\"benchOnBoot\":%d,\"maxLeds\":%u,\"refused\":%u,\"saved\":%d}\n",
+        "\"idle\":%u,\"benchOnBoot\":%d,\"maxLeds\":%u,\"refused\":%u,\"saved\":%d",
         AMBIFLUX_VERSION, static_cast<unsigned>(config.ledCount),
         static_cast<unsigned>(config.budgetMa), static_cast<unsigned>(config.idleBrightness),
         config.benchOnBoot ? 1 : 0, static_cast<unsigned>(afx::kConfigMaxLeds),
         refused, save ? 1 : 0);
+#if defined(AMBIFLUX_NET)
+    // The SSID and the address, never the passphrase. The board has no reason
+    // to read one back, and a credential printed on a telemetry line ends up in
+    // whatever log the panel or a support ticket happens to keep.
+    Serial.printf(",\"net\":{\"enabled\":%d,\"ssid\":\"%s\",\"ip\":\"%s\",\"path\":\"%s\"}",
+                  netConfig.enabled ? 1 : 0, netConfig.ssid,
+                  WiFi.isConnected() ? WiFi.localIP().toString().c_str() : "", kWsPath);
+#endif
+    Serial.print("}\n");
   }
 }
 
-/** Publishes a parsed frame for the output task. Runs on the serial task. */
-void publish (const afx::FrameParser<kMaxLeds * 6 + afx::kCalibrationSize>::Frame &frame) {
+#if defined(AMBIFLUX_NET)
+/**
+ * Guards the triple buffer's WRITER, and only in the network build.
+ *
+ * The lock-free triple buffer is single-writer by construction: the serial task
+ * always has a slot the output task is not reading. A second source publishing
+ * concurrently would break that invariant and tear a frame. A mutex - not a
+ * spinlock, and never `noInterrupts()` - is the honest fix, and it is held only
+ * for the copy.
+ */
+SemaphoreHandle_t publishLock = nullptr;
+struct PublishGuard {
+  PublishGuard () { if (publishLock != nullptr) xSemaphoreTake(publishLock, portMAX_DELAY); }
+  ~PublishGuard () { if (publishLock != nullptr) xSemaphoreGive(publishLock); }
+};
+#define AFX_PUBLISH_GUARD PublishGuard guard_
+#else
+#define AFX_PUBLISH_GUARD do { } while (0)
+#endif
+
+/** Publishes a parsed frame for the output task. Runs on whichever task read it. */
+void publish (const Parser::Frame &frame) {
   if (frame.kind == afx::Kind::Axc) {
     handleControl(frame.payload, frame.length);
     return;                                   // not a picture; nothing to show
   }
   if (frame.count == 0 || frame.count > kMaxLeds) return;
+  AFX_PUBLISH_GUARD;
   Keyframe &slot = buffers[writeSlot];
   slot.count = frame.count;
   slot.sequence = ++frameSequence;
@@ -252,7 +350,7 @@ void publish (const afx::FrameParser<kMaxLeds * 6 + afx::kCalibrationSize>::Fram
 
 void serialTask (void *) {
   static uint8_t chunk[512];
-  decltype(parser)::Frame frame;
+  Parser::Frame frame;
   for (;;) {
     const int available = Serial.available();
     if (available <= 0) {
@@ -282,6 +380,152 @@ void serialTask (void *) {
     }
   }
 }
+
+#if defined(AMBIFLUX_NET)
+
+// ---------------------------------------------------------------------------
+// The WebSocket server.
+// ---------------------------------------------------------------------------
+
+/**
+ * The same bytes the serial port carries, over a socket.
+ *
+ * That sentence is the whole design and it is meant literally: the handler
+ * below does not know what a frame is. It pushes the bytes it received into the
+ * same `FrameParser` the cable feeds, and a parsed frame goes to the same
+ * `publish`. No second protocol, no second parser, no second set of tests - and
+ * the Fletcher trailer, the resync rule and the magic dispatch are covered once.
+ *
+ * The server is the IDF's own `esp_http_server`, deliberately, rather than one
+ * of the async web-server libraries. It is already in the framework, so the
+ * network build adds no third-party dependency to a product whose build has to
+ * be reproducible; and its task is one we can place, which matters here more
+ * than usual (see `core_id` below).
+ */
+constexpr size_t kWsMaxFrame = kMaxLeds * 6 + afx::kCalibrationSize + 16;
+
+esp_err_t wsHandler (httpd_req_t *req) {
+  if (req->method == HTTP_GET) {
+    // The handshake. Nothing to read yet.
+    wsClients.fetch_add(1, std::memory_order_relaxed);
+    return ESP_OK;
+  }
+
+  httpd_ws_frame_t ws = {};
+  ws.type = HTTPD_WS_TYPE_BINARY;
+  // Length first, payload second: the API wants the size before it will fill a
+  // buffer, and asking for the payload blind is how a long frame smashes a
+  // stack allocation.
+  esp_err_t err = httpd_ws_recv_frame(req, &ws, 0);
+  if (err != ESP_OK) return err;
+  if (ws.len == 0 || ws.len > kWsMaxFrame) return ESP_OK;   // ignored, not fatal
+
+  /*
+   * One static buffer, which is safe because `esp_http_server` dispatches every
+   * handler from its single server task. That is a real assumption, so it is
+   * written down here rather than left to be inferred - if this server is ever
+   * given more than one task, this buffer needs a lock or a stack of its own.
+   */
+  static uint8_t payload[kWsMaxFrame];
+  ws.payload = payload;
+  err = httpd_ws_recv_frame(req, &ws, kWsMaxFrame);
+  if (err != ESP_OK) return err;
+  if (ws.type != HTTPD_WS_TYPE_BINARY) return ESP_OK;       // text is not pixels
+
+  Parser::Frame frame;
+  const uint32_t nowMs = millis();
+  for (size_t i = 0; i < ws.len; i++) {
+    if (netParser.push(payload[i], frame)) {
+      publish(frame);
+      if (frame.kind != afx::Kind::Axc) idleState.frameArrived(nowMs);
+    }
+  }
+  return ESP_OK;
+}
+
+void startServer () {
+  if (httpServer != nullptr) return;
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  /*
+   * Core 0, with the serial reader, so core 1 stays the LEDs' alone. The whole
+   * reason the USB build unlinks WiFi is that its work on the LED core starves
+   * the RMT peripheral mid-frame; pinning what we can pin is the part of that
+   * we control.
+   */
+  config.core_id = 0;
+  config.task_priority = 3;
+  config.stack_size = 8192;
+  config.max_open_sockets = 4;
+  config.lru_purge_enable = true;
+  if (httpd_start(&httpServer, &config) != ESP_OK) {
+    httpServer = nullptr;
+    return;
+  }
+  const httpd_uri_t route = {
+      .uri = kWsPath, .method = HTTP_GET, .handler = wsHandler, .user_ctx = nullptr,
+      .is_websocket = true, .handle_ws_control_frames = false, .supported_subprotocol = nullptr};
+  httpd_register_uri_handler(httpServer, &route);
+}
+
+void stopServer () {
+  if (httpServer == nullptr) return;
+  httpd_stop(httpServer);
+  httpServer = nullptr;
+  wsClients.store(0, std::memory_order_relaxed);
+}
+
+/** Brings the radio to match the configuration, in either direction. */
+void applyNetwork () {
+  if (!afx::netConfigured(netConfig)) {
+    stopServer();
+    if (wifiStarted) {
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_OFF);
+      wifiStarted = false;
+    }
+    return;
+  }
+  stopServer();                       // the address may be about to change
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);               // sleep is latency, and this is a live link
+  WiFi.begin(netConfig.ssid, netConfig.passphrase[0] == '\0' ? nullptr : netConfig.passphrase);
+  wifiStarted = true;
+}
+
+void saveNetwork () {
+  uint8_t blob[afx::kNetBlobSize];
+  afx::serialiseNet(netConfig, blob);
+  prefs.putBytes(kNetPrefsKey, blob, sizeof(blob));
+}
+
+void loadNetwork () {
+  uint8_t blob[afx::kNetBlobSize];
+  const size_t read = prefs.getBytes(kNetPrefsKey, blob, sizeof(blob));
+  if (read == sizeof(blob)) afx::deserialiseNet(blob, read, netConfig);
+}
+
+/**
+ * Starts and stops the server as the association comes and goes.
+ *
+ * Polled rather than driven by an event handler on purpose: this runs on the
+ * main loop beside the telemetry, so it cannot land in the middle of an output
+ * frame, and half a second of delay in noticing a reconnection costs nothing.
+ */
+void serviceNetwork (uint32_t nowMs) {
+  static uint32_t lastCheck = 0;
+  if (nowMs - lastCheck < 500) return;
+  lastCheck = nowMs;
+  if (!wifiStarted) return;
+  if (WiFi.isConnected()) {
+    startServer();
+  } else if (httpServer != nullptr) {
+    // The socket is gone with the association; the host's own sink reconnects
+    // with backoff, so there is nothing to hold open here.
+    stopServer();
+  }
+}
+
+#endif  // AMBIFLUX_NET
 
 /** One output frame: glide, mix with idle, dither, limit, show. */
 void render () {
@@ -393,6 +637,15 @@ void reportTelemetry (uint32_t nowMs) {
       idleState.hostActive(nowMs) ? 1 : 0,
       benchRunning ? 1 : 0,
       static_cast<unsigned long>(millis()));
+#if defined(AMBIFLUX_NET)
+  // On its own line rather than merged into the object above: a host that has
+  // never heard of the network build still parses the first line unchanged.
+  Serial.printf("{\"t\":%lu,\"net\":{\"up\":%d,\"ip\":\"%s\",\"ws\":%lu,\"clients\":%lu}}\n",
+                static_cast<unsigned long>(nowMs), WiFi.isConnected() ? 1 : 0,
+                WiFi.isConnected() ? WiFi.localIP().toString().c_str() : "",
+                static_cast<unsigned long>(httpServer != nullptr ? 1 : 0),
+                static_cast<unsigned long>(wsClients.load(std::memory_order_relaxed)));
+#endif
 }
 
 void applyConfig () {
@@ -429,6 +682,11 @@ void setup () {
   Serial.begin(921600);
   prefs.begin(kPrefsNamespace, false);
   loadConfig();
+#if defined(AMBIFLUX_NET)
+  publishLock = xSemaphoreCreateMutex();
+  loadNetwork();
+  applyNetwork();
+#endif
   strip.Begin();
   strip.Show();
   benchRunning = config.benchOnBoot;
@@ -451,6 +709,9 @@ void loop () {
     render();
   }
   const uint32_t nowMs = millis();
+#if defined(AMBIFLUX_NET)
+  serviceNetwork(nowMs);
+#endif
   if (nowMs - lastReport >= kTelemetryMs) {
     lastReport = nowMs;
     reportTelemetry(nowMs);

@@ -1,7 +1,7 @@
 import { EXTENSION_ID } from '#data/extension'
 import { parseEngineConfig, type EngineConfig } from '#lib/engine/config'
 import type { PatternSpec } from '#lib/engine/patterns'
-import type { EngineStats, EngineState, Message } from '#lib/extension/messages'
+import type { ControlRequest, EngineStats, EngineState, Message } from '#lib/extension/messages'
 
 /**
  * The panel's side of the extension conversation.
@@ -204,4 +204,27 @@ export async function saveConfig (config: EngineConfig): Promise<string | null> 
   if (!isConfigReply(reply)) return 'eklenti beklenmeyen bir yanıt verdi'
   if (reply.error !== undefined) return reply.error
   return reply.config === null ? 'eklenti yapılandırmayı kabul etmedi' : null
+}
+
+/**
+ * Sends one control request to the BOARD, through the engine.
+ *
+ * Returns null when the board took it, or the reason it did not. The request is
+ * an intent, not bytes: the frame is built in the engine by `lib/engine/control`
+ * so the validation that decides what the firmware will accept lives in exactly
+ * one place, and a passphrase never becomes a byte array on the message bus.
+ */
+export async function sendControl (control: ControlRequest): Promise<string | null> {
+  let reply: unknown
+  try {
+    reply = await send({ type: 'ambiflux/control', target: 'sw', control })
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+  if (typeof reply !== 'object' || reply === null || !('sent' in reply)) {
+    return 'eklenti beklenmeyen bir yanıt verdi'
+  }
+  const answer = reply as { sent: boolean, error?: string }
+  if (answer.sent) return null
+  return answer.error ?? 'kart isteği kabul etmedi'
 }

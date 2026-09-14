@@ -101,6 +101,8 @@ const MAGIC_AWA_2 = 0x61 // 'a'
 const MAGIC_AWA_2_CALIBRATED = 0x41 // 'A'
 const MAGIC_AFX_1 = 0x66 // 'f'
 const MAGIC_AFX_2 = 0x78 // 'x'
+const MAGIC_AXC_1 = 0x78 // 'x'
+const MAGIC_AXC_2 = 0x43 // 'C'
 const HEADER_XOR = 0x55
 
 /**
@@ -241,6 +243,36 @@ export function encodeAfx (linear16be: Uint8Array, out?: Uint8Array): Uint8Array
   placePayload(frame, linear16be)
   writeHeader(frame, MAGIC_AFX_1, MAGIC_AFX_2, count)
   const end = HEADER_SIZE + linear16be.length
+  fletcherInto(frame, HEADER_SIZE, end, frame, end)
+  return frame
+}
+
+/**
+ * 'AxC': the control channel. Header + TLV body + Fletcher.
+ *
+ * A separate magic, and that is load-bearing rather than tidy: an AxC body is
+ * the same bytes as a short 8-bit pixel frame, so without its own magic a
+ * "set the LED count to 108" message would be pushed onto the strip as three
+ * pixels. The firmware branches on the magic before it looks at anything else.
+ *
+ * The header counts BYTES here, not LEDs. The body is TLV, so multiplying by a
+ * pixel format's stride would make a control message's length depend on a
+ * format it does not use - and would refuse every TLV body whose length is not
+ * a multiple of three.
+ */
+export function encodeAxc (tlv: Uint8Array, out?: Uint8Array): Uint8Array {
+  if (tlv.length < 1 || tlv.length > MAX_LEDS) {
+    throw new RangeError(`protocol: an AxC body is 1..${MAX_LEDS} bytes, got ${tlv.length}`)
+  }
+  const total = HEADER_SIZE + tlv.length + TRAILER_SIZE
+  const frame = out === undefined
+    ? new Uint8Array(total)
+    : (out.length < total
+        ? (() => { throw new RangeError(`protocol: out holds ${out.length} bytes, needs ${total}`) })()
+        : out.subarray(0, total))
+  placePayload(frame, tlv)
+  writeHeader(frame, MAGIC_AXC_1, MAGIC_AXC_2, tlv.length)
+  const end = HEADER_SIZE + tlv.length
   fletcherInto(frame, HEADER_SIZE, end, frame, end)
   return frame
 }

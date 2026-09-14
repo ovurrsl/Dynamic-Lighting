@@ -7,6 +7,7 @@ import { CalibrationCard } from '#components/CalibrationCard'
 import { CapabilitiesCard } from '#components/CapabilitiesCard'
 import { CaptureCard } from '#components/CaptureCard'
 import { ColourCard } from '#components/ColourCard'
+import { BoardNetworkCard } from '#components/BoardNetworkCard'
 import { DeviceCard } from '#components/DeviceCard'
 import { useEngine } from '#components/Engine'
 import { EngineConfigProvider, useEngineConfig } from '#components/EngineConfig'
@@ -61,11 +62,17 @@ function sectionBody (id: SectionId, enabled: boolean) {
  * with the engine's counters: both answer "why is my strip dark", and the
  * capability table answers it for the half of the world that cannot run the
  * extension at all.
+ *
+ * The board's own network settings sit here too rather than on the LED hardware
+ * page: that page is about what the strip looks like, this one is about the
+ * board, and putting it on a network is the second half of choosing a network
+ * transport - without it the firmware's socket has no address to be dialled at.
  */
 function DeviceSection () {
   return (
     <div className="flex flex-col gap-6">
       <DeviceCard />
+      <BoardNetworkCard />
       <CapabilitiesCard />
     </div>
   )

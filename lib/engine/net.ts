@@ -185,6 +185,28 @@ function connect (options: ConnectionOptions, onOpen?: (send: Connection['send']
 // Our own protocol, over a socket.
 // ---------------------------------------------------------------------------
 
+/** The endpoint our firmware serves. Kept beside the driver that dials it. */
+export const AFX_PATH = '/afx'
+
+/**
+ * The WebSocket URL for a board, from whatever address the user typed.
+ *
+ * The same shape as `wledUrl`, and for the same reason: a user types an
+ * address, not a URL. A path they typed themselves is kept - someone behind a
+ * reverse proxy has put the board somewhere else and knows it - and anything
+ * else gets `/afx`, which is the path the firmware registers (see
+ * `kWsPath` in firmware/src/main.cpp).
+ */
+export function afxUrl (host: string): string {
+  const trimmed = host.trim()
+  if (trimmed === '') throw new RangeError('net: host is empty')
+  const scheme = trimmed.startsWith('wss://') || trimmed.startsWith('https://') ? 'wss' : 'ws'
+  const bare = trimmed.replace(/^(wss?|https?):\/\//, '').replace(/\/+$/, '')
+  if (bare === '') throw new RangeError('net: host is empty')
+  const slash = bare.indexOf('/')
+  return slash === -1 ? `${scheme}://${bare}${AFX_PATH}` : `${scheme}://${bare}`
+}
+
 export interface SocketSinkOptions extends ConnectionOptions {
   encoder: FrameEncoder
 }
@@ -211,6 +233,11 @@ export function createSocketSink (options: SocketSinkOptions): FrameSink {
       // A copy, because the socket may read the buffer after send() returns and
       // the encoder reuses one buffer for every frame.
       if (link.send(frame.slice())) sent++
+    },
+    async sendBytes (raw: Uint8Array): Promise<void> {
+      // A control frame is not worth dropping quietly: unlike a picture there
+      // is no next one along in 8 ms, so a closed socket is reported.
+      if (!link.send(raw.slice())) throw new Error('net: the socket is not open')
     },
     async close (): Promise<void> { link.close() },
     stats: () => ({ sent, format: encoder.format, ...link.stats() })

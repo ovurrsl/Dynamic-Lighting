@@ -73,6 +73,10 @@ bilmesi gerekmiyor, ve bildiği an bir sonraki müşterinin monitörüne uymuyor
 | `0x07` | 0 | Yapılandırmayı sor |
 | `0x08` | 0 | NVS'e kaydet |
 | `0x09` | 0 | Varsayılanlara dön ve kaydet |
+| `0x0a` | 0…32 | WiFi ağ adı (yalnız ağ derlemesi) |
+| `0x0b` | 0 veya 8…63 | WiFi parolası (yalnız ağ derlemesi) |
+| `0x0c` | 1 | Telsizi aç/kapat (0/1) |
+| `0x0d` | 0 | Ağ durumunu sor |
 
 İki kural test edilmiş durumda ve ikisi de bilinçli:
 
@@ -88,6 +92,40 @@ sürüm baytı, checksum ve aralık kontrolü. Farklı bir derlemeyle yazılmı�
 blob reddediliyor ve varsayılanlar ayakta kalıyor — yarısı anlaşılmış bir
 yapılandırma, hiç yapılandırma olmamasından kötü, çünkü uzunluğunda kimsenin
 anlaşmadığı bir şeridi yakıyor.
+
+## Ağ derlemesi — `pio run -e nano_esp32_net`
+
+Ayrı bir env, çalışma zamanı anahtarı değil, ve bunun sebebi fiziksel: USB
+derlemesi WiFi yığınını bilerek linklemiyor, çünkü ESP32'de RMT/I2S bozulmasının
+en yaygın sebebi LED'in çekirdeğine düşen WiFi kesme işi. Kabloyla sürülen bir
+kartın hiç kullanmayacağı bir telsizin bedelini ödemesi için sebep yok.
+
+Neden var olduğu bir tercih değil, bir platform gerçeği: iOS'ta Web Serial,
+WebUSB, WebHID ve Web Bluetooth'un dördü de yok — dördü de yalnız Chromium'da ve
+Apple WebKit şartı koyuyor. Bir iPhone ekranını yakalayabiliyor; şeride
+ulaşmanın orada kalan tek yolu ağ.
+
+- Uç nokta: `ws://<adres>/afx`. Panel bu yolu kendisi ekliyor
+  (`afxUrl`, `lib/engine/net.ts`).
+- **Taşınan baytlar seri portunkiyle birebir aynı.** Soket handler'ı karenin ne
+  olduğunu bilmiyor: aldığı baytları kablonun beslediği `FrameParser`'ın
+  ikizine itiyor ve çıkan kare aynı `publish`'e gidiyor. İkinci protokol yok,
+  ikinci ayrıştırıcı yok, ikinci test kümesi yok — Fletcher trailer'ı, resync
+  kuralı ve magic dağıtımı bir kez kapsanıyor.
+- Ayrıştırıcı **ayrı bir örnek**: akış ayrıştırıcısı tek bir akışın durum
+  makinesi, iki kaynaktan beslemek ikisini birden desenkronize ederdi.
+- Üçlü tamponun yazarı ağ derlemesinde bir mutex'le korunuyor. Kilitsiz tampon
+  tek yazarlı olduğu için doğru; ikinci bir kaynak onu yırtardı.
+- Sunucu IDF'in kendi `esp_http_server`'ı. Üçüncü parti bir kütüphane değil —
+  derlemenin tekrarlanabilir olması gereken bir üründe bedava gelmeyen bir şey —
+  ve görevi **core 0'a sabitleniyor**, core 1 LED'lerin kalsın diye.
+- Kimlik bilgileri panelden, kablo üzerinden `AxC` ile giriliyor (Cihaz
+  sayfası). Kart SSID'yi ve adresini bildiriyor, **parolayı asla**: telemetri
+  satırına düşen bir kimlik bilgisi panelin ya da bir destek biletinin tuttuğu
+  her loga düşer.
+
+Ölçülmemiş: WiFi linklenmişken `shortFrames` yükseliyor mu (N2). Sayacı zaten
+var; karta yakıp bir saat soak etmek cevabı veriyor.
 
 ## Tezgâh koşumu — kartı yakınca ilk yapılacak şey
 

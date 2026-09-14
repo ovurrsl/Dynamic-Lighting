@@ -301,6 +301,19 @@ var WEIGHT_SCRATCH = new Float64Array(8);
 // lib/engine/types.ts
 var NO_BORDER = Object.freeze({ unknown: false, topBottom: 0, leftRight: 0 });
 
+// lib/engine/border.ts
+var BORDER_MODES = Object.freeze(["default", "classic", "osd", "letterbox"]);
+var BORDER_DEFAULTS = Object.freeze({
+  mode: "default",
+  threshold: 0.05,
+  blurRemovePx: 1,
+  unknownSwitchMs: 6e4,
+  borderSwitchMs: 5e3,
+  maxInconsistentMs: 1e3,
+  enabled: true
+});
+var UNKNOWN_BORDER = Object.freeze({ unknown: true, topBottom: 0, leftRight: 0 });
+
 // lib/engine/smooth.ts
 var SMOOTHING_DEFAULTS = Object.freeze({
   outputHz: 120,
@@ -349,6 +362,14 @@ var DEFAULT_COLOR = Object.freeze({
 });
 var SATURATION_MAX = 2;
 var TAPER_MAX = 1.6;
+var DEFAULT_BORDER = Object.freeze({
+  enabled: BORDER_DEFAULTS.enabled,
+  mode: BORDER_DEFAULTS.mode,
+  threshold: BORDER_DEFAULTS.threshold,
+  blurRemovePx: BORDER_DEFAULTS.blurRemovePx
+});
+var BORDER_THRESHOLD_MAX = 0.2;
+var BLUR_REMOVE_MAX = 8;
 var SMOOTHING_MS_MIN = 0;
 var SMOOTHING_MS_MAX = 2e3;
 var GRID_MIN = 16;
@@ -363,7 +384,8 @@ var DEFAULT_ENGINE_CONFIG = Object.freeze({
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE,
   smoothing: DEFAULT_SMOOTHING,
-  color: DEFAULT_COLOR
+  color: DEFAULT_COLOR,
+  border: DEFAULT_BORDER
 });
 var ConfigError = class extends Error {
   path;
@@ -382,6 +404,12 @@ function object(value, path) {
 function integer(value, path, min, max = Number.MAX_SAFE_INTEGER) {
   if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
     throw new ConfigError(path, `must be an integer in ${min}..${max}, got ${describe(value)}`);
+  }
+  return value;
+}
+function readBorderMode(value, path) {
+  if (typeof value !== "string" || !BORDER_MODES.includes(value)) {
+    throw new ConfigError(path, `must be one of ${BORDER_MODES.join(", ")}, got ${describe(value)}`);
   }
   return value;
 }
@@ -625,7 +653,14 @@ function parseEngineConfig(value) {
     backlightThreshold: boundedFraction(colorRaw.backlightThreshold, "color.backlightThreshold", 0, 100, DEFAULT_COLOR.backlightThreshold),
     backlightColored: colorRaw.backlightColored === void 0 ? DEFAULT_COLOR.backlightColored : boolean(colorRaw.backlightColored, "color.backlightColored")
   };
-  const config = { layout, blacklist, colorOrder, output, capture, smoothing, color };
+  const borderRaw = raw.border === void 0 ? {} : object(raw.border, "config.border");
+  const border = {
+    enabled: borderRaw.enabled === void 0 ? DEFAULT_BORDER.enabled : boolean(borderRaw.enabled, "border.enabled"),
+    mode: borderRaw.mode === void 0 ? DEFAULT_BORDER.mode : readBorderMode(borderRaw.mode, "border.mode"),
+    threshold: boundedFraction(borderRaw.threshold, "border.threshold", 0, BORDER_THRESHOLD_MAX, DEFAULT_BORDER.threshold),
+    blurRemovePx: integer(borderRaw.blurRemovePx ?? DEFAULT_BORDER.blurRemovePx, "border.blurRemovePx", 0, BLUR_REMOVE_MAX)
+  };
+  const config = { layout, blacklist, colorOrder, output, capture, smoothing, color, border };
   let rects;
   try {
     rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
@@ -651,7 +686,8 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE,
   smoothing: DEFAULT_SMOOTHING,
-  color: DEFAULT_COLOR
+  color: DEFAULT_COLOR,
+  border: DEFAULT_BORDER
 });
 
 // lib/engine/instances.ts

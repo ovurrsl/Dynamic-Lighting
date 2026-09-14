@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ConfigError, DEFAULT_CAPTURE, DEFAULT_COLOR, DEFAULT_ENGINE_CONFIG, DEFAULT_SMOOTHING, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, switchTransport, type EngineConfig } from '#lib/engine/config'
+import { ConfigError, DEFAULT_BORDER, DEFAULT_CAPTURE, DEFAULT_COLOR, DEFAULT_ENGINE_CONFIG, DEFAULT_SMOOTHING, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, switchTransport, type EngineConfig } from '#lib/engine/config'
 import { DARK_RECT, REFERENCE_LAYOUT, classicLayout, matrixLayout } from '#lib/engine/layout'
 import { SMOOTHING_PROFILES, profileOf } from '#lib/engine/smooth'
 
@@ -440,4 +440,38 @@ test('a config written before colour correction was a setting still loads', () =
   const older = JSON.parse(serialiseEngineConfig(DEFAULT_ENGINE_CONFIG)) as Record<string, unknown>
   delete older.color
   assert.deepEqual(parseEngineConfig(older).color, DEFAULT_COLOR)
+})
+
+// ---------------------------------------------------------------------------
+// Black-border detection.
+// ---------------------------------------------------------------------------
+
+test('border detection defaults to on, which is what a film needs', () => {
+  const config = parseEngineConfig({ layout: { kind: 'classic', ...REFERENCE_LAYOUT } })
+  assert.deepEqual(config.border, { enabled: true, mode: 'default', threshold: 0.05, blurRemovePx: 1 })
+})
+
+test('every probe pattern the engine has is settable, and nothing else is', () => {
+  const base = { layout: { kind: 'classic', ...REFERENCE_LAYOUT } }
+  for (const mode of ['default', 'classic', 'osd', 'letterbox']) {
+    assert.equal(parseEngineConfig({ ...base, border: { mode } }).border.mode, mode)
+  }
+  assert.throws(() => parseEngineConfig({ ...base, border: { mode: 'akıllı' } }), /border\.mode/)
+})
+
+test('the threshold is capped well below "any dark pixel"', () => {
+  // A "black" bar brighter than a fifth of full scale is dark content, and a
+  // detector that accepted it would crop the picture rather than the bars -
+  // which is worse than detecting nothing at all.
+  const base = { layout: { kind: 'classic', ...REFERENCE_LAYOUT } }
+  assert.equal(parseEngineConfig({ ...base, border: { threshold: 0.2 } }).border.threshold, 0.2)
+  assert.throws(() => parseEngineConfig({ ...base, border: { threshold: 0.5 } }), /border\.threshold/)
+  assert.throws(() => parseEngineConfig({ ...base, border: { blurRemovePx: 20 } }), /border\.blurRemovePx/)
+  assert.throws(() => parseEngineConfig({ ...base, border: { enabled: 'evet' } }), /border\.enabled/)
+})
+
+test('a config written before border detection was a setting still loads', () => {
+  const older = JSON.parse(serialiseEngineConfig(DEFAULT_ENGINE_CONFIG)) as Record<string, unknown>
+  delete older.border
+  assert.deepEqual(parseEngineConfig(older).border, DEFAULT_BORDER)
 })

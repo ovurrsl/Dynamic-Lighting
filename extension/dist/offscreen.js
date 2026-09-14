@@ -621,6 +621,263 @@ function allocLedColors(count) {
   return new Float32Array(count * 3);
 }
 
+// lib/engine/border.ts
+var BORDER_MODES = Object.freeze(["default", "classic", "osd", "letterbox"]);
+var BORDER_DEFAULTS = Object.freeze({
+  mode: "default",
+  threshold: 0.05,
+  blurRemovePx: 1,
+  unknownSwitchMs: 6e4,
+  borderSwitchMs: 5e3,
+  maxInconsistentMs: 1e3,
+  enabled: true
+});
+var UNKNOWN_BORDER = Object.freeze({ unknown: true, topBottom: 0, leftRight: 0 });
+function bordersEqual(a, b) {
+  if (a.unknown || b.unknown) return a.unknown && b.unknown;
+  return a.topBottom === b.topBottom && a.leftRight === b.leftRight;
+}
+function linearBlackThreshold(threshold) {
+  return Math.fround(srgbToLinear(threshold));
+}
+function detectBorder(grid, mode, linearThreshold) {
+  validateGrid(grid);
+  switch (mode) {
+    case "default":
+      return detectDefault(grid, linearThreshold);
+    case "classic":
+      return detectClassic(grid, linearThreshold);
+    case "osd":
+      return detectOsd(grid, linearThreshold);
+    case "letterbox":
+      return detectLetterbox(grid, linearThreshold);
+    default:
+      throw new RangeError(`border: unknown mode ${String(mode)}`);
+  }
+}
+function createBorderDetector(options, clock2) {
+  return new BorderProcessor(options, clock2);
+}
+function isBlack(grid, t, x, y) {
+  const i = (y * grid.width + x) * 3;
+  const d = grid.data;
+  return d[i] < t && d[i + 1] < t && d[i + 2] < t;
+}
+function border(leftRight, topBottom) {
+  if (leftRight < 0 || topBottom < 0) return UNKNOWN_BORDER;
+  return { unknown: false, topBottom, leftRight };
+}
+function findLeftRight(grid, t) {
+  const { width: w, height: h } = grid;
+  const w3 = Math.floor(w / 3);
+  const h3 = Math.floor(h / 3);
+  const h66 = h3 * 2;
+  const yCenter = Math.floor(h / 2);
+  const lastX = w - 1;
+  for (let x = 0; x < w3; x++) {
+    if (!isBlack(grid, t, lastX - x, yCenter) || !isBlack(grid, t, x, h3) || !isBlack(grid, t, x, h66)) return x;
+  }
+  return -1;
+}
+function detectDefault(grid, t) {
+  const { width: w, height: h } = grid;
+  const w3 = Math.floor(w / 3);
+  const w66 = w3 * 2;
+  const h3 = Math.floor(h / 3);
+  const xCenter = Math.floor(w / 2);
+  const lastY = h - 1;
+  const leftRight = findLeftRight(grid, t);
+  let topBottom = -1;
+  for (let y = 0; y < h3; y++) {
+    if (!isBlack(grid, t, xCenter, lastY - y) || !isBlack(grid, t, w3, y) || !isBlack(grid, t, w66, y)) {
+      topBottom = y;
+      break;
+    }
+  }
+  return border(leftRight, topBottom);
+}
+function detectClassic(grid, t) {
+  const w3 = Math.floor(grid.width / 3);
+  const h3 = Math.floor(grid.height / 3);
+  const maxSize = Math.max(w3, h3);
+  let x = -1;
+  let y = -1;
+  for (let i = 0; i < maxSize; i++) {
+    const px = Math.min(i, w3);
+    const py = Math.min(i, h3);
+    if (!isBlack(grid, t, px, py)) {
+      x = px;
+      y = py;
+      break;
+    }
+  }
+  for (; x > 0; x--) if (isBlack(grid, t, x - 1, y)) break;
+  for (; y > 0; y--) if (isBlack(grid, t, x, y - 1)) break;
+  return border(x, y);
+}
+function detectOsd(grid, t) {
+  const leftRight = findLeftRight(grid, t);
+  if (leftRight < 0) return UNKNOWN_BORDER;
+  const { width: w, height: h } = grid;
+  const h3 = Math.floor(h / 3);
+  const lastX = w - 1;
+  const lastY = h - 1;
+  const x = leftRight;
+  const mirrorX = lastX - leftRight;
+  let topBottom = -1;
+  for (let y = 0; y < h3; y++) {
+    if (!isBlack(grid, t, x, y) || !isBlack(grid, t, x, lastY - y) || !isBlack(grid, t, mirrorX, y) || !isBlack(grid, t, mirrorX, lastY - y)) {
+      topBottom = y;
+      break;
+    }
+  }
+  return border(leftRight, topBottom);
+}
+function detectLetterbox(grid, t) {
+  const { width: w, height: h } = grid;
+  const w25 = Math.floor(w / 4);
+  const w75 = w25 * 3;
+  const h3 = Math.floor(h / 3);
+  const xCenter = Math.floor(w / 2);
+  const lastY = h - 1;
+  let topBottom = -1;
+  for (let y = 0; y < h3; y++) {
+    if (!isBlack(grid, t, xCenter, y) || !isBlack(grid, t, w25, y) || !isBlack(grid, t, w75, y) || !isBlack(grid, t, w25, lastY - y) || !isBlack(grid, t, w75, lastY - y)) {
+      topBottom = y;
+      break;
+    }
+  }
+  return border(0, topBottom);
+}
+function validateGrid(grid) {
+  const { width, height, data } = grid;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
+    throw new RangeError(`border: grid must be at least 1x1, got ${width}x${height}`);
+  }
+  if (data.length < width * height * 3) {
+    throw new RangeError(`border: grid data holds ${data.length} floats, ${width}x${height} needs ${width * height * 3}`);
+  }
+}
+function withBlurRemoved(detected, px, grid) {
+  if (detected.unknown || px === 0) return detected;
+  const maxTopBottom = Math.floor((grid.height - 1) / 2);
+  const maxLeftRight = Math.floor((grid.width - 1) / 2);
+  return {
+    unknown: false,
+    topBottom: detected.topBottom > 0 ? Math.min(detected.topBottom + px, maxTopBottom) : 0,
+    leftRight: detected.leftRight > 0 ? Math.min(detected.leftRight + px, maxLeftRight) : 0
+  };
+}
+var BorderProcessor = class {
+  mode;
+  linearThreshold;
+  clock;
+  blurRemovePx;
+  unknownSwitchMs;
+  borderSwitchMs;
+  maxInconsistentMs;
+  userEnabled;
+  hardDisabled = false;
+  /** The border in effect (.cpp:21). Frozen, so a consumer can keep it. */
+  currentBorder = UNKNOWN_BORDER;
+  /** The border whose consistency is being measured (.cpp:22); null before the first detection. */
+  candidate = null;
+  /** When the candidate's run began. Meaningless while `candidate` is null. */
+  consistentSince = 0;
+  /** When the current run of detections disagreeing with the candidate began; null while they agree. */
+  inconsistentSince = null;
+  /** Time of the last frame that was processed; null before the first. */
+  lastSeen = null;
+  /** Set when detection stops; the first frame after it resumes shifts the runs past the gap. */
+  resumePending = false;
+  constructor(options, clock2) {
+    this.clock = clock2;
+    this.mode = options.mode ?? BORDER_DEFAULTS.mode;
+    if (!BORDER_MODES.includes(this.mode)) throw new RangeError(`border: unknown mode ${String(this.mode)}`);
+    const threshold = options.threshold ?? BORDER_DEFAULTS.threshold;
+    if (!(threshold >= 0 && threshold <= 1)) throw new RangeError(`border: threshold must be in [0, 1], got ${threshold}`);
+    this.linearThreshold = linearBlackThreshold(threshold);
+    this.blurRemovePx = options.blurRemovePx ?? BORDER_DEFAULTS.blurRemovePx;
+    if (!Number.isInteger(this.blurRemovePx) || this.blurRemovePx < 0) {
+      throw new RangeError(`border: blurRemovePx must be a non-negative integer, got ${this.blurRemovePx}`);
+    }
+    this.unknownSwitchMs = requireDuration("unknownSwitchMs", options.unknownSwitchMs ?? BORDER_DEFAULTS.unknownSwitchMs);
+    this.borderSwitchMs = requireDuration("borderSwitchMs", options.borderSwitchMs ?? BORDER_DEFAULTS.borderSwitchMs);
+    this.maxInconsistentMs = requireDuration("maxInconsistentMs", options.maxInconsistentMs ?? BORDER_DEFAULTS.maxInconsistentMs);
+    this.userEnabled = options.enabled ?? BORDER_DEFAULTS.enabled;
+  }
+  detect(grid) {
+    return detectBorder(grid, this.mode, this.linearThreshold);
+  }
+  process(grid, now = this.clock()) {
+    if (!this.active()) return NO_BORDER;
+    if (!Number.isFinite(now)) throw new RangeError(`border: frame time must be finite, got ${now}`);
+    if (this.resumePending) {
+      this.resumePending = false;
+      if (this.lastSeen !== null) {
+        const gap = now - this.lastSeen;
+        if (gap > 0) {
+          this.consistentSince += gap;
+          if (this.inconsistentSince !== null) this.inconsistentSince += gap;
+        }
+      }
+    }
+    this.update(withBlurRemoved(this.detect(grid), this.blurRemovePx, grid), now);
+    this.lastSeen = now;
+    return this.currentBorder;
+  }
+  current() {
+    return this.active() ? this.currentBorder : NO_BORDER;
+  }
+  setEnabled(enabled) {
+    const wasActive = this.active();
+    this.userEnabled = enabled;
+    if (wasActive && !this.active()) this.resumePending = true;
+  }
+  setDisabled(disabled) {
+    const wasActive = this.active();
+    this.hardDisabled = disabled;
+    if (wasActive && !this.active()) this.resumePending = true;
+  }
+  // Hyperion keeps a third, derived flag up to date in both setters
+  // (.cpp:100-109, :121-130); it always equals this conjunction.
+  active() {
+    return this.userEnabled && !this.hardDisabled;
+  }
+  reset() {
+    this.currentBorder = UNKNOWN_BORDER;
+    this.candidate = null;
+    this.consistentSince = 0;
+    this.inconsistentSince = null;
+    this.lastSeen = null;
+    this.resumePending = false;
+  }
+  update(detected, now) {
+    if (this.candidate !== null && bordersEqual(detected, this.candidate)) {
+      this.inconsistentSince = null;
+    } else {
+      if (this.candidate !== null) {
+        this.inconsistentSince ??= now;
+        if (now - this.inconsistentSince <= this.maxInconsistentMs) return;
+      }
+      this.candidate = detected;
+      this.consistentSince = now;
+      this.inconsistentSince = null;
+    }
+    if (bordersEqual(this.currentBorder, detected)) {
+      this.inconsistentSince = null;
+      return;
+    }
+    const consistentFor = now - this.consistentSince;
+    const due = detected.unknown ? consistentFor >= this.unknownSwitchMs : this.currentBorder.unknown || consistentFor >= this.borderSwitchMs;
+    if (due) this.currentBorder = Object.freeze({ ...detected });
+  }
+};
+function requireDuration(name, value) {
+  if (!(Number.isFinite(value) && value >= 0)) throw new RangeError(`border: ${name} must be a finite non-negative number of ms, got ${value}`);
+  return value;
+}
+
 // lib/engine/smooth.ts
 var SMOOTHING_DEFAULTS = Object.freeze({
   outputHz: 120,
@@ -972,6 +1229,14 @@ var DEFAULT_COLOR = Object.freeze({
 });
 var SATURATION_MAX = 2;
 var TAPER_MAX = 1.6;
+var DEFAULT_BORDER = Object.freeze({
+  enabled: BORDER_DEFAULTS.enabled,
+  mode: BORDER_DEFAULTS.mode,
+  threshold: BORDER_DEFAULTS.threshold,
+  blurRemovePx: BORDER_DEFAULTS.blurRemovePx
+});
+var BORDER_THRESHOLD_MAX = 0.2;
+var BLUR_REMOVE_MAX = 8;
 var SMOOTHING_MS_MIN = 0;
 var SMOOTHING_MS_MAX = 2e3;
 var GRID_MIN = 16;
@@ -986,7 +1251,8 @@ var DEFAULT_ENGINE_CONFIG = Object.freeze({
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE,
   smoothing: DEFAULT_SMOOTHING,
-  color: DEFAULT_COLOR
+  color: DEFAULT_COLOR,
+  border: DEFAULT_BORDER
 });
 function resolveLayout(config) {
   const layout = config.layout;
@@ -1010,6 +1276,12 @@ function object(value, path) {
 function integer(value, path, min, max = Number.MAX_SAFE_INTEGER) {
   if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
     throw new ConfigError(path, `must be an integer in ${min}..${max}, got ${describe(value)}`);
+  }
+  return value;
+}
+function readBorderMode(value, path) {
+  if (typeof value !== "string" || !BORDER_MODES.includes(value)) {
+    throw new ConfigError(path, `must be one of ${BORDER_MODES.join(", ")}, got ${describe(value)}`);
   }
   return value;
 }
@@ -1253,7 +1525,14 @@ function parseEngineConfig(value) {
     backlightThreshold: boundedFraction(colorRaw.backlightThreshold, "color.backlightThreshold", 0, 100, DEFAULT_COLOR.backlightThreshold),
     backlightColored: colorRaw.backlightColored === void 0 ? DEFAULT_COLOR.backlightColored : boolean(colorRaw.backlightColored, "color.backlightColored")
   };
-  const config = { layout, blacklist, colorOrder, output, capture, smoothing, color };
+  const borderRaw = raw.border === void 0 ? {} : object(raw.border, "config.border");
+  const border2 = {
+    enabled: borderRaw.enabled === void 0 ? DEFAULT_BORDER.enabled : boolean(borderRaw.enabled, "border.enabled"),
+    mode: borderRaw.mode === void 0 ? DEFAULT_BORDER.mode : readBorderMode(borderRaw.mode, "border.mode"),
+    threshold: boundedFraction(borderRaw.threshold, "border.threshold", 0, BORDER_THRESHOLD_MAX, DEFAULT_BORDER.threshold),
+    blurRemovePx: integer(borderRaw.blurRemovePx ?? DEFAULT_BORDER.blurRemovePx, "border.blurRemovePx", 0, BLUR_REMOVE_MAX)
+  };
+  const config = { layout, blacklist, colorOrder, output, capture, smoothing, color, border: border2 };
   let rects;
   try {
     rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
@@ -1279,7 +1558,8 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE,
   smoothing: DEFAULT_SMOOTHING,
-  color: DEFAULT_COLOR
+  color: DEFAULT_COLOR,
+  border: DEFAULT_BORDER
 });
 
 // lib/engine/instances.ts
@@ -1749,263 +2029,6 @@ async function openDisplayAudio(options = {}) {
 function describe2(error) {
   if (!(error instanceof Error)) return String(error);
   return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
-}
-
-// lib/engine/border.ts
-var BORDER_MODES = Object.freeze(["default", "classic", "osd", "letterbox"]);
-var BORDER_DEFAULTS = Object.freeze({
-  mode: "default",
-  threshold: 0.05,
-  blurRemovePx: 1,
-  unknownSwitchMs: 6e4,
-  borderSwitchMs: 5e3,
-  maxInconsistentMs: 1e3,
-  enabled: true
-});
-var UNKNOWN_BORDER = Object.freeze({ unknown: true, topBottom: 0, leftRight: 0 });
-function bordersEqual(a, b) {
-  if (a.unknown || b.unknown) return a.unknown && b.unknown;
-  return a.topBottom === b.topBottom && a.leftRight === b.leftRight;
-}
-function linearBlackThreshold(threshold) {
-  return Math.fround(srgbToLinear(threshold));
-}
-function detectBorder(grid, mode, linearThreshold) {
-  validateGrid(grid);
-  switch (mode) {
-    case "default":
-      return detectDefault(grid, linearThreshold);
-    case "classic":
-      return detectClassic(grid, linearThreshold);
-    case "osd":
-      return detectOsd(grid, linearThreshold);
-    case "letterbox":
-      return detectLetterbox(grid, linearThreshold);
-    default:
-      throw new RangeError(`border: unknown mode ${String(mode)}`);
-  }
-}
-function createBorderDetector(options, clock2) {
-  return new BorderProcessor(options, clock2);
-}
-function isBlack(grid, t, x, y) {
-  const i = (y * grid.width + x) * 3;
-  const d = grid.data;
-  return d[i] < t && d[i + 1] < t && d[i + 2] < t;
-}
-function border(leftRight, topBottom) {
-  if (leftRight < 0 || topBottom < 0) return UNKNOWN_BORDER;
-  return { unknown: false, topBottom, leftRight };
-}
-function findLeftRight(grid, t) {
-  const { width: w, height: h } = grid;
-  const w3 = Math.floor(w / 3);
-  const h3 = Math.floor(h / 3);
-  const h66 = h3 * 2;
-  const yCenter = Math.floor(h / 2);
-  const lastX = w - 1;
-  for (let x = 0; x < w3; x++) {
-    if (!isBlack(grid, t, lastX - x, yCenter) || !isBlack(grid, t, x, h3) || !isBlack(grid, t, x, h66)) return x;
-  }
-  return -1;
-}
-function detectDefault(grid, t) {
-  const { width: w, height: h } = grid;
-  const w3 = Math.floor(w / 3);
-  const w66 = w3 * 2;
-  const h3 = Math.floor(h / 3);
-  const xCenter = Math.floor(w / 2);
-  const lastY = h - 1;
-  const leftRight = findLeftRight(grid, t);
-  let topBottom = -1;
-  for (let y = 0; y < h3; y++) {
-    if (!isBlack(grid, t, xCenter, lastY - y) || !isBlack(grid, t, w3, y) || !isBlack(grid, t, w66, y)) {
-      topBottom = y;
-      break;
-    }
-  }
-  return border(leftRight, topBottom);
-}
-function detectClassic(grid, t) {
-  const w3 = Math.floor(grid.width / 3);
-  const h3 = Math.floor(grid.height / 3);
-  const maxSize = Math.max(w3, h3);
-  let x = -1;
-  let y = -1;
-  for (let i = 0; i < maxSize; i++) {
-    const px = Math.min(i, w3);
-    const py = Math.min(i, h3);
-    if (!isBlack(grid, t, px, py)) {
-      x = px;
-      y = py;
-      break;
-    }
-  }
-  for (; x > 0; x--) if (isBlack(grid, t, x - 1, y)) break;
-  for (; y > 0; y--) if (isBlack(grid, t, x, y - 1)) break;
-  return border(x, y);
-}
-function detectOsd(grid, t) {
-  const leftRight = findLeftRight(grid, t);
-  if (leftRight < 0) return UNKNOWN_BORDER;
-  const { width: w, height: h } = grid;
-  const h3 = Math.floor(h / 3);
-  const lastX = w - 1;
-  const lastY = h - 1;
-  const x = leftRight;
-  const mirrorX = lastX - leftRight;
-  let topBottom = -1;
-  for (let y = 0; y < h3; y++) {
-    if (!isBlack(grid, t, x, y) || !isBlack(grid, t, x, lastY - y) || !isBlack(grid, t, mirrorX, y) || !isBlack(grid, t, mirrorX, lastY - y)) {
-      topBottom = y;
-      break;
-    }
-  }
-  return border(leftRight, topBottom);
-}
-function detectLetterbox(grid, t) {
-  const { width: w, height: h } = grid;
-  const w25 = Math.floor(w / 4);
-  const w75 = w25 * 3;
-  const h3 = Math.floor(h / 3);
-  const xCenter = Math.floor(w / 2);
-  const lastY = h - 1;
-  let topBottom = -1;
-  for (let y = 0; y < h3; y++) {
-    if (!isBlack(grid, t, xCenter, y) || !isBlack(grid, t, w25, y) || !isBlack(grid, t, w75, y) || !isBlack(grid, t, w25, lastY - y) || !isBlack(grid, t, w75, lastY - y)) {
-      topBottom = y;
-      break;
-    }
-  }
-  return border(0, topBottom);
-}
-function validateGrid(grid) {
-  const { width, height, data } = grid;
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
-    throw new RangeError(`border: grid must be at least 1x1, got ${width}x${height}`);
-  }
-  if (data.length < width * height * 3) {
-    throw new RangeError(`border: grid data holds ${data.length} floats, ${width}x${height} needs ${width * height * 3}`);
-  }
-}
-function withBlurRemoved(detected, px, grid) {
-  if (detected.unknown || px === 0) return detected;
-  const maxTopBottom = Math.floor((grid.height - 1) / 2);
-  const maxLeftRight = Math.floor((grid.width - 1) / 2);
-  return {
-    unknown: false,
-    topBottom: detected.topBottom > 0 ? Math.min(detected.topBottom + px, maxTopBottom) : 0,
-    leftRight: detected.leftRight > 0 ? Math.min(detected.leftRight + px, maxLeftRight) : 0
-  };
-}
-var BorderProcessor = class {
-  mode;
-  linearThreshold;
-  clock;
-  blurRemovePx;
-  unknownSwitchMs;
-  borderSwitchMs;
-  maxInconsistentMs;
-  userEnabled;
-  hardDisabled = false;
-  /** The border in effect (.cpp:21). Frozen, so a consumer can keep it. */
-  currentBorder = UNKNOWN_BORDER;
-  /** The border whose consistency is being measured (.cpp:22); null before the first detection. */
-  candidate = null;
-  /** When the candidate's run began. Meaningless while `candidate` is null. */
-  consistentSince = 0;
-  /** When the current run of detections disagreeing with the candidate began; null while they agree. */
-  inconsistentSince = null;
-  /** Time of the last frame that was processed; null before the first. */
-  lastSeen = null;
-  /** Set when detection stops; the first frame after it resumes shifts the runs past the gap. */
-  resumePending = false;
-  constructor(options, clock2) {
-    this.clock = clock2;
-    this.mode = options.mode ?? BORDER_DEFAULTS.mode;
-    if (!BORDER_MODES.includes(this.mode)) throw new RangeError(`border: unknown mode ${String(this.mode)}`);
-    const threshold = options.threshold ?? BORDER_DEFAULTS.threshold;
-    if (!(threshold >= 0 && threshold <= 1)) throw new RangeError(`border: threshold must be in [0, 1], got ${threshold}`);
-    this.linearThreshold = linearBlackThreshold(threshold);
-    this.blurRemovePx = options.blurRemovePx ?? BORDER_DEFAULTS.blurRemovePx;
-    if (!Number.isInteger(this.blurRemovePx) || this.blurRemovePx < 0) {
-      throw new RangeError(`border: blurRemovePx must be a non-negative integer, got ${this.blurRemovePx}`);
-    }
-    this.unknownSwitchMs = requireDuration("unknownSwitchMs", options.unknownSwitchMs ?? BORDER_DEFAULTS.unknownSwitchMs);
-    this.borderSwitchMs = requireDuration("borderSwitchMs", options.borderSwitchMs ?? BORDER_DEFAULTS.borderSwitchMs);
-    this.maxInconsistentMs = requireDuration("maxInconsistentMs", options.maxInconsistentMs ?? BORDER_DEFAULTS.maxInconsistentMs);
-    this.userEnabled = options.enabled ?? BORDER_DEFAULTS.enabled;
-  }
-  detect(grid) {
-    return detectBorder(grid, this.mode, this.linearThreshold);
-  }
-  process(grid, now = this.clock()) {
-    if (!this.active()) return NO_BORDER;
-    if (!Number.isFinite(now)) throw new RangeError(`border: frame time must be finite, got ${now}`);
-    if (this.resumePending) {
-      this.resumePending = false;
-      if (this.lastSeen !== null) {
-        const gap = now - this.lastSeen;
-        if (gap > 0) {
-          this.consistentSince += gap;
-          if (this.inconsistentSince !== null) this.inconsistentSince += gap;
-        }
-      }
-    }
-    this.update(withBlurRemoved(this.detect(grid), this.blurRemovePx, grid), now);
-    this.lastSeen = now;
-    return this.currentBorder;
-  }
-  current() {
-    return this.active() ? this.currentBorder : NO_BORDER;
-  }
-  setEnabled(enabled) {
-    const wasActive = this.active();
-    this.userEnabled = enabled;
-    if (wasActive && !this.active()) this.resumePending = true;
-  }
-  setDisabled(disabled) {
-    const wasActive = this.active();
-    this.hardDisabled = disabled;
-    if (wasActive && !this.active()) this.resumePending = true;
-  }
-  // Hyperion keeps a third, derived flag up to date in both setters
-  // (.cpp:100-109, :121-130); it always equals this conjunction.
-  active() {
-    return this.userEnabled && !this.hardDisabled;
-  }
-  reset() {
-    this.currentBorder = UNKNOWN_BORDER;
-    this.candidate = null;
-    this.consistentSince = 0;
-    this.inconsistentSince = null;
-    this.lastSeen = null;
-    this.resumePending = false;
-  }
-  update(detected, now) {
-    if (this.candidate !== null && bordersEqual(detected, this.candidate)) {
-      this.inconsistentSince = null;
-    } else {
-      if (this.candidate !== null) {
-        this.inconsistentSince ??= now;
-        if (now - this.inconsistentSince <= this.maxInconsistentMs) return;
-      }
-      this.candidate = detected;
-      this.consistentSince = now;
-      this.inconsistentSince = null;
-    }
-    if (bordersEqual(this.currentBorder, detected)) {
-      this.inconsistentSince = null;
-      return;
-    }
-    const consistentFor = now - this.consistentSince;
-    const due = detected.unknown ? consistentFor >= this.unknownSwitchMs : this.currentBorder.unknown || consistentFor >= this.borderSwitchMs;
-    if (due) this.currentBorder = Object.freeze({ ...detected });
-  }
-};
-function requireDuration(name, value) {
-  if (!(Number.isFinite(value) && value >= 0)) throw new RangeError(`border: ${name} must be a finite non-negative number of ms, got ${value}`);
-  return value;
 }
 
 // lib/engine/protocol.ts
@@ -4075,7 +4098,6 @@ var RECONNECT_MS = 3e3;
 var BAUD_RATE = 921600;
 function createEngine(host) {
   const clock2 = host.clock;
-  const detector = createBorderDetector({}, clock2);
   const arrivals = createArrivalMeter({ windowMs: 2e3, gapMs: 50 });
   const outputs = createArrivalMeter({ windowMs: 2e3, gapMs: 50 });
   const processTimes = createValueMeter(512);
@@ -4150,6 +4172,12 @@ function createEngine(host) {
       // the smoother's defaults. They were compiled in until profiles existed,
       // and the numbers were good - but "how hard to smooth" depends on what
       // is on screen, and a film and a game want opposite answers.
+      detector: createBorderDetector({
+        enabled: config.border.enabled,
+        mode: config.border.mode,
+        threshold: config.border.threshold,
+        blurRemovePx: config.border.blurRemovePx
+      }, clock2),
       smoother: createSmoother({
         mode: "asymmetric",
         count: leds,
@@ -4349,7 +4377,7 @@ function createEngine(host) {
       const t2 = clock2();
       s.decoder.decode(rgba.data, s.grid);
       const t3 = clock2();
-      border2 = detector.process(s.grid, t3);
+      border2 = s.detector.process(s.grid, t3);
       s.sampler.setBorder(border2);
       s.sampler.sample(s.grid, s.target, "mean");
       s.adjustment.apply(s.target);
@@ -4445,7 +4473,7 @@ function createEngine(host) {
     captured = 0;
     pipelineDrops = 0;
     border2 = NO_BORDER;
-    detector.reset();
+    stages.detector.reset();
     stages.smoother.reset();
   }
   function stopAudio() {

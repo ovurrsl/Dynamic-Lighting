@@ -15,6 +15,7 @@ import {
 } from '#lib/engine/layout'
 import { COLOR_ORDERS, DEFAULT_COLOR_ORDER, type ColorOrder } from '#lib/engine/order'
 import { ADJUSTMENT_DEFAULTS, TEMPERATURE_MAX, TEMPERATURE_MIN } from '#lib/engine/adjust'
+import { BORDER_DEFAULTS, BORDER_MODES, type BorderMode } from '#lib/engine/border'
 import { SMOOTHING_PROFILES } from '#lib/engine/smooth'
 import type { Calibration } from '#lib/engine/protocol'
 import type { LedRect } from '#lib/engine/types'
@@ -240,6 +241,36 @@ export interface ColorConfig {
   backlightColored: boolean
 }
 
+/**
+ * Black-border detection: the thing that keeps the strip alive during a film.
+ *
+ * On a 16:9 panel a 2.39:1 film puts pure black under the top and bottom LEDs,
+ * so without this the ambilight dies exactly when somebody is watching a film -
+ * which is the single most common reason to own one. The detector finds the
+ * bars and insets every sampling rectangle past them.
+ *
+ * The mode is exposed because the four probe patterns fail in different ways
+ * and the right one depends on what is being watched. Hysteresis is left at the
+ * engine's defaults, which are already in MILLISECONDS rather than frames -
+ * Hyperion counts frames, so its 50-frame switch is five seconds at its 10 fps
+ * and under half a second at ours, twelve times twitchier.
+ */
+export interface BorderConfig {
+  enabled: boolean
+  mode: BorderMode
+  /**
+   * Darkness below which a channel counts as black, as a fraction. A pixel is
+   * black only when ALL THREE channels are under it, so a deep blue bar is
+   * still a bar.
+   */
+  threshold: number
+  /**
+   * Extra grid pixels trimmed off every non-zero border, to step past the soft
+   * edge a scaler leaves between the bar and the picture.
+   */
+  blurRemovePx: number
+}
+
 export interface EngineConfig {
   layout: LayoutConfig
   /** LEDs that are wired but must never light. */
@@ -249,6 +280,7 @@ export interface EngineConfig {
   capture: CaptureConfig
   smoothing: SmoothingConfig
   color: ColorConfig
+  border: BorderConfig
 }
 
 export const DEFAULT_OUTPUT: Readonly<OutputConfig> = Object.freeze({
@@ -316,6 +348,24 @@ export const SATURATION_MAX = 2
 /** The taper's useful range. Above this it is a gamma curve masking a brightness problem. */
 export const TAPER_MAX = 1.6
 
+export const DEFAULT_BORDER: Readonly<BorderConfig> = Object.freeze({
+  enabled: BORDER_DEFAULTS.enabled,
+  mode: BORDER_DEFAULTS.mode,
+  threshold: BORDER_DEFAULTS.threshold,
+  blurRemovePx: BORDER_DEFAULTS.blurRemovePx
+})
+
+/**
+ * Threshold ceiling.
+ *
+ * A "black" bar brighter than a fifth of full scale is not a bar, it is dark
+ * content - and a detector that accepted it would crop the picture rather than
+ * the bars, which is worse than not detecting anything.
+ */
+export const BORDER_THRESHOLD_MAX = 0.2
+/** Deeper than this and the trim is eating picture rather than a scaler's soft edge. */
+export const BLUR_REMOVE_MAX = 8
+
 /**
  * Time-constant bounds.
  *
@@ -343,7 +393,8 @@ export const DEFAULT_ENGINE_CONFIG: Readonly<EngineConfig> = Object.freeze({
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE,
   smoothing: DEFAULT_SMOOTHING,
-  color: DEFAULT_COLOR
+  color: DEFAULT_COLOR,
+  border: DEFAULT_BORDER
 })
 
 /** Number of LEDs the layout describes, before the blacklist (which keeps the count). */
@@ -396,6 +447,13 @@ function integer (value: unknown, path: string, min: number, max = Number.MAX_SA
     throw new ConfigError(path, `must be an integer in ${min}..${max}, got ${describe(value)}`)
   }
   return value
+}
+
+function readBorderMode (value: unknown, path: string): BorderMode {
+  if (typeof value !== 'string' || !BORDER_MODES.includes(value as BorderMode)) {
+    throw new ConfigError(path, `must be one of ${BORDER_MODES.join(', ')}, got ${describe(value)}`)
+  }
+  return value as BorderMode
 }
 
 function fraction (value: unknown, path: string): number {
@@ -690,7 +748,15 @@ export function parseEngineConfig (value: unknown): EngineConfig {
       : boolean(colorRaw.backlightColored, 'color.backlightColored')
   }
 
-  const config: EngineConfig = { layout, blacklist, colorOrder, output, capture, smoothing, color }
+  const borderRaw = raw.border === undefined ? {} : object(raw.border, 'config.border')
+  const border: BorderConfig = {
+    enabled: borderRaw.enabled === undefined ? DEFAULT_BORDER.enabled : boolean(borderRaw.enabled, 'border.enabled'),
+    mode: borderRaw.mode === undefined ? DEFAULT_BORDER.mode : readBorderMode(borderRaw.mode, 'border.mode'),
+    threshold: boundedFraction(borderRaw.threshold, 'border.threshold', 0, BORDER_THRESHOLD_MAX, DEFAULT_BORDER.threshold),
+    blurRemovePx: integer(borderRaw.blurRemovePx ?? DEFAULT_BORDER.blurRemovePx, 'border.blurRemovePx', 0, BLUR_REMOVE_MAX)
+  }
+
+  const config: EngineConfig = { layout, blacklist, colorOrder, output, capture, smoothing, color, border }
 
   // The generators own their rules; ask them. A layout that cannot be built is
   // a config error with the generator's own message, which names the knob.
@@ -737,5 +803,6 @@ export const MATRIX_ENGINE_CONFIG: Readonly<EngineConfig> = Object.freeze({
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE,
   smoothing: DEFAULT_SMOOTHING,
-  color: DEFAULT_COLOR
+  color: DEFAULT_COLOR,
+  border: DEFAULT_BORDER
 })

@@ -1,7 +1,7 @@
 import { createAdjustment, type Adjustment } from '#lib/engine/adjust'
 import { createVisualiser, parseAudioSpec, type Visualiser } from '#lib/engine/audio'
 import { openDisplayAudio, openMicrophone, type AudioInputKind, type AudioSource } from '#lib/engine/audio-input'
-import { createBorderDetector } from '#lib/engine/border'
+import { createBorderDetector, type BorderDetector } from '#lib/engine/border'
 import { srgbToLinear } from '#lib/light'
 import { DEFAULT_ENGINE_CONFIG, parseEngineConfig, resolveLayout, type EngineConfig } from '#lib/engine/config'
 import { queryControl, wifiControl } from '#lib/engine/control'
@@ -237,6 +237,13 @@ interface Stages {
   adjustment: Adjustment
   order: ColorOrderStage
   smoother: Smoother
+  /**
+   * Rebuilt with the stages rather than reconfigured, because a mode change
+   * SHOULD start again: the candidate border it is holding was found by the
+   * OLD probe pattern, and carrying it into the new one would mean the first
+   * seconds after the change show a border the new mode never found.
+   */
+  detector: BorderDetector
   target: LedColors
   encoder: FrameEncoder
   geometry: EffectGeometry
@@ -244,7 +251,6 @@ interface Stages {
 
 export function createEngine (host: EngineHost): Engine {
   const clock = host.clock
-  const detector = createBorderDetector({}, clock)
 
   const arrivals = createArrivalMeter({ windowMs: 2000, gapMs: 50 })
   const outputs = createArrivalMeter({ windowMs: 2000, gapMs: 50 })
@@ -348,6 +354,12 @@ export function createEngine (host: EngineHost): Engine {
       // the smoother's defaults. They were compiled in until profiles existed,
       // and the numbers were good - but "how hard to smooth" depends on what
       // is on screen, and a film and a game want opposite answers.
+      detector: createBorderDetector({
+        enabled: config.border.enabled,
+        mode: config.border.mode,
+        threshold: config.border.threshold,
+        blurRemovePx: config.border.blurRemovePx
+      }, clock),
       smoother: createSmoother({
         mode: 'asymmetric',
         count: leds,
@@ -609,7 +621,7 @@ export function createEngine (host: EngineHost): Engine {
       s.decoder.decode(rgba.data, s.grid)
       const t3 = clock()
 
-      border = detector.process(s.grid, t3)
+      border = s.detector.process(s.grid, t3)
       s.sampler.setBorder(border)
       s.sampler.sample(s.grid, s.target, 'mean')
       s.adjustment.apply(s.target)
@@ -755,7 +767,7 @@ export function createEngine (host: EngineHost): Engine {
     captured = 0
     pipelineDrops = 0
     border = NO_BORDER
-    detector.reset()
+    stages.detector.reset()
     stages.smoother.reset()
   }
 

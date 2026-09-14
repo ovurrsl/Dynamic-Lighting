@@ -10,6 +10,7 @@ import { CaptureCard } from '#components/CaptureCard'
 import { ColourAdjustCard } from '#components/ColourAdjustCard'
 import { ColourCard } from '#components/ColourCard'
 import { BoardNetworkCard } from '#components/BoardNetworkCard'
+import { BorderCard } from '#components/BorderCard'
 import { DeviceCard } from '#components/DeviceCard'
 import { EffectsCard } from '#components/EffectsCard'
 import { HostCard } from '#components/HostCard'
@@ -116,13 +117,15 @@ function OverviewSection () {
  * Smoothing and colour correction sit together because they are the same kind
  * of decision - how the picture is TREATED, rather than where it comes from or
  * where it goes - and because anyone tuning one is usually about to tune the
- * other. The border-detection modes will join them here.
+ * other - and the border detector is the third, because it decides which part
+ * of the frame is picture in the first place.
  */
 function PictureSection () {
   return (
     <div className="flex flex-col gap-6">
       <SmoothingCard />
       <ColourAdjustCard />
+      <BorderCard />
     </div>
   )
 }

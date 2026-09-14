@@ -648,7 +648,7 @@ tüm zinciri** ölçen tek yöntem bu.
 | (j) | Test deseni kaynağı | **yapıldı** — `lib/engine/patterns.ts`, 14 test |
 | (k) | Yumuşatma profilleri | **yapıldı** — üç profil + iki sabit + kesme bypass'ı, yeni Görüntü sayfası |
 | (l) | Renk düzeltme arayüzü | **yapıldı** — parlaklık, doygunluk, beyaz dengesi, taper, taban; Görüntü sayfasında |
-| (m) | Kenar algılama modu | açık |
+| (m) | Kenar algılama modu | **yapıldı** — dört tarama deseni, eşik, kenar kırpma, canlı okuma; Görüntü sayfasında |
 | (n) | Telemetri paneli | kısmen — sayaçlar ve aşama kırılımı var, grafik yok |
 | (o)-(q) | Dağıtım | açık |
 | (r) | Çıkış katmanı (`FrameSink`) | **yapıldı** — `lib/engine/sink.ts`, renk alıyor, bayt değil |

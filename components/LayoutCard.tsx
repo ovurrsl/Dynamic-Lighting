@@ -18,7 +18,6 @@ import {
 import { useEngine } from '#components/Engine'
 import { LedFrame } from '#components/LedFrame'
 import { useTranslate } from '#components/Preferences'
-import { clearStoredConfig, loadStoredConfig, storeConfig } from '#lib/config-store'
 import {
   DEFAULT_ENGINE_CONFIG,
   OUTPUT_TRANSPORTS,
@@ -38,7 +37,6 @@ import { createLiveSampler, PREVIEW_HZ, type LiveFrame, type LiveSampler } from 
 import { CORNER_ORDER, frameAspect, isDefaultKeystone, wireOrderColor } from '#lib/preview'
 import type { LedRect } from '#lib/engine/types'
 import type { MessageKey } from '#lib/i18n/strings'
-import { fetchConfig } from '#lib/extension-client'
 
 /**
  * The layout editor: which LED looks where.
@@ -161,7 +159,7 @@ export function LayoutCard ({
    * for any caller that passes an inline function, which is most of them.
    */
   const t = useTranslate()
-  const { saveConfig } = useEngine()
+  const { saveConfig, instances, activeId } = useEngine()
   // Read once per render rather than inside the option loop: the annotation is
   // the same string for all six entries.
   const standard = t('layout.orderStandard')
@@ -184,32 +182,29 @@ export function LayoutCard ({
   const liveSampler = useRef<LiveSampler | null>(null)
 
   /**
-   * Where the starting configuration comes from, in order: the extension, then
-   * this browser's stored copy, then the reference rig. The extension first
-   * because it is the one that is actually driving LEDs - opening the editor on
-   * a stale local copy and pressing Apply would silently undo whatever the
-   * strip is running.
+   * The starting configuration is the ACTIVE STRIP's, taken from the engine
+   * rather than from a copy of it.
    *
-   * Read after mount, never during render: the server has no localStorage and
-   * no extension, so reading either while rendering would make the server's
-   * HTML and the client's first paint disagree.
+   * There used to be three sources here - a stored single config, the
+   * extension, then the reference rig - and since strips there is one: the
+   * strip list, which whichever host owns it has already read from its own
+   * storage and validated. Editing a second copy is how an editor ends up
+   * applying stale settings over a strip that was changed elsewhere.
+   *
+   * Re-seeded when the selected strip changes, because otherwise switching to
+   * the TV would leave the desk's layout on screen under the TV's name, and
+   * pressing Apply would copy one onto the other.
    */
+  const seeded = useRef<string | null>(null)
   useEffect(() => {
-    let cancelled = false
-    const stored = loadStoredConfig()
-    if (stored.source === 'stored') {
-      setDraft(stored.config)
-      report.current?.(stored.config)
-    } else if (stored.problem !== undefined) {
-      setNotice(t('layout.storeReadFailed', { reason: stored.problem }))
-    }
-    void fetchConfig().then((live) => {
-      if (cancelled || live === null) return
-      setDraft(live)
-      report.current?.(live)
-    })
-    return () => { cancelled = true }
-  }, [])
+    if (seeded.current === activeId) return
+    const active = instances.find((instance) => instance.id === activeId)
+    if (active === undefined) return
+    seeded.current = activeId
+    setNotice(null)
+    setDraft(active.config)
+    report.current?.(active.config)
+  }, [instances, activeId])
 
   /**
    * The candidate, validated the same way the extension will validate it. The
@@ -256,19 +251,17 @@ export function LayoutCard ({
     if (!resolved.ok) return
     const config = resolved.value.config
     setSaving(true)
-    const failure = storeConfig(config)
-    void saveConfig(config).then((error) => {
+    void saveConfig(config).then((result) => {
       setSaving(false)
-      if (error !== null) { setNotice(t('layout.extensionRejected', { reason: error })); return }
+      if (result.error !== undefined) { setNotice(t('layout.extensionRejected', { reason: result.error })); return }
       report.current?.(config)
-      setNotice(failure === null
+      setNotice(result.notStored === undefined
         ? t('layout.applied')
-        : t('layout.appliedNotStored', { reason: failure }))
+        : t('layout.appliedNotStored', { reason: result.notStored }))
     })
   }, [resolved, saveConfig, t])
 
   const reset = useCallback((to: EngineConfig) => {
-    clearStoredConfig()
     setDraft(to)
     report.current?.(to)
     setNotice(t('layout.resetDone'))

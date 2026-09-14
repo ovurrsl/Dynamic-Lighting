@@ -196,6 +196,8 @@ iki tarafın karşı derlediği tek sözleşme.
 | `ambiflux/status` → `status-reply` | panel → sw | durum + son istatistikler |
 | `ambiflux/config` → `config-reply` | panel → sw → offscreen | yapılandırmayı değiştir |
 | `ambiflux/config-get` → `config-reply` | → sw | yürürlükteki yapılandırma |
+| `ambiflux/instances` → `instances-reply` | panel → sw → offscreen | şerit listesini değiştir |
+| `ambiflux/instances-get` → `instances-reply` | panel/offscreen → sw | saklanan şeritler |
 | `ambiflux/schedule` → `schedule-reply` | panel → sw → offscreen | zaman kurallarını değiştir |
 | `ambiflux/schedule-get` → `schedule-reply` | panel/offscreen → sw | saklanan kurallar |
 | `ambiflux/stats`, `ambiflux/state` | offscreen → sw | yukarı rapor; sw sonuncuyu tutar |
@@ -203,6 +205,20 @@ iki tarafın karşı derlediği tek sözleşme.
 **`config` alanı bilinçli olarak `unknown`.** Panelden ya da
 `chrome.storage`'dan geliyor; worker onu `parseEngineConfig` ile ayrıştırıyor
 ve hatayla cevap veriyor, güvenmiyor. `rules` için aynısı `parseRules` ile.
+
+**Şeritlerin sahibi de worker.** Aynı gerekçe, ve `config`/`config-get`
+mesajları artık listedeki BİR şeride ait — `instance` alanı hangisini söylüyor,
+alan yoksa etkin olan ilk şerit (yani şeritlerden önceki bir panelin gönderdiği
+her mesaj çalışmaya devam ediyor ve hiçbir yere değil, mantıklı bir yere
+düşüyor). `ambiflux/start`, `selftest` ve `stop` ise HAVUZ geneli: "yakalamayı
+başlat" hepsi demek, çünkü tek yakalamayı ve tek seçiciyi paylaşıyorlar.
+Şerit başına başlatmak ikinci şerit için ekranı yeniden sorardı, ki havuzun var
+olma sebebi tam olarak bundan kaçınmak.
+
+Eski tek yapılandırma anahtarı (`ambiflux/config`) bir kez OKUNUYOR ve ilk
+şerit yapılıyor, sonra bir daha yazılmıyor: yapılandırılmış bir kurulumun
+altında birinin yerleşimi var ve onu sessizce sıfırlayan bir sürüm, bu
+uygulamada yeniden yazılması en pahalı şeyi kaybeden sürüm olurdu.
 
 **Zaman kurallarının sahibi worker, motor değil.** Offscreen doküman canlı
 zamanlayıcıyı taşıyor ama o doküman bellektir — Chrome kapanınca yok oluyor ve
@@ -646,6 +662,7 @@ tüm zinciri** ölçen tek yöntem bu.
 | (z) | Yakalama kartı girişi | **yapıldı** — `lib/engine/devices.ts`, kaynak seçici Yakalama sayfasında |
 | (aa) | Öncelik katmanları | **yapıldı** — muxer motora bağlandı, katman listesi Genel bakış'ta, renk kaynağı gerçek |
 | (bb) | Zaman kuralları | **yapıldı** — `lib/engine/schedule.ts`, saat enjekte, iki host'ta da kalıcı, tarayıcıda tetiklenirken ölçüldü |
+| (cc) | Çoklu şerit | **yapıldı** — `fanout/instances/pool.ts`, tek yakalama N motora, Şeritler sayfası, eski config taşınıyor |
 
 ### Sıra değiştirmek isteyen için
 

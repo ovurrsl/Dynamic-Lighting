@@ -105,11 +105,11 @@ ayrı yazdığı şey bizde tek bir Web Audio çağrısı.
 Bu olmadan "ekran karardığında arkada sıcak beyaz kalsın" gibi temel bir istek
 karşılanamıyor.
 
-### (E) Çoklu örnek (instance) — bizde yok
+### (E) Çoklu örnek (instance) — ✅ 2026-09-14
 
 Hyperion bir kurulumda birden fazla LED örneği sürebiliyor, her biri kendi
-yerleşimi ve cihazıyla. Masa + TV aynı anda. Bizde profiller var ama **aynı anda
-bir tanesi** çalışıyor.
+yerleşimi ve cihazıyla. Masa + TV aynı anda. Artık bizde de var; ayrıntısı §4
+madde 9'da.
 
 ### (F) Olaylar — bizde yok
 
@@ -465,7 +465,64 @@ katmanını ve ağ sürücüsünü yukarı taşıdı — bir iPhone ekranı okuy
    Arayüzde iki cümle, ikisi de talimat değil KISIT: bir sayfada zamanlayıcı
    ekran seçici açamaz (kullanıcı hareketi yok, ve bu tarayıcının kuralı),
    ve uyumuş makine yalnız son kuralı alır.
-9. **Çoklu örnek** — mimariyi en çok değiştiren madde, o yüzden en sonda.
+9. **Çoklu örnek — ✅ 2026-09-14.** Yol haritasının son maddesi. Motor zaten
+   modül durumu olmayan bir fabrikaydı, yani iki tane çalıştırmak zor kısım
+   değildi. Zor kısım yakalama:
+
+   **Aynı kaynağı okuyan şeritler TEK yakalamayı paylaşıyor.** Optimizasyon
+   olduğu için değil — bir `getDisplayMedia` izni onu isteyen çağrıya ait
+   olduğu için. İki motor kendi yakalamasını açsaydı iki seçici çıkardı ve
+   ikincisinde başka bir pencereyi seçen kullanıcı iki farklı şeyi takip eden
+   iki şerit elde ederdi, ekranda bunu açıklayan hiçbir şey olmadan.
+
+   **Farklı kaynak okuyanlar ayrı yakalama alıyor**, ve bu taviz değil özellik:
+   ekranı takip eden masa şeridi + HDMI yakalama kartını takip eden TV şeridi,
+   TV tarafında DRM karartmasını yenen tek düzen. Gruplama anahtarı tam olarak
+   hangi akışın açılacağını belirleyen ayarlar (kaynak, cihaz, kare hızı);
+   kırpma ve analiz ızgarası gelen kareye şerit başına uygulanıyor, yani aynı
+   ekranın farklı yarılarına bakan iki şerit hâlâ tek yakalama.
+
+   Üç yeni saf modül, 37 test: `fanout.ts` (bir kaynak, N tüketici; referans
+   sayımı, tüketici başına idempotent bırakma, hata fırlatan tüketicinin
+   tamponu yine de bırakması — üçü de "kırk kareden sonra duran yakalama"
+   olarak görünüyor), `instances.ts` (liste modeli; örnek profil DEĞİL: profil
+   geçtiğin, örnek yanında çalışan), `pool.ts` (havuz motoru PROXY'lemiyor —
+   on yedi metodu saran bir havuz, ikisinin ayrışacağı on yedi yer olurdu).
+
+   **Tarayıcıda ölçüldü** (Xvfb, GPU yok, sahte kaynak — yani kötümser):
+
+   | Şerit | Teslim edilen yakalama | Şerit başına çıkış |
+   |---|---|---|
+   | 1 | 20.0 fps | 118.7 Hz |
+   | 2 | **20.0 fps** | ~100 Hz |
+   | 3 | **20.0 fps** | ~77 Hz |
+
+   Yakalama hızı şerit sayısından bağımsız — dağıtım tam olarak bunun için var
+   ve iddia ölçülmüş oldu. Çıkış hızı ise şerit başına düşüyor: üç motorun
+   120 Hz tick'i tek bir iş parçacığında yumuşatma + kodlama + sink demek.
+   Dürüst olmak gerekirse bu ortam kötümser (GPU yok, yazılım canvas) ve
+   firmware zaten keyframe'lerden 120 Hz ara kare üretiyor, yani 77 Hz'lik bir
+   host hâlâ şeritte 120 Hz veriyor. Ama eğilim gerçek ve gerçek bir makinede
+   ölçülmesi gereken bir sonraki sayı bu.
+
+   Arayüz: yeni **Şeritler** sayfası (ad, aç/kapa, seç, ekle, kaldır, şerit
+   başına canlı durum) ve kenar çubuğunda ikiden fazla şerit varken görünen
+   şerit seçici — çünkü ikinci bir şerit diğer her sayfanın anlamını
+   değiştiriyor: yerleşim, yakalama ayarları, kartın ağı ve renk kontrolleri
+   artık BİR şeride ait. Seçici tek şeritte hiç render edilmiyor, ki bu her
+   yeni kurulum.
+
+   Eski tek yapılandırma **taşınıyor, silinmiyor**: hem `localStorage`'daki
+   hem `chrome.storage`'daki eski anahtar okunup ilk şerit yapılıyor, eski
+   anahtar da yerinde bırakılıyor (geri dönen biri şeridini yapılandırılmış
+   bulsun diye). Zaten kullanmış olan herkesin yerleşimi orada, ve yerleşim bu
+   uygulamada yeniden yazılması en pahalı şey.
+
+   Dürüstçe söylenen kısıt, arayüzde de yazıyor: **USB üzerinden motor
+   eşleşmiş ilk seri portu açıyor.** Tarayıcı eşleşmiş bir porta onu ayırt
+   edebileceğimiz kalıcı bir kimlik vermiyor (`getInfo()` yalnız
+   vendor/product veriyor, iki aynı kart aynı sayıları döndürüyor), yani iki
+   karta bağlı iki şerit için en az birinde ağ taşıması gerekiyor.
 
 ### Yapılandırılabilirlik kuralı
 

@@ -16,6 +16,7 @@ import { LayersCard } from '#components/LayersCard'
 import { useEngine } from '#components/Engine'
 import { EngineConfigProvider, useEngineConfig } from '#components/EngineConfig'
 import { GuideCard } from '#components/GuideCard'
+import { InstancesCard, StripPicker } from '#components/InstancesCard'
 import { LayoutCard } from '#components/LayoutCard'
 import { OverviewCard } from '#components/OverviewCard'
 import { PreferencesMenu } from '#components/PreferencesMenu'
@@ -54,6 +55,7 @@ function sectionBody (id: SectionId, enabled: boolean) {
   switch (id) {
     case 'overview': return <OverviewSection />
     case 'colour': return <ColourCard enabled={enabled} />
+    case 'strips': return <InstancesCard />
     case 'layout': return <LayoutSection />
     case 'capture': return <CaptureCard />
     case 'calibration': return <CalibrationCard />
@@ -272,6 +274,13 @@ function Shell () {
           <p className="text-xs text-muted">{t('app.tagline')}</p>
         </div>
         <Nav current={current} onNavigate={go} />
+        {/*
+          The strip picker lives beside the navigation because it changes what
+          every page below it means: the layout, the capture settings and the
+          board's network all belong to the selected strip. It renders nothing
+          at all with one strip, which is every fresh installation.
+        */}
+        <StripPicker />
         <div className="mt-auto px-3">
           <EngineBadge />
         </div>
@@ -309,6 +318,7 @@ function Shell () {
         {menuOpen && (
           <Surface className="m-4 rounded-2xl p-4 lg:hidden" variant="secondary">
             <Nav current={current} onNavigate={go} />
+            <StripPicker className="mt-4" />
             <div className="mt-4 px-3">
               <EngineBadge />
             </div>

@@ -1,6 +1,8 @@
 import type { EngineConfig } from '#lib/engine/config'
 import { openConfiguredStream } from '#lib/engine/open-source'
-import { createEngine, type CanvasLike, type Engine, type EngineHost } from '#lib/engine/runtime'
+import { defaultInstances, type Instance } from '#lib/engine/instances'
+import { createEnginePool, type EnginePool, type PoolStats } from '#lib/engine/pool'
+import { type CanvasLike, type EngineHost } from '#lib/engine/runtime'
 import {
   createStreamSource,
   createVideoSource,
@@ -8,7 +10,7 @@ import {
   type FrameSource,
   type VideoElement
 } from '#lib/engine/source'
-import type { EngineState, EngineStats } from '#lib/extension/messages'
+
 
 /**
  * The engine, running in the panel page itself.
@@ -42,19 +44,29 @@ import type { EngineState, EngineStats } from '#lib/extension/messages'
 const VIDEO_STYLE = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none'
 
 export interface PageEngine {
-  engine: Engine
-  /** Stops the engine and takes the hidden video element back out of the page. */
+  /**
+   * Every strip this page is driving.
+   *
+   * A pool rather than an engine since multiple instances: the page hosts one
+   * capture and as many engines as there are strips, and which of them the
+   * panel is showing is the panel's business, not this file's.
+   */
+  pool: EnginePool
+  /** Stops everything and takes the hidden video element back out of the page. */
   dispose: () => void
 }
 
 /**
  * Builds the page's host.
  *
- * `onReport` is how the numbers reach React: the engine pushes on its own
+ * `onReport` is how the numbers reach React: the pool pushes on its own
  * cadence, exactly as the extension pushes to the worker, so the panel never
  * polls itself.
  */
-export function createPageEngine (onReport: (stats: EngineStats, state: EngineState) => void): PageEngine {
+export function createPageEngine (
+  onReport: (stats: PoolStats) => void,
+  instances: readonly Instance[] = defaultInstances()
+): PageEngine {
   let video: HTMLVideoElement | null = null
   let selfTestTimer: ReturnType<typeof setInterval> | null = null
 
@@ -144,17 +156,15 @@ export function createPageEngine (onReport: (stats: EngineStats, state: EngineSt
         paint.fillRect(canvas.width * 0.2, canvas.height * 0.2, canvas.width * 0.6, canvas.height * 0.6)
       }, Math.round(1000 / 60))
       return await sourceFor(canvas.captureStream(120), config)
-    },
-
-    onReport
+    }
   }
 
-  const engine = createEngine(host)
+  const pool = createEnginePool(host, instances, { onReport })
 
   return {
-    engine,
+    pool,
     dispose () {
-      engine.stop()
+      void pool.dispose()
       if (selfTestTimer !== null) {
         clearInterval(selfTestTimer)
         selfTestTimer = null

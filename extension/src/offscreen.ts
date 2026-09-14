@@ -1,8 +1,10 @@
-import { createEngine, type CanvasLike, type Engine } from '#lib/engine/runtime'
+import { defaultInstances } from '#lib/engine/instances'
+import { createEnginePool, type PoolStats } from '#lib/engine/pool'
+import type { CanvasLike, Engine } from '#lib/engine/runtime'
 import { createStreamSource, type FrameSource } from '#lib/engine/source'
 import type { EngineConfig } from '#lib/engine/config'
 import { openConfiguredStream } from '#lib/engine/open-source'
-import { isMessage, type EngineState, type EngineStats, type Message } from '#lib/extension/messages'
+import { isMessage, type Message } from '#lib/extension/messages'
 
 /**
  * The extension's host for the engine.
@@ -93,26 +95,59 @@ async function openSelfTest (): Promise<FrameSource> {
   return createStreamSource({ track, clock })
 }
 
-const engine: Engine = createEngine({
-  clock,
-  createCanvas: (width, height) => new OffscreenCanvas(width, height) as unknown as CanvasLike,
-  openSource,
-  openSelfTest,
-  onReport: (stats: EngineStats, state: EngineState) => {
-    void chrome.runtime.sendMessage({ type: 'ambiflux/stats', target: 'sw', stats } satisfies Message)
-      .catch(() => { /* worker asleep */ })
-    void chrome.runtime.sendMessage({ type: 'ambiflux/state', target: 'sw', state } satisfies Message)
-      .catch(() => { /* worker asleep */ })
+/**
+ * Every strip this installation drives.
+ *
+ * A pool rather than one engine, and the capture is why: two engines each
+ * calling `getDisplayMedia` would open two pickers, so the pool reads the
+ * screen once and hands the frame to each strip (lib/engine/pool.ts).
+ *
+ * Which strip the panel is LOOKING at is not this document's business. The
+ * flat `stats`/`state` it reports are the first enabled strip's, so every card
+ * that was written before instances keeps working unchanged, and `pool` beside
+ * them carries the rest.
+ */
+const pool = createEnginePool(
+  {
+    clock,
+    createCanvas: (width, height) => new OffscreenCanvas(width, height) as unknown as CanvasLike,
+    openSource,
+    openSelfTest
+  },
+  defaultInstances(),
+  {
+    onReport: (stats: PoolStats) => {
+      const first = stats.instances.find((instance) => instance.enabled) ?? stats.instances[0]
+      void chrome.runtime.sendMessage({
+        type: 'ambiflux/stats', target: 'sw', stats: first?.stats ?? null, pool: stats
+      } satisfies Message).catch(() => { /* worker asleep */ })
+      void chrome.runtime.sendMessage({
+        type: 'ambiflux/state', target: 'sw', state: first?.state ?? 'idle'
+      } satisfies Message).catch(() => { /* worker asleep */ })
+    }
   }
-})
+)
+
+/**
+ * The strip a message is addressed to.
+ *
+ * An absent `instance` means the first enabled one, which is what a panel that
+ * has only ever had one strip sends - so every older caller keeps working and
+ * lands somewhere sensible rather than nowhere.
+ */
+function addressed (id?: string): Engine | null {
+  if (id !== undefined) return pool.engine(id)
+  const first = pool.instances().find((instance) => instance.enabled) ?? pool.instances()[0]
+  return first === undefined ? null : pool.engine(first.id)
+}
 
 /** The self-test's painter outlives the source, so stopping has to reach it. */
-function stopEngine (): void {
+function stopPool (): void {
   if (selfTestTimer !== null) {
     clearInterval(selfTestTimer)
     selfTestTimer = null
   }
-  engine.stop()
+  pool.stop()
 }
 
 function describe (error: unknown): string {
@@ -120,15 +155,63 @@ function describe (error: unknown): string {
   return error.name === '' || error.name === 'Error' ? error.message : `${error.name}: ${error.message}`
 }
 
+/** What a per-strip command answers with when the strip it named is gone. */
+function noSuchInstance (id?: string): { state: 'idle', error: string } {
+  return { state: 'idle', error: `şerit bulunamadı: ${id ?? '?'}` }
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!isMessage(message) || !('target' in message) || message.target !== 'offscreen') return false
+
   switch (message.type) {
+    // Starting and stopping are POOL-wide. "Start the capture" means all of
+    // them: one picker, every strip following the screen it shows. A per-strip
+    // start would ask for the screen again for the second strip, which is the
+    // one thing the pool exists to avoid.
     case 'ambiflux/start':
-      engine.start().then(() => sendResponse({ state: engine.state(), error: engine.error() }))
+      pool.start().then(
+        () => sendResponse({ state: firstState(), error: firstError() }),
+        (error: unknown) => sendResponse({ state: firstState(), error: describe(error) })
+      )
       return true
     case 'ambiflux/selftest':
-      engine.selfTest().then(() => sendResponse({ state: engine.state(), error: engine.error() }))
+      pool.selfTest().then(
+        () => sendResponse({ state: firstState(), error: firstError() }),
+        (error: unknown) => sendResponse({ state: firstState(), error: describe(error) })
+      )
       return true
+    case 'ambiflux/stop':
+      stopPool()
+      sendResponse({ state: firstState() })
+      return false
+
+    case 'ambiflux/instances':
+      try {
+        sendResponse({ type: 'ambiflux/instances-reply', instances: pool.setInstances(message.instances) } satisfies Message)
+      } catch (error) {
+        // The strips that were running keep running: a bad edit to one of them
+        // must not black out the others.
+        sendResponse({
+          type: 'ambiflux/instances-reply', instances: pool.instances(), error: describe(error)
+        } satisfies Message)
+      }
+      return false
+    case 'ambiflux/instances-get':
+      sendResponse({ type: 'ambiflux/instances-reply', instances: pool.instances() } satisfies Message)
+      return false
+
+    default:
+      break
+  }
+
+  // Everything below drives ONE strip.
+  const engine = addressed('instance' in message ? message.instance : undefined)
+  if (engine === null) {
+    sendResponse(noSuchInstance('instance' in message ? message.instance : undefined))
+    return false
+  }
+
+  switch (message.type) {
     case 'ambiflux/pattern':
       try {
         engine.runPattern(message.spec)
@@ -161,9 +244,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       engine.clearLayer(message.priority)
       sendResponse({ state: engine.state() })
       return false
+
+    // The rules reach every strip, because an action that only some of them
+    // obeyed would need a rule to say which - and until a rule can, applying
+    // one to half a room is worse than applying it to all of it.
     case 'ambiflux/schedule':
       try {
-        sendResponse({ type: 'ambiflux/schedule-reply', rules: engine.setSchedule(message.rules) } satisfies Message)
+        const rules = engine.setSchedule(message.rules)
+        for (const other of pool.engines()) if (other !== engine) other.setSchedule(rules)
+        sendResponse({ type: 'ambiflux/schedule-reply', rules } satisfies Message)
       } catch (error) {
         sendResponse({
           type: 'ambiflux/schedule-reply', rules: engine.schedule(), error: describe(error)
@@ -173,10 +262,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case 'ambiflux/schedule-get':
       sendResponse({ type: 'ambiflux/schedule-reply', rules: engine.schedule() } satisfies Message)
       return false
-    case 'ambiflux/stop':
-      stopEngine()
-      sendResponse({ state: engine.state() })
-      return false
+
     case 'ambiflux/serial': {
       const link = engine.link()
       engine.relink().then(() => sendResponse({
@@ -217,24 +303,36 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 })
 
+const firstState = (): string => addressed()?.state() ?? 'idle'
+const firstError = (): string | undefined => addressed()?.error()
+
 /**
- * The worker holds the stored configuration, so ask for it as soon as this
- * document exists rather than waiting for the first edit. Until it answers the
- * reference rig is in force, which is also what a fresh install has.
+ * The worker holds the stored strips, so ask for them as soon as this document
+ * exists rather than waiting for the first edit. Until it answers, one strip on
+ * the reference rig is in force - which is also what a fresh install has.
+ *
+ * This replaces the single `config-get` this file used to do. A worker from an
+ * older build answers `instances-reply` with nothing, and the fallback below
+ * asks for the single configuration instead, so an extension whose two halves
+ * are briefly out of step still lights a strip.
  */
-void chrome.runtime.sendMessage({ type: 'ambiflux/config-get', target: 'sw' } satisfies Message)
-  .then((reply: unknown) => {
-    if (typeof reply === 'object' && reply !== null && (reply as { type?: string }).type === 'ambiflux/config-reply') {
-      const config = (reply as { config: unknown }).config
-      if (config !== null && config !== undefined) engine.applyConfig(config)
+void chrome.runtime.sendMessage({ type: 'ambiflux/instances-get', target: 'sw' } satisfies Message)
+  .then(async (reply: unknown) => {
+    const instances = reading(reply, 'ambiflux/instances-reply', 'instances')
+    if (Array.isArray(instances) && instances.length > 0) {
+      pool.setInstances(instances)
+      return
     }
+    const older = await chrome.runtime.sendMessage({ type: 'ambiflux/config-get', target: 'sw' } satisfies Message)
+    const config = reading(older, 'ambiflux/config-reply', 'config')
+    if (config !== null && config !== undefined) addressed()?.applyConfig(config)
   })
-  .catch(() => { /* no stored config yet; the default stands */ })
+  .catch(() => { /* nothing stored yet; the reference rig stands */ })
 
 /**
  * And the rules, for the same reason and from the same owner.
  *
- * This document is destroyed when Chrome closes, so the scheduler in it starts
+ * This document is destroyed when Chrome closes, so the schedulers in it start
  * empty every time. The worker's stored copy is what makes "warm white at
  * sunset" survive a restart; without this pull the rules would apply only until
  * the browser was next shut down, which is the one time a user would not be
@@ -242,9 +340,14 @@ void chrome.runtime.sendMessage({ type: 'ambiflux/config-get', target: 'sw' } sa
  */
 void chrome.runtime.sendMessage({ type: 'ambiflux/schedule-get', target: 'sw' } satisfies Message)
   .then((reply: unknown) => {
-    if (typeof reply === 'object' && reply !== null && (reply as { type?: string }).type === 'ambiflux/schedule-reply') {
-      const rules = (reply as { rules?: unknown }).rules
-      if (Array.isArray(rules) && rules.length > 0) engine.setSchedule(rules)
-    }
+    const rules = reading(reply, 'ambiflux/schedule-reply', 'rules')
+    if (Array.isArray(rules) && rules.length > 0) for (const engine of pool.engines()) engine.setSchedule(rules)
   })
   .catch(() => { /* no stored rules yet; an empty schedule stands */ })
+
+/** Pulls one field out of a reply, or undefined if it is not the reply we asked for. */
+function reading (reply: unknown, type: string, field: string): unknown {
+  if (typeof reply !== 'object' || reply === null) return undefined
+  if ((reply as { type?: string }).type !== type) return undefined
+  return (reply as Record<string, unknown>)[field]
+}

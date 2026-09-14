@@ -1,3 +1,766 @@
+// lib/engine/layout.ts
+var CORNERS = Object.freeze(["top-left", "top-right", "bottom-right", "bottom-left"]);
+var NO_KEYSTONE = Object.freeze({
+  topLeft: Object.freeze({ x: 0, y: 0 }),
+  topRight: Object.freeze({ x: 1, y: 0 }),
+  bottomRight: Object.freeze({ x: 1, y: 1 }),
+  bottomLeft: Object.freeze({ x: 0, y: 1 })
+});
+var REFERENCE_LAYOUT = Object.freeze({
+  top: 35,
+  right: 19,
+  bottom: 35,
+  left: 19,
+  depthTopBottom: 0.12,
+  depthLeftRight: 0.08,
+  start: "top-left",
+  clockwise: true
+});
+var LAYOUT_DEFAULTS = Object.freeze({
+  offset: 0,
+  overlap: 0,
+  edgeGap: 0,
+  aspectRatio: 16 / 9
+});
+function ledCount(spec) {
+  return spec.top + spec.right + spec.bottom + spec.left;
+}
+function cornerIndex(spec, corner2) {
+  switch (corner2) {
+    case "top-left":
+      return 0;
+    case "top-right":
+      return spec.top;
+    case "bottom-right":
+      return spec.top + spec.right;
+    case "bottom-left":
+      return spec.top + spec.right + spec.bottom;
+  }
+}
+function classicLayout(spec) {
+  validateClassic(spec);
+  const { top, right, bottom, left, depthTopBottom: dh, depthLeftRight: dv } = spec;
+  const keystone = spec.keystone ?? NO_KEYSTONE;
+  const { topLeft: tl, topRight: tr, bottomRight: br, bottomLeft: bl } = keystone;
+  const overlap = spec.overlap ?? LAYOUT_DEFAULTS.overlap;
+  const gapV = spec.edgeGap ?? LAYOUT_DEFAULTS.edgeGap;
+  const gapH = gapV / (spec.aspectRatio ?? LAYOUT_DEFAULTS.aspectRatio);
+  const grow = (v, sign) => clampUnit(v + sign * overlap);
+  const rects = [];
+  for (let i = 0; i < top; i++) {
+    const stepX = (tr.x - tl.x - 2 * gapH) / top;
+    const stepY = (tr.y - tl.y) / top;
+    const yMin = tl.y + stepY * i;
+    rects.push({
+      xMin: grow(tl.x + stepX * i + gapH, -1),
+      xMax: grow(tl.x + stepX * (i + 1) + gapH, 1),
+      yMin,
+      yMax: yMin + dh
+    });
+  }
+  for (let i = 0; i < right; i++) {
+    const stepX = (br.x - tr.x) / right;
+    const stepY = (br.y - tr.y - 2 * gapV) / right;
+    const xMax = tr.x + stepX * (i + 1);
+    rects.push({
+      xMin: xMax - dv,
+      xMax,
+      yMin: grow(tr.y + stepY * i + gapV, -1),
+      yMax: grow(tr.y + stepY * (i + 1) + gapV, 1)
+    });
+  }
+  for (let i = bottom - 1; i >= 0; i--) {
+    const stepX = (br.x - bl.x - 2 * gapH) / bottom;
+    const stepY = (br.y - bl.y) / bottom;
+    const yMax = bl.y + stepY * i;
+    rects.push({
+      xMin: grow(bl.x + stepX * i + gapH, -1),
+      xMax: grow(bl.x + stepX * (i + 1) + gapH, 1),
+      yMin: yMax - dh,
+      yMax
+    });
+  }
+  for (let i = left - 1; i >= 0; i--) {
+    const stepX = (bl.x - tl.x) / left;
+    const stepY = (bl.y - tl.y - 2 * gapV) / left;
+    const xMin = tl.x + stepX * i;
+    rects.push({
+      xMin,
+      xMax: xMin + dv,
+      yMin: grow(tl.y + stepY * i + gapV, -1),
+      yMax: grow(tl.y + stepY * (i + 1) + gapV, 1)
+    });
+  }
+  return orient(rects, spec);
+}
+function orient(geometric, spec) {
+  const total = geometric.length;
+  const gap = spec.gap;
+  const clockwise = spec.clockwise;
+  const hasGap = gap !== void 0 && gap.length > 0;
+  const survives = (at2) => !hasGap || at2 < gap.position || at2 >= gap.position + gap.length;
+  let at = clockwise ? cornerIndex(spec, spec.start) : mod(cornerIndex(spec, spec.start) - 1, total);
+  while (!survives(at)) at = mod(at + (clockwise ? 1 : -1), total);
+  const anchor = geometric[at];
+  const kept = hasGap ? geometric.slice(0, gap.position).concat(geometric.slice(gap.position + gap.length)) : geometric;
+  const oriented = clockwise ? kept : [...kept].reverse();
+  const start = mod(oriented.indexOf(anchor) + (spec.offset ?? LAYOUT_DEFAULTS.offset), oriented.length);
+  return oriented.slice(start).concat(oriented.slice(0, start));
+}
+var MATRIX_REFERENCE = Object.freeze({
+  columns: 16,
+  rows: 9,
+  cabling: "snake",
+  start: "top-left",
+  direction: "horizontal"
+});
+function matrixLayout(spec) {
+  validateMatrix(spec);
+  const { columns, rows } = spec;
+  const gap = spec.gap ?? {};
+  const gapTop = gap.top ?? 0;
+  const gapRight = gap.right ?? 0;
+  const gapBottom = gap.bottom ?? 0;
+  const gapLeft = gap.left ?? 0;
+  const cellW = (1 - gapLeft - gapRight) / columns;
+  const cellH = (1 - gapTop - gapBottom) / rows;
+  const rects = [];
+  const cell = (x, y) => {
+    rects.push({
+      xMin: gapLeft + x * cellW,
+      xMax: gapLeft + (x + 1) * cellW,
+      yMin: gapTop + y * cellH,
+      yMax: gapTop + (y + 1) * cellH
+    });
+  };
+  const [startEdgeY, startEdgeX] = spec.start.split("-");
+  let fromX = startEdgeX === "right" ? columns - 1 : 0;
+  let fromY = startEdgeY === "bottom" ? rows - 1 : 0;
+  let toX = fromX === 0 ? columns - 1 : 0;
+  let toY = fromY === 0 ? rows - 1 : 0;
+  let forward = fromX < toX;
+  let downward = fromY < toY;
+  const snake = spec.cabling === "snake";
+  if (spec.direction === "vertical") {
+    for (let x = fromX; forward ? x <= toX : x >= toX; x += forward ? 1 : -1) {
+      for (let y = fromY; downward ? y <= toY : y >= toY; y += downward ? 1 : -1) cell(x, y);
+      if (snake) {
+        downward = !downward;
+        [fromY, toY] = [toY, fromY];
+      }
+    }
+  } else {
+    for (let y = fromY; downward ? y <= toY : y >= toY; y += downward ? 1 : -1) {
+      for (let x = fromX; forward ? x <= toX : x >= toX; x += forward ? 1 : -1) cell(x, y);
+      if (snake) {
+        forward = !forward;
+        [fromX, toX] = [toX, fromX];
+      }
+    }
+  }
+  return rects;
+}
+var DARK_RECT = Object.freeze({ xMin: 0, xMax: 0, yMin: 0, yMax: 0 });
+function applyBlacklist(rects, ranges) {
+  const out = [...rects];
+  for (const range of ranges) {
+    if (!Number.isInteger(range.start) || range.start < 0 || range.start >= out.length) {
+      throw new RangeError(`layout: blacklist start ${range.start} is outside a strip of ${out.length}`);
+    }
+    if (!Number.isInteger(range.length) || range.length < 1) {
+      throw new RangeError(`layout: blacklist length must be a positive integer, got ${range.length}`);
+    }
+    if (range.start + range.length > out.length) {
+      throw new RangeError(`layout: blacklist ${range.start}..${range.start + range.length - 1} is outside a strip of ${out.length}`);
+    }
+    for (let i = 0; i < range.length; i++) out[range.start + i] = DARK_RECT;
+  }
+  return out;
+}
+function clampUnit(v) {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+function mod(v, n) {
+  return (v % n + n) % n;
+}
+function requireCount(name, n) {
+  if (!Number.isInteger(n) || n < 0) throw new RangeError(`layout: ${name} must be a non-negative integer, got ${n}`);
+}
+function requireFraction(name, v, max = 1) {
+  if (!(v >= 0 && v <= max)) throw new RangeError(`layout: ${name} must be in [0, ${max}], got ${v}`);
+}
+function validateClassic(spec) {
+  for (const edge of ["top", "right", "bottom", "left"]) requireCount(edge, spec[edge]);
+  const total = ledCount(spec);
+  if (total === 0) throw new RangeError("layout: at least one LED is required");
+  for (const depth of ["depthTopBottom", "depthLeftRight"]) {
+    const d = spec[depth];
+    if (!(d > 0 && d <= 0.5)) throw new RangeError(`layout: ${depth} must be in (0, 0.5], got ${d}`);
+  }
+  if (!CORNERS.includes(spec.start)) throw new RangeError(`layout: unknown start corner ${String(spec.start)}`);
+  if (typeof spec.clockwise !== "boolean") throw new TypeError(`layout: clockwise must be a boolean, got ${String(spec.clockwise)}`);
+  if (spec.offset !== void 0 && !Number.isInteger(spec.offset)) {
+    throw new RangeError(`layout: offset must be an integer, got ${spec.offset}`);
+  }
+  if (spec.overlap !== void 0) requireFraction("overlap", spec.overlap, 0.5);
+  if (spec.edgeGap !== void 0) requireFraction("edgeGap", spec.edgeGap, 0.25);
+  if (spec.aspectRatio !== void 0 && !(spec.aspectRatio > 0 && Number.isFinite(spec.aspectRatio))) {
+    throw new RangeError(`layout: aspectRatio must be a positive finite number, got ${spec.aspectRatio}`);
+  }
+  if (spec.keystone !== void 0) {
+    for (const corner2 of ["topLeft", "topRight", "bottomRight", "bottomLeft"]) {
+      const point = spec.keystone[corner2];
+      if (point === void 0) throw new RangeError(`layout: keystone is missing ${corner2}`);
+      requireFraction(`keystone.${corner2}.x`, point.x);
+      requireFraction(`keystone.${corner2}.y`, point.y);
+    }
+  }
+  const gap = spec.gap;
+  if (gap !== void 0) {
+    if (!Number.isInteger(gap.position) || gap.position < 0 || gap.position >= total) {
+      throw new RangeError(`layout: gap position must be an integer in 0..${total - 1}, got ${gap.position}`);
+    }
+    requireCount("gap length", gap.length);
+    if (gap.position + gap.length > total) {
+      throw new RangeError(`layout: gap ${gap.position}..${gap.position + gap.length - 1} runs past the ${total} LED positions`);
+    }
+    if (gap.length >= total) throw new RangeError(`layout: a gap of ${gap.length} leaves nothing of ${total} LED positions`);
+  }
+  const gapV = spec.edgeGap ?? LAYOUT_DEFAULTS.edgeGap;
+  const gapH = gapV / (spec.aspectRatio ?? LAYOUT_DEFAULTS.aspectRatio);
+  if (2 * gapH >= 1 || 2 * gapV >= 1) {
+    throw new RangeError(`layout: edgeGap ${gapV} leaves no edge to place LEDs along`);
+  }
+}
+function validateMatrix(spec) {
+  for (const axis of ["columns", "rows"]) {
+    if (!Number.isInteger(spec[axis]) || spec[axis] < 1) {
+      throw new RangeError(`layout: ${axis} must be a positive integer, got ${spec[axis]}`);
+    }
+  }
+  if (spec.cabling !== "snake" && spec.cabling !== "parallel") {
+    throw new RangeError(`layout: unknown cabling ${String(spec.cabling)}`);
+  }
+  if (spec.direction !== "horizontal" && spec.direction !== "vertical") {
+    throw new RangeError(`layout: unknown direction ${String(spec.direction)}`);
+  }
+  if (!CORNERS.includes(spec.start)) throw new RangeError(`layout: unknown start corner ${String(spec.start)}`);
+  const gap = spec.gap ?? {};
+  for (const side of ["top", "right", "bottom", "left"]) {
+    const v = gap[side];
+    if (v !== void 0) requireFraction(`gap.${side}`, v);
+  }
+  if ((gap.left ?? 0) + (gap.right ?? 0) >= 1) throw new RangeError("layout: the left and right gaps leave no width");
+  if ((gap.top ?? 0) + (gap.bottom ?? 0) >= 1) throw new RangeError("layout: the top and bottom gaps leave no height");
+}
+
+// lib/engine/order.ts
+var COLOR_ORDERS = Object.freeze(["rgb", "rbg", "grb", "gbr", "brg", "bgr"]);
+var DEFAULT_COLOR_ORDER = "rgb";
+var PERMUTATIONS = Object.freeze({
+  rgb: Object.freeze([0, 1, 2]),
+  rbg: Object.freeze([0, 2, 1]),
+  grb: Object.freeze([1, 0, 2]),
+  gbr: Object.freeze([1, 2, 0]),
+  brg: Object.freeze([2, 0, 1]),
+  bgr: Object.freeze([2, 1, 0])
+});
+function createColorOrder(count, options = {}) {
+  if (!Number.isInteger(count) || count < 1) throw new RangeError(`order: count must be a positive integer, got ${count}`);
+  const base = options.order ?? DEFAULT_COLOR_ORDER;
+  requireOrder(base);
+  const orders = new Array(count).fill(base);
+  for (const [at, order] of Object.entries(options.overrides ?? {})) {
+    const led = Number(at);
+    if (!Number.isInteger(led) || led < 0 || led >= count) {
+      throw new RangeError(`order: override index must be an integer 0..${count - 1}, got ${at}`);
+    }
+    requireOrder(order);
+    orders[led] = order;
+  }
+  const table = new Uint8Array(count * 3);
+  let identity = true;
+  for (let led = 0; led < count; led++) {
+    const permutation = PERMUTATIONS[orders[led]];
+    for (let k = 0; k < 3; k++) table[led * 3 + k] = permutation[k];
+    if (orders[led] !== "rgb") identity = false;
+  }
+  const frozen = Object.freeze([...orders]);
+  return {
+    count,
+    identity,
+    orders: () => frozen,
+    apply(colors) {
+      if (identity) return colors;
+      if (colors.length < count * 3) {
+        throw new RangeError(`order: frame holds ${colors.length} channels, ${count} LEDs need ${count * 3}`);
+      }
+      for (let led = 0; led < count; led++) {
+        const at = led * 3;
+        const r = colors[at];
+        const g = colors[at + 1];
+        const b = colors[at + 2];
+        const p0 = table[at];
+        const p1 = table[at + 1];
+        const p2 = table[at + 2];
+        colors[at] = p0 === 0 ? r : p0 === 1 ? g : b;
+        colors[at + 1] = p1 === 0 ? r : p1 === 1 ? g : b;
+        colors[at + 2] = p2 === 0 ? r : p2 === 1 ? g : b;
+      }
+      return colors;
+    }
+  };
+}
+function requireOrder(order) {
+  if (!COLOR_ORDERS.includes(order)) throw new RangeError(`order: unknown colour order ${String(order)}`);
+}
+
+// lib/engine/config.ts
+var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
+var OUTPUT_TRANSPORTS = Object.freeze(["serial", "websocket", "wled"]);
+var CAPTURE_SOURCES = Object.freeze(["screen", "device"]);
+var DEFAULT_OUTPUT = Object.freeze({
+  transport: "serial",
+  format: "Afx"
+});
+var DEFAULT_CAPTURE = Object.freeze({
+  source: "screen",
+  gridWidth: 128,
+  gridHeight: 72,
+  fps: 60,
+  crop: Object.freeze({ left: 0, right: 0, top: 0, bottom: 0 })
+});
+var GRID_MIN = 16;
+var GRID_MAX = 480;
+var FPS_MIN = 1;
+var FPS_MAX = 240;
+var CROP_MAX = 0.45;
+var DEFAULT_ENGINE_CONFIG = Object.freeze({
+  layout: Object.freeze({ kind: "classic", ...REFERENCE_LAYOUT }),
+  blacklist: Object.freeze([]),
+  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
+  output: DEFAULT_OUTPUT,
+  capture: DEFAULT_CAPTURE
+});
+function resolveLayout(config) {
+  const layout = config.layout;
+  const rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
+  return applyBlacklist(rects, config.blacklist);
+}
+var ConfigError = class extends Error {
+  path;
+  constructor(path, message) {
+    super(`config: ${path} ${message}`);
+    this.name = "ConfigError";
+    this.path = path;
+  }
+};
+function object(value, path) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ConfigError(path, `must be an object, got ${describe(value)}`);
+  }
+  return value;
+}
+function integer(value, path, min, max = Number.MAX_SAFE_INTEGER) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    throw new ConfigError(path, `must be an integer in ${min}..${max}, got ${describe(value)}`);
+  }
+  return value;
+}
+function fraction(value, path) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new ConfigError(path, `must be a finite number, got ${describe(value)}`);
+  }
+  return value;
+}
+function boundedFraction(value, path, min, max, fallback) {
+  if (value === void 0) return fallback;
+  const n = fraction(value, path);
+  if (n < min || n > max) throw new ConfigError(path, `must be in ${min}..${max}, got ${describe(value)}`);
+  return n;
+}
+function readTransport(value, path) {
+  if (typeof value !== "string" || !OUTPUT_TRANSPORTS.includes(value)) {
+    throw new ConfigError(path, `must be one of ${OUTPUT_TRANSPORTS.join(", ")}, got ${describe(value)}`);
+  }
+  return value;
+}
+function readCaptureSource(value, path) {
+  if (typeof value !== "string" || !CAPTURE_SOURCES.includes(value)) {
+    throw new ConfigError(path, `must be one of ${CAPTURE_SOURCES.join(", ")}, got ${describe(value)}`);
+  }
+  return value;
+}
+function readWireFormat(value, path) {
+  if (typeof value !== "string" || !WIRE_FORMATS.includes(value)) {
+    throw new ConfigError(path, `must be one of ${WIRE_FORMATS.join(", ")}, got ${describe(value)}`);
+  }
+  return value;
+}
+function boolean(value, path) {
+  if (typeof value !== "boolean") throw new ConfigError(path, `must be a boolean, got ${describe(value)}`);
+  return value;
+}
+function corner(value, path) {
+  if (typeof value !== "string" || !CORNERS.includes(value)) {
+    throw new ConfigError(path, `must be one of ${CORNERS.join(", ")}, got ${describe(value)}`);
+  }
+  return value;
+}
+function optional(value, path, read) {
+  return value === void 0 ? void 0 : read(value, path);
+}
+function describe(value) {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `an array of ${value.length}`;
+  return typeof value === "object" ? "an object" : String(value);
+}
+function readKeystone(value, path) {
+  const raw = object(value, path);
+  const point = (name) => {
+    const p = object(raw[name], `${path}.${name}`);
+    return { x: fraction(p.x, `${path}.${name}.x`), y: fraction(p.y, `${path}.${name}.y`) };
+  };
+  return {
+    topLeft: point("topLeft"),
+    topRight: point("topRight"),
+    bottomRight: point("bottomRight"),
+    bottomLeft: point("bottomLeft")
+  };
+}
+function readClassic(raw) {
+  const spec = {
+    top: integer(raw.top, "layout.top", 0),
+    right: integer(raw.right, "layout.right", 0),
+    bottom: integer(raw.bottom, "layout.bottom", 0),
+    left: integer(raw.left, "layout.left", 0),
+    depthTopBottom: fraction(raw.depthTopBottom, "layout.depthTopBottom"),
+    depthLeftRight: fraction(raw.depthLeftRight, "layout.depthLeftRight"),
+    start: corner(raw.start, "layout.start"),
+    clockwise: boolean(raw.clockwise, "layout.clockwise")
+  };
+  const offset = optional(raw.offset, "layout.offset", (v, p) => integer(v, p, Number.MIN_SAFE_INTEGER));
+  if (offset !== void 0) spec.offset = offset;
+  const overlap = optional(raw.overlap, "layout.overlap", fraction);
+  if (overlap !== void 0) spec.overlap = overlap;
+  const edgeGap = optional(raw.edgeGap, "layout.edgeGap", fraction);
+  if (edgeGap !== void 0) spec.edgeGap = edgeGap;
+  const aspectRatio = optional(raw.aspectRatio, "layout.aspectRatio", fraction);
+  if (aspectRatio !== void 0) spec.aspectRatio = aspectRatio;
+  const keystone = optional(raw.keystone, "layout.keystone", readKeystone);
+  if (keystone !== void 0) spec.keystone = keystone;
+  if (raw.gap !== void 0) {
+    const gap = object(raw.gap, "layout.gap");
+    spec.gap = {
+      position: integer(gap.position, "layout.gap.position", 0),
+      length: integer(gap.length, "layout.gap.length", 0)
+    };
+  }
+  return spec;
+}
+function readMatrix(raw) {
+  const cabling = raw.cabling;
+  if (cabling !== "snake" && cabling !== "parallel") {
+    throw new ConfigError("layout.cabling", `must be snake or parallel, got ${describe(cabling)}`);
+  }
+  const direction = raw.direction;
+  if (direction !== "horizontal" && direction !== "vertical") {
+    throw new ConfigError("layout.direction", `must be horizontal or vertical, got ${describe(direction)}`);
+  }
+  const spec = {
+    columns: integer(raw.columns, "layout.columns", 1),
+    rows: integer(raw.rows, "layout.rows", 1),
+    cabling,
+    direction,
+    start: corner(raw.start, "layout.start")
+  };
+  if (raw.gap !== void 0) {
+    const gap = object(raw.gap, "layout.gap");
+    const side = (name) => optional(gap[name], `layout.gap.${name}`, fraction);
+    spec.gap = {};
+    for (const name of ["top", "right", "bottom", "left"]) {
+      const v = side(name);
+      if (v !== void 0) spec.gap[name] = v;
+    }
+  }
+  return spec;
+}
+function readColorOrderName(value, path) {
+  if (typeof value !== "string" || !COLOR_ORDERS.includes(value)) {
+    throw new ConfigError(path, `must be one of ${COLOR_ORDERS.join(", ")}, got ${describe(value)}`);
+  }
+  return value;
+}
+function parseEngineConfig(value) {
+  const raw = object(value, "config");
+  const layoutRaw = object(raw.layout, "config.layout");
+  const kind = layoutRaw.kind;
+  if (kind !== "classic" && kind !== "matrix") {
+    throw new ConfigError("layout.kind", `must be classic or matrix, got ${describe(kind)}`);
+  }
+  const layout = kind === "matrix" ? { kind, ...readMatrix(layoutRaw) } : { kind, ...readClassic(layoutRaw) };
+  const blacklistRaw = raw.blacklist ?? [];
+  if (!Array.isArray(blacklistRaw)) throw new ConfigError("blacklist", `must be an array, got ${describe(blacklistRaw)}`);
+  const blacklist = blacklistRaw.map((entry, i) => {
+    const range = object(entry, `blacklist[${i}]`);
+    return {
+      start: integer(range.start, `blacklist[${i}].start`, 0),
+      length: integer(range.length, `blacklist[${i}].length`, 1)
+    };
+  });
+  const colorOrderRaw = raw.colorOrder === void 0 ? {} : object(raw.colorOrder, "config.colorOrder");
+  const colorOrder = {
+    order: colorOrderRaw.order === void 0 ? DEFAULT_COLOR_ORDER : readColorOrderName(colorOrderRaw.order, "colorOrder.order")
+  };
+  if (colorOrderRaw.overrides !== void 0) {
+    const overridesRaw = object(colorOrderRaw.overrides, "colorOrder.overrides");
+    const overrides = {};
+    for (const [at, order] of Object.entries(overridesRaw)) {
+      const led = Number(at);
+      if (!Number.isInteger(led) || led < 0) {
+        throw new ConfigError(`colorOrder.overrides.${at}`, "must be keyed by a non-negative LED index");
+      }
+      overrides[led] = readColorOrderName(order, `colorOrder.overrides.${at}`);
+    }
+    colorOrder.overrides = overrides;
+  }
+  const outputRaw = raw.output === void 0 ? {} : object(raw.output, "config.output");
+  const format = outputRaw.format === void 0 ? DEFAULT_OUTPUT.format : readWireFormat(outputRaw.format, "output.format");
+  const transport = outputRaw.transport === void 0 ? DEFAULT_OUTPUT.transport : readTransport(outputRaw.transport, "output.transport");
+  const output = { transport, format };
+  if (transport === "serial") {
+    if (outputRaw.host !== void 0) throw new ConfigError("output.host", "is only used by the network transports");
+    if (outputRaw.segment !== void 0) throw new ConfigError("output.segment", "is only used by WLED");
+  } else {
+    const host = outputRaw.host;
+    if (typeof host !== "string" || host.trim() === "") {
+      throw new ConfigError("output.host", `must be a non-empty address for the ${transport} transport, got ${describe(host)}`);
+    }
+    output.host = host.trim();
+    if (transport === "wled") {
+      output.segment = outputRaw.segment === void 0 ? 0 : integer(outputRaw.segment, "output.segment", 0);
+    } else if (outputRaw.segment !== void 0) {
+      throw new ConfigError("output.segment", "is only used by WLED");
+    }
+  }
+  if (transport === "wled" && outputRaw.format !== void 0 && outputRaw.format !== "Afx") {
+    throw new ConfigError("output.format", "is not used by WLED, which has its own JSON protocol");
+  }
+  if (outputRaw.calibration !== void 0) {
+    if (format !== "Awa") {
+      throw new ConfigError("output.calibration", `is only carried by the Awa format, not ${format}`);
+    }
+    const cal = object(outputRaw.calibration, "output.calibration");
+    output.calibration = {
+      // Named as the protocol names them rather than as the UI might: one
+      // vocabulary for the four bytes, so nothing has to translate between two.
+      limit: integer(cal.limit, "output.calibration.limit", 0, 255),
+      red: integer(cal.red, "output.calibration.red", 0, 255),
+      green: integer(cal.green, "output.calibration.green", 0, 255),
+      blue: integer(cal.blue, "output.calibration.blue", 0, 255)
+    };
+  }
+  const captureRaw = raw.capture === void 0 ? {} : object(raw.capture, "config.capture");
+  const cropRaw = captureRaw.crop === void 0 ? {} : object(captureRaw.crop, "config.capture.crop");
+  const crop = {
+    left: boundedFraction(cropRaw.left, "capture.crop.left", 0, CROP_MAX, DEFAULT_CAPTURE.crop.left),
+    right: boundedFraction(cropRaw.right, "capture.crop.right", 0, CROP_MAX, DEFAULT_CAPTURE.crop.right),
+    top: boundedFraction(cropRaw.top, "capture.crop.top", 0, CROP_MAX, DEFAULT_CAPTURE.crop.top),
+    bottom: boundedFraction(cropRaw.bottom, "capture.crop.bottom", 0, CROP_MAX, DEFAULT_CAPTURE.crop.bottom)
+  };
+  if (crop.left + crop.right > 0.9) {
+    throw new ConfigError("capture.crop", `left and right crop leave ${(1 - crop.left - crop.right).toFixed(2)} of the width`);
+  }
+  if (crop.top + crop.bottom > 0.9) {
+    throw new ConfigError("capture.crop", `top and bottom crop leave ${(1 - crop.top - crop.bottom).toFixed(2)} of the height`);
+  }
+  const source = captureRaw.source === void 0 ? "screen" : readCaptureSource(captureRaw.source, "capture.source");
+  if (source === "screen" && captureRaw.deviceId !== void 0) {
+    throw new ConfigError("capture.deviceId", "is only used when the source is a video input");
+  }
+  const capture = {
+    source,
+    gridWidth: integer(captureRaw.gridWidth ?? DEFAULT_CAPTURE.gridWidth, "capture.gridWidth", GRID_MIN, GRID_MAX),
+    gridHeight: integer(captureRaw.gridHeight ?? DEFAULT_CAPTURE.gridHeight, "capture.gridHeight", GRID_MIN, GRID_MAX),
+    fps: integer(captureRaw.fps ?? DEFAULT_CAPTURE.fps, "capture.fps", FPS_MIN, FPS_MAX),
+    crop
+  };
+  if (source === "device" && captureRaw.deviceId !== void 0) {
+    if (typeof captureRaw.deviceId !== "string" || captureRaw.deviceId === "") {
+      throw new ConfigError("capture.deviceId", `must be a non-empty string, got ${describe(captureRaw.deviceId)}`);
+    }
+    capture.deviceId = captureRaw.deviceId;
+  }
+  const config = { layout, blacklist, colorOrder, output, capture };
+  let rects;
+  try {
+    rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
+  } catch (error) {
+    throw new ConfigError("layout", error instanceof Error ? error.message : String(error));
+  }
+  try {
+    applyBlacklist(rects, blacklist);
+  } catch (error) {
+    throw new ConfigError("blacklist", error instanceof Error ? error.message : String(error));
+  }
+  for (const at of Object.keys(colorOrder.overrides ?? {})) {
+    if (Number(at) >= rects.length) {
+      throw new ConfigError(`colorOrder.overrides.${at}`, `is past the ${rects.length} LEDs the layout describes`);
+    }
+  }
+  return config;
+}
+var MATRIX_ENGINE_CONFIG = Object.freeze({
+  layout: Object.freeze({ kind: "matrix", ...MATRIX_REFERENCE }),
+  blacklist: Object.freeze([]),
+  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
+  output: DEFAULT_OUTPUT,
+  capture: DEFAULT_CAPTURE
+});
+
+// lib/engine/instances.ts
+var MAX_INSTANCES = 8;
+function defaultInstances() {
+  return [{ id: "instance-1", name: "\u015Eerit 1", enabled: true, config: DEFAULT_ENGINE_CONFIG }];
+}
+var InstanceError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "InstanceError";
+  }
+};
+function parseInstances(value) {
+  if (!Array.isArray(value)) throw new InstanceError("instances: bir dizi olmal\u0131");
+  if (value.length === 0) throw new InstanceError("instances: en az bir \u015Ferit olmal\u0131");
+  if (value.length > MAX_INSTANCES) {
+    throw new InstanceError(`instances: en fazla ${MAX_INSTANCES} \u015Ferit s\xFCr\xFClebilir, ${value.length} geldi`);
+  }
+  const seen = /* @__PURE__ */ new Set();
+  return value.map((entry, index) => {
+    const instance = parseInstance(entry, index);
+    if (seen.has(instance.id)) throw new InstanceError(`instances: ${instance.id} iki kez ge\xE7iyor`);
+    seen.add(instance.id);
+    return instance;
+  });
+}
+function parseInstance(value, index = 0) {
+  if (typeof value !== "object" || value === null) {
+    throw new InstanceError(`instances: ${index}. \u015Ferit bir nesne olmal\u0131`);
+  }
+  const raw = value;
+  const id = typeof raw.id === "string" && raw.id.trim() !== "" ? raw.id.trim() : `instance-${index + 1}`;
+  const name = typeof raw.name === "string" && raw.name.trim() !== "" ? raw.name.trim() : `\u015Eerit ${index + 1}`;
+  return {
+    id,
+    name,
+    enabled: raw.enabled !== false,
+    // Thrown as it comes: a ConfigError names the field that is wrong, which is
+    // more use than an "instance 2 is invalid" that hides it.
+    config: parseEngineConfig(raw.config)
+  };
+}
+
+// lib/engine/fanout.ts
+function createFanout(upstream) {
+  const consumers = /* @__PURE__ */ new Set();
+  let upstreamStarted = false;
+  let ended = false;
+  const deliver = (frame, at) => {
+    const live = [...consumers].filter((consumer) => consumer.started && consumer.onFrame !== null);
+    if (live.length === 0) {
+      frame.release();
+      return;
+    }
+    let holds = live.length + 1;
+    const letGo = () => {
+      holds--;
+      if (holds === 0) frame.release();
+    };
+    for (const consumer of live) {
+      let releasedByThisConsumer = false;
+      const view = {
+        image: frame.image,
+        width: frame.width,
+        height: frame.height,
+        release: () => {
+          if (releasedByThisConsumer) return;
+          releasedByThisConsumer = true;
+          letGo();
+        }
+      };
+      try {
+        consumer.onFrame?.(view, at);
+      } catch {
+        view.release();
+      }
+    }
+    letGo();
+  };
+  const finish = (error) => {
+    ended = true;
+    upstreamStarted = false;
+    for (const consumer of [...consumers]) {
+      if (consumer.started) consumer.onEnd?.(error);
+      consumer.started = false;
+    }
+  };
+  function startUpstream() {
+    if (upstreamStarted) return;
+    upstreamStarted = true;
+    ended = false;
+    upstream.start(deliver, (error) => {
+      finish(error);
+    });
+  }
+  async function stopUpstreamIfIdle() {
+    if (!upstreamStarted) return;
+    for (const consumer of consumers) if (consumer.started) return;
+    upstreamStarted = false;
+    await upstream.stop();
+  }
+  return {
+    kind: upstream.kind,
+    active: () => [...consumers].filter((consumer) => consumer.started).length,
+    attached: () => consumers.size,
+    ended: () => ended,
+    attach() {
+      const consumer = { started: false, onFrame: null, onEnd: null };
+      consumers.add(consumer);
+      return {
+        kind: upstream.kind,
+        settings: () => upstream.settings(),
+        start(onFrame, onEnd) {
+          consumer.onFrame = onFrame;
+          consumer.onEnd = onEnd ?? null;
+          consumer.started = true;
+          if (ended) {
+            consumer.started = false;
+            onEnd?.();
+            return;
+          }
+          startUpstream();
+        },
+        async stop() {
+          consumer.started = false;
+          consumer.onFrame = null;
+          consumer.onEnd = null;
+          consumers.delete(consumer);
+          await stopUpstreamIfIdle();
+        }
+      };
+    },
+    async stop() {
+      const wasStarted = upstreamStarted;
+      upstreamStarted = false;
+      ended = true;
+      for (const consumer of consumers) consumer.started = false;
+      consumers.clear();
+      if (wasStarted) await upstream.stop();
+    }
+  };
+}
+
 // lib/light.ts
 function srgbToLinear(channel5) {
   return channel5 <= 0.04045 ? channel5 / 12.92 : ((channel5 + 0.055) / 1.055) ** 2.4;
@@ -605,7 +1368,7 @@ async function openMicrophone(options = {}) {
     });
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
-    throw new Error(name === "NotAllowedError" ? "Mikrofon izni verilmedi." : describe(error));
+    throw new Error(name === "NotAllowedError" ? "Mikrofon izni verilmedi." : describe2(error));
   }
   return await build("microphone", stream, options);
 }
@@ -616,11 +1379,11 @@ async function openDisplayAudio(options = {}) {
     stream = await ask({ video: true, audio: true });
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
-    throw new Error(name === "NotAllowedError" ? "Ses kayna\u011F\u0131 se\xE7ilmedi." : describe(error));
+    throw new Error(name === "NotAllowedError" ? "Ses kayna\u011F\u0131 se\xE7ilmedi." : describe2(error));
   }
   return await build("display", stream, options);
 }
-function describe(error) {
+function describe2(error) {
   if (!(error instanceof Error)) return String(error);
   return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
 }
@@ -887,627 +1650,6 @@ function requireDuration(name, value) {
   if (!(Number.isFinite(value) && value >= 0)) throw new RangeError(`border: ${name} must be a finite non-negative number of ms, got ${value}`);
   return value;
 }
-
-// lib/engine/layout.ts
-var CORNERS = Object.freeze(["top-left", "top-right", "bottom-right", "bottom-left"]);
-var NO_KEYSTONE = Object.freeze({
-  topLeft: Object.freeze({ x: 0, y: 0 }),
-  topRight: Object.freeze({ x: 1, y: 0 }),
-  bottomRight: Object.freeze({ x: 1, y: 1 }),
-  bottomLeft: Object.freeze({ x: 0, y: 1 })
-});
-var REFERENCE_LAYOUT = Object.freeze({
-  top: 35,
-  right: 19,
-  bottom: 35,
-  left: 19,
-  depthTopBottom: 0.12,
-  depthLeftRight: 0.08,
-  start: "top-left",
-  clockwise: true
-});
-var LAYOUT_DEFAULTS = Object.freeze({
-  offset: 0,
-  overlap: 0,
-  edgeGap: 0,
-  aspectRatio: 16 / 9
-});
-function ledCount(spec) {
-  return spec.top + spec.right + spec.bottom + spec.left;
-}
-function cornerIndex(spec, corner2) {
-  switch (corner2) {
-    case "top-left":
-      return 0;
-    case "top-right":
-      return spec.top;
-    case "bottom-right":
-      return spec.top + spec.right;
-    case "bottom-left":
-      return spec.top + spec.right + spec.bottom;
-  }
-}
-function classicLayout(spec) {
-  validateClassic(spec);
-  const { top, right, bottom, left, depthTopBottom: dh, depthLeftRight: dv } = spec;
-  const keystone = spec.keystone ?? NO_KEYSTONE;
-  const { topLeft: tl, topRight: tr, bottomRight: br, bottomLeft: bl } = keystone;
-  const overlap = spec.overlap ?? LAYOUT_DEFAULTS.overlap;
-  const gapV = spec.edgeGap ?? LAYOUT_DEFAULTS.edgeGap;
-  const gapH = gapV / (spec.aspectRatio ?? LAYOUT_DEFAULTS.aspectRatio);
-  const grow = (v, sign) => clampUnit(v + sign * overlap);
-  const rects = [];
-  for (let i = 0; i < top; i++) {
-    const stepX = (tr.x - tl.x - 2 * gapH) / top;
-    const stepY = (tr.y - tl.y) / top;
-    const yMin = tl.y + stepY * i;
-    rects.push({
-      xMin: grow(tl.x + stepX * i + gapH, -1),
-      xMax: grow(tl.x + stepX * (i + 1) + gapH, 1),
-      yMin,
-      yMax: yMin + dh
-    });
-  }
-  for (let i = 0; i < right; i++) {
-    const stepX = (br.x - tr.x) / right;
-    const stepY = (br.y - tr.y - 2 * gapV) / right;
-    const xMax = tr.x + stepX * (i + 1);
-    rects.push({
-      xMin: xMax - dv,
-      xMax,
-      yMin: grow(tr.y + stepY * i + gapV, -1),
-      yMax: grow(tr.y + stepY * (i + 1) + gapV, 1)
-    });
-  }
-  for (let i = bottom - 1; i >= 0; i--) {
-    const stepX = (br.x - bl.x - 2 * gapH) / bottom;
-    const stepY = (br.y - bl.y) / bottom;
-    const yMax = bl.y + stepY * i;
-    rects.push({
-      xMin: grow(bl.x + stepX * i + gapH, -1),
-      xMax: grow(bl.x + stepX * (i + 1) + gapH, 1),
-      yMin: yMax - dh,
-      yMax
-    });
-  }
-  for (let i = left - 1; i >= 0; i--) {
-    const stepX = (bl.x - tl.x) / left;
-    const stepY = (bl.y - tl.y - 2 * gapV) / left;
-    const xMin = tl.x + stepX * i;
-    rects.push({
-      xMin,
-      xMax: xMin + dv,
-      yMin: grow(tl.y + stepY * i + gapV, -1),
-      yMax: grow(tl.y + stepY * (i + 1) + gapV, 1)
-    });
-  }
-  return orient(rects, spec);
-}
-function orient(geometric, spec) {
-  const total = geometric.length;
-  const gap = spec.gap;
-  const clockwise = spec.clockwise;
-  const hasGap = gap !== void 0 && gap.length > 0;
-  const survives = (at2) => !hasGap || at2 < gap.position || at2 >= gap.position + gap.length;
-  let at = clockwise ? cornerIndex(spec, spec.start) : mod(cornerIndex(spec, spec.start) - 1, total);
-  while (!survives(at)) at = mod(at + (clockwise ? 1 : -1), total);
-  const anchor = geometric[at];
-  const kept = hasGap ? geometric.slice(0, gap.position).concat(geometric.slice(gap.position + gap.length)) : geometric;
-  const oriented = clockwise ? kept : [...kept].reverse();
-  const start = mod(oriented.indexOf(anchor) + (spec.offset ?? LAYOUT_DEFAULTS.offset), oriented.length);
-  return oriented.slice(start).concat(oriented.slice(0, start));
-}
-var MATRIX_REFERENCE = Object.freeze({
-  columns: 16,
-  rows: 9,
-  cabling: "snake",
-  start: "top-left",
-  direction: "horizontal"
-});
-function matrixLayout(spec) {
-  validateMatrix(spec);
-  const { columns, rows } = spec;
-  const gap = spec.gap ?? {};
-  const gapTop = gap.top ?? 0;
-  const gapRight = gap.right ?? 0;
-  const gapBottom = gap.bottom ?? 0;
-  const gapLeft = gap.left ?? 0;
-  const cellW = (1 - gapLeft - gapRight) / columns;
-  const cellH = (1 - gapTop - gapBottom) / rows;
-  const rects = [];
-  const cell = (x, y) => {
-    rects.push({
-      xMin: gapLeft + x * cellW,
-      xMax: gapLeft + (x + 1) * cellW,
-      yMin: gapTop + y * cellH,
-      yMax: gapTop + (y + 1) * cellH
-    });
-  };
-  const [startEdgeY, startEdgeX] = spec.start.split("-");
-  let fromX = startEdgeX === "right" ? columns - 1 : 0;
-  let fromY = startEdgeY === "bottom" ? rows - 1 : 0;
-  let toX = fromX === 0 ? columns - 1 : 0;
-  let toY = fromY === 0 ? rows - 1 : 0;
-  let forward = fromX < toX;
-  let downward = fromY < toY;
-  const snake = spec.cabling === "snake";
-  if (spec.direction === "vertical") {
-    for (let x = fromX; forward ? x <= toX : x >= toX; x += forward ? 1 : -1) {
-      for (let y = fromY; downward ? y <= toY : y >= toY; y += downward ? 1 : -1) cell(x, y);
-      if (snake) {
-        downward = !downward;
-        [fromY, toY] = [toY, fromY];
-      }
-    }
-  } else {
-    for (let y = fromY; downward ? y <= toY : y >= toY; y += downward ? 1 : -1) {
-      for (let x = fromX; forward ? x <= toX : x >= toX; x += forward ? 1 : -1) cell(x, y);
-      if (snake) {
-        forward = !forward;
-        [fromX, toX] = [toX, fromX];
-      }
-    }
-  }
-  return rects;
-}
-var DARK_RECT = Object.freeze({ xMin: 0, xMax: 0, yMin: 0, yMax: 0 });
-function applyBlacklist(rects, ranges) {
-  const out = [...rects];
-  for (const range of ranges) {
-    if (!Number.isInteger(range.start) || range.start < 0 || range.start >= out.length) {
-      throw new RangeError(`layout: blacklist start ${range.start} is outside a strip of ${out.length}`);
-    }
-    if (!Number.isInteger(range.length) || range.length < 1) {
-      throw new RangeError(`layout: blacklist length must be a positive integer, got ${range.length}`);
-    }
-    if (range.start + range.length > out.length) {
-      throw new RangeError(`layout: blacklist ${range.start}..${range.start + range.length - 1} is outside a strip of ${out.length}`);
-    }
-    for (let i = 0; i < range.length; i++) out[range.start + i] = DARK_RECT;
-  }
-  return out;
-}
-function clampUnit(v) {
-  return v < 0 ? 0 : v > 1 ? 1 : v;
-}
-function mod(v, n) {
-  return (v % n + n) % n;
-}
-function requireCount(name, n) {
-  if (!Number.isInteger(n) || n < 0) throw new RangeError(`layout: ${name} must be a non-negative integer, got ${n}`);
-}
-function requireFraction(name, v, max = 1) {
-  if (!(v >= 0 && v <= max)) throw new RangeError(`layout: ${name} must be in [0, ${max}], got ${v}`);
-}
-function validateClassic(spec) {
-  for (const edge of ["top", "right", "bottom", "left"]) requireCount(edge, spec[edge]);
-  const total = ledCount(spec);
-  if (total === 0) throw new RangeError("layout: at least one LED is required");
-  for (const depth of ["depthTopBottom", "depthLeftRight"]) {
-    const d = spec[depth];
-    if (!(d > 0 && d <= 0.5)) throw new RangeError(`layout: ${depth} must be in (0, 0.5], got ${d}`);
-  }
-  if (!CORNERS.includes(spec.start)) throw new RangeError(`layout: unknown start corner ${String(spec.start)}`);
-  if (typeof spec.clockwise !== "boolean") throw new TypeError(`layout: clockwise must be a boolean, got ${String(spec.clockwise)}`);
-  if (spec.offset !== void 0 && !Number.isInteger(spec.offset)) {
-    throw new RangeError(`layout: offset must be an integer, got ${spec.offset}`);
-  }
-  if (spec.overlap !== void 0) requireFraction("overlap", spec.overlap, 0.5);
-  if (spec.edgeGap !== void 0) requireFraction("edgeGap", spec.edgeGap, 0.25);
-  if (spec.aspectRatio !== void 0 && !(spec.aspectRatio > 0 && Number.isFinite(spec.aspectRatio))) {
-    throw new RangeError(`layout: aspectRatio must be a positive finite number, got ${spec.aspectRatio}`);
-  }
-  if (spec.keystone !== void 0) {
-    for (const corner2 of ["topLeft", "topRight", "bottomRight", "bottomLeft"]) {
-      const point = spec.keystone[corner2];
-      if (point === void 0) throw new RangeError(`layout: keystone is missing ${corner2}`);
-      requireFraction(`keystone.${corner2}.x`, point.x);
-      requireFraction(`keystone.${corner2}.y`, point.y);
-    }
-  }
-  const gap = spec.gap;
-  if (gap !== void 0) {
-    if (!Number.isInteger(gap.position) || gap.position < 0 || gap.position >= total) {
-      throw new RangeError(`layout: gap position must be an integer in 0..${total - 1}, got ${gap.position}`);
-    }
-    requireCount("gap length", gap.length);
-    if (gap.position + gap.length > total) {
-      throw new RangeError(`layout: gap ${gap.position}..${gap.position + gap.length - 1} runs past the ${total} LED positions`);
-    }
-    if (gap.length >= total) throw new RangeError(`layout: a gap of ${gap.length} leaves nothing of ${total} LED positions`);
-  }
-  const gapV = spec.edgeGap ?? LAYOUT_DEFAULTS.edgeGap;
-  const gapH = gapV / (spec.aspectRatio ?? LAYOUT_DEFAULTS.aspectRatio);
-  if (2 * gapH >= 1 || 2 * gapV >= 1) {
-    throw new RangeError(`layout: edgeGap ${gapV} leaves no edge to place LEDs along`);
-  }
-}
-function validateMatrix(spec) {
-  for (const axis of ["columns", "rows"]) {
-    if (!Number.isInteger(spec[axis]) || spec[axis] < 1) {
-      throw new RangeError(`layout: ${axis} must be a positive integer, got ${spec[axis]}`);
-    }
-  }
-  if (spec.cabling !== "snake" && spec.cabling !== "parallel") {
-    throw new RangeError(`layout: unknown cabling ${String(spec.cabling)}`);
-  }
-  if (spec.direction !== "horizontal" && spec.direction !== "vertical") {
-    throw new RangeError(`layout: unknown direction ${String(spec.direction)}`);
-  }
-  if (!CORNERS.includes(spec.start)) throw new RangeError(`layout: unknown start corner ${String(spec.start)}`);
-  const gap = spec.gap ?? {};
-  for (const side of ["top", "right", "bottom", "left"]) {
-    const v = gap[side];
-    if (v !== void 0) requireFraction(`gap.${side}`, v);
-  }
-  if ((gap.left ?? 0) + (gap.right ?? 0) >= 1) throw new RangeError("layout: the left and right gaps leave no width");
-  if ((gap.top ?? 0) + (gap.bottom ?? 0) >= 1) throw new RangeError("layout: the top and bottom gaps leave no height");
-}
-
-// lib/engine/order.ts
-var COLOR_ORDERS = Object.freeze(["rgb", "rbg", "grb", "gbr", "brg", "bgr"]);
-var DEFAULT_COLOR_ORDER = "rgb";
-var PERMUTATIONS = Object.freeze({
-  rgb: Object.freeze([0, 1, 2]),
-  rbg: Object.freeze([0, 2, 1]),
-  grb: Object.freeze([1, 0, 2]),
-  gbr: Object.freeze([1, 2, 0]),
-  brg: Object.freeze([2, 0, 1]),
-  bgr: Object.freeze([2, 1, 0])
-});
-function createColorOrder(count, options = {}) {
-  if (!Number.isInteger(count) || count < 1) throw new RangeError(`order: count must be a positive integer, got ${count}`);
-  const base = options.order ?? DEFAULT_COLOR_ORDER;
-  requireOrder(base);
-  const orders = new Array(count).fill(base);
-  for (const [at, order] of Object.entries(options.overrides ?? {})) {
-    const led = Number(at);
-    if (!Number.isInteger(led) || led < 0 || led >= count) {
-      throw new RangeError(`order: override index must be an integer 0..${count - 1}, got ${at}`);
-    }
-    requireOrder(order);
-    orders[led] = order;
-  }
-  const table = new Uint8Array(count * 3);
-  let identity = true;
-  for (let led = 0; led < count; led++) {
-    const permutation = PERMUTATIONS[orders[led]];
-    for (let k = 0; k < 3; k++) table[led * 3 + k] = permutation[k];
-    if (orders[led] !== "rgb") identity = false;
-  }
-  const frozen = Object.freeze([...orders]);
-  return {
-    count,
-    identity,
-    orders: () => frozen,
-    apply(colors) {
-      if (identity) return colors;
-      if (colors.length < count * 3) {
-        throw new RangeError(`order: frame holds ${colors.length} channels, ${count} LEDs need ${count * 3}`);
-      }
-      for (let led = 0; led < count; led++) {
-        const at = led * 3;
-        const r = colors[at];
-        const g = colors[at + 1];
-        const b = colors[at + 2];
-        const p0 = table[at];
-        const p1 = table[at + 1];
-        const p2 = table[at + 2];
-        colors[at] = p0 === 0 ? r : p0 === 1 ? g : b;
-        colors[at + 1] = p1 === 0 ? r : p1 === 1 ? g : b;
-        colors[at + 2] = p2 === 0 ? r : p2 === 1 ? g : b;
-      }
-      return colors;
-    }
-  };
-}
-function requireOrder(order) {
-  if (!COLOR_ORDERS.includes(order)) throw new RangeError(`order: unknown colour order ${String(order)}`);
-}
-
-// lib/engine/config.ts
-var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
-var OUTPUT_TRANSPORTS = Object.freeze(["serial", "websocket", "wled"]);
-var CAPTURE_SOURCES = Object.freeze(["screen", "device"]);
-var DEFAULT_OUTPUT = Object.freeze({
-  transport: "serial",
-  format: "Afx"
-});
-var DEFAULT_CAPTURE = Object.freeze({
-  source: "screen",
-  gridWidth: 128,
-  gridHeight: 72,
-  fps: 60,
-  crop: Object.freeze({ left: 0, right: 0, top: 0, bottom: 0 })
-});
-var GRID_MIN = 16;
-var GRID_MAX = 480;
-var FPS_MIN = 1;
-var FPS_MAX = 240;
-var CROP_MAX = 0.45;
-var DEFAULT_ENGINE_CONFIG = Object.freeze({
-  layout: Object.freeze({ kind: "classic", ...REFERENCE_LAYOUT }),
-  blacklist: Object.freeze([]),
-  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
-  output: DEFAULT_OUTPUT,
-  capture: DEFAULT_CAPTURE
-});
-function resolveLayout(config) {
-  const layout = config.layout;
-  const rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
-  return applyBlacklist(rects, config.blacklist);
-}
-var ConfigError = class extends Error {
-  path;
-  constructor(path, message) {
-    super(`config: ${path} ${message}`);
-    this.name = "ConfigError";
-    this.path = path;
-  }
-};
-function object(value, path) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new ConfigError(path, `must be an object, got ${describe2(value)}`);
-  }
-  return value;
-}
-function integer(value, path, min, max = Number.MAX_SAFE_INTEGER) {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
-    throw new ConfigError(path, `must be an integer in ${min}..${max}, got ${describe2(value)}`);
-  }
-  return value;
-}
-function fraction(value, path) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new ConfigError(path, `must be a finite number, got ${describe2(value)}`);
-  }
-  return value;
-}
-function boundedFraction(value, path, min, max, fallback) {
-  if (value === void 0) return fallback;
-  const n = fraction(value, path);
-  if (n < min || n > max) throw new ConfigError(path, `must be in ${min}..${max}, got ${describe2(value)}`);
-  return n;
-}
-function readTransport(value, path) {
-  if (typeof value !== "string" || !OUTPUT_TRANSPORTS.includes(value)) {
-    throw new ConfigError(path, `must be one of ${OUTPUT_TRANSPORTS.join(", ")}, got ${describe2(value)}`);
-  }
-  return value;
-}
-function readCaptureSource(value, path) {
-  if (typeof value !== "string" || !CAPTURE_SOURCES.includes(value)) {
-    throw new ConfigError(path, `must be one of ${CAPTURE_SOURCES.join(", ")}, got ${describe2(value)}`);
-  }
-  return value;
-}
-function readWireFormat(value, path) {
-  if (typeof value !== "string" || !WIRE_FORMATS.includes(value)) {
-    throw new ConfigError(path, `must be one of ${WIRE_FORMATS.join(", ")}, got ${describe2(value)}`);
-  }
-  return value;
-}
-function boolean(value, path) {
-  if (typeof value !== "boolean") throw new ConfigError(path, `must be a boolean, got ${describe2(value)}`);
-  return value;
-}
-function corner(value, path) {
-  if (typeof value !== "string" || !CORNERS.includes(value)) {
-    throw new ConfigError(path, `must be one of ${CORNERS.join(", ")}, got ${describe2(value)}`);
-  }
-  return value;
-}
-function optional(value, path, read) {
-  return value === void 0 ? void 0 : read(value, path);
-}
-function describe2(value) {
-  if (typeof value === "string") return JSON.stringify(value);
-  if (value === null) return "null";
-  if (Array.isArray(value)) return `an array of ${value.length}`;
-  return typeof value === "object" ? "an object" : String(value);
-}
-function readKeystone(value, path) {
-  const raw = object(value, path);
-  const point = (name) => {
-    const p = object(raw[name], `${path}.${name}`);
-    return { x: fraction(p.x, `${path}.${name}.x`), y: fraction(p.y, `${path}.${name}.y`) };
-  };
-  return {
-    topLeft: point("topLeft"),
-    topRight: point("topRight"),
-    bottomRight: point("bottomRight"),
-    bottomLeft: point("bottomLeft")
-  };
-}
-function readClassic(raw) {
-  const spec = {
-    top: integer(raw.top, "layout.top", 0),
-    right: integer(raw.right, "layout.right", 0),
-    bottom: integer(raw.bottom, "layout.bottom", 0),
-    left: integer(raw.left, "layout.left", 0),
-    depthTopBottom: fraction(raw.depthTopBottom, "layout.depthTopBottom"),
-    depthLeftRight: fraction(raw.depthLeftRight, "layout.depthLeftRight"),
-    start: corner(raw.start, "layout.start"),
-    clockwise: boolean(raw.clockwise, "layout.clockwise")
-  };
-  const offset = optional(raw.offset, "layout.offset", (v, p) => integer(v, p, Number.MIN_SAFE_INTEGER));
-  if (offset !== void 0) spec.offset = offset;
-  const overlap = optional(raw.overlap, "layout.overlap", fraction);
-  if (overlap !== void 0) spec.overlap = overlap;
-  const edgeGap = optional(raw.edgeGap, "layout.edgeGap", fraction);
-  if (edgeGap !== void 0) spec.edgeGap = edgeGap;
-  const aspectRatio = optional(raw.aspectRatio, "layout.aspectRatio", fraction);
-  if (aspectRatio !== void 0) spec.aspectRatio = aspectRatio;
-  const keystone = optional(raw.keystone, "layout.keystone", readKeystone);
-  if (keystone !== void 0) spec.keystone = keystone;
-  if (raw.gap !== void 0) {
-    const gap = object(raw.gap, "layout.gap");
-    spec.gap = {
-      position: integer(gap.position, "layout.gap.position", 0),
-      length: integer(gap.length, "layout.gap.length", 0)
-    };
-  }
-  return spec;
-}
-function readMatrix(raw) {
-  const cabling = raw.cabling;
-  if (cabling !== "snake" && cabling !== "parallel") {
-    throw new ConfigError("layout.cabling", `must be snake or parallel, got ${describe2(cabling)}`);
-  }
-  const direction = raw.direction;
-  if (direction !== "horizontal" && direction !== "vertical") {
-    throw new ConfigError("layout.direction", `must be horizontal or vertical, got ${describe2(direction)}`);
-  }
-  const spec = {
-    columns: integer(raw.columns, "layout.columns", 1),
-    rows: integer(raw.rows, "layout.rows", 1),
-    cabling,
-    direction,
-    start: corner(raw.start, "layout.start")
-  };
-  if (raw.gap !== void 0) {
-    const gap = object(raw.gap, "layout.gap");
-    const side = (name) => optional(gap[name], `layout.gap.${name}`, fraction);
-    spec.gap = {};
-    for (const name of ["top", "right", "bottom", "left"]) {
-      const v = side(name);
-      if (v !== void 0) spec.gap[name] = v;
-    }
-  }
-  return spec;
-}
-function readColorOrderName(value, path) {
-  if (typeof value !== "string" || !COLOR_ORDERS.includes(value)) {
-    throw new ConfigError(path, `must be one of ${COLOR_ORDERS.join(", ")}, got ${describe2(value)}`);
-  }
-  return value;
-}
-function parseEngineConfig(value) {
-  const raw = object(value, "config");
-  const layoutRaw = object(raw.layout, "config.layout");
-  const kind = layoutRaw.kind;
-  if (kind !== "classic" && kind !== "matrix") {
-    throw new ConfigError("layout.kind", `must be classic or matrix, got ${describe2(kind)}`);
-  }
-  const layout = kind === "matrix" ? { kind, ...readMatrix(layoutRaw) } : { kind, ...readClassic(layoutRaw) };
-  const blacklistRaw = raw.blacklist ?? [];
-  if (!Array.isArray(blacklistRaw)) throw new ConfigError("blacklist", `must be an array, got ${describe2(blacklistRaw)}`);
-  const blacklist = blacklistRaw.map((entry, i) => {
-    const range = object(entry, `blacklist[${i}]`);
-    return {
-      start: integer(range.start, `blacklist[${i}].start`, 0),
-      length: integer(range.length, `blacklist[${i}].length`, 1)
-    };
-  });
-  const colorOrderRaw = raw.colorOrder === void 0 ? {} : object(raw.colorOrder, "config.colorOrder");
-  const colorOrder = {
-    order: colorOrderRaw.order === void 0 ? DEFAULT_COLOR_ORDER : readColorOrderName(colorOrderRaw.order, "colorOrder.order")
-  };
-  if (colorOrderRaw.overrides !== void 0) {
-    const overridesRaw = object(colorOrderRaw.overrides, "colorOrder.overrides");
-    const overrides = {};
-    for (const [at, order] of Object.entries(overridesRaw)) {
-      const led = Number(at);
-      if (!Number.isInteger(led) || led < 0) {
-        throw new ConfigError(`colorOrder.overrides.${at}`, "must be keyed by a non-negative LED index");
-      }
-      overrides[led] = readColorOrderName(order, `colorOrder.overrides.${at}`);
-    }
-    colorOrder.overrides = overrides;
-  }
-  const outputRaw = raw.output === void 0 ? {} : object(raw.output, "config.output");
-  const format = outputRaw.format === void 0 ? DEFAULT_OUTPUT.format : readWireFormat(outputRaw.format, "output.format");
-  const transport = outputRaw.transport === void 0 ? DEFAULT_OUTPUT.transport : readTransport(outputRaw.transport, "output.transport");
-  const output = { transport, format };
-  if (transport === "serial") {
-    if (outputRaw.host !== void 0) throw new ConfigError("output.host", "is only used by the network transports");
-    if (outputRaw.segment !== void 0) throw new ConfigError("output.segment", "is only used by WLED");
-  } else {
-    const host = outputRaw.host;
-    if (typeof host !== "string" || host.trim() === "") {
-      throw new ConfigError("output.host", `must be a non-empty address for the ${transport} transport, got ${describe2(host)}`);
-    }
-    output.host = host.trim();
-    if (transport === "wled") {
-      output.segment = outputRaw.segment === void 0 ? 0 : integer(outputRaw.segment, "output.segment", 0);
-    } else if (outputRaw.segment !== void 0) {
-      throw new ConfigError("output.segment", "is only used by WLED");
-    }
-  }
-  if (transport === "wled" && outputRaw.format !== void 0 && outputRaw.format !== "Afx") {
-    throw new ConfigError("output.format", "is not used by WLED, which has its own JSON protocol");
-  }
-  if (outputRaw.calibration !== void 0) {
-    if (format !== "Awa") {
-      throw new ConfigError("output.calibration", `is only carried by the Awa format, not ${format}`);
-    }
-    const cal = object(outputRaw.calibration, "output.calibration");
-    output.calibration = {
-      // Named as the protocol names them rather than as the UI might: one
-      // vocabulary for the four bytes, so nothing has to translate between two.
-      limit: integer(cal.limit, "output.calibration.limit", 0, 255),
-      red: integer(cal.red, "output.calibration.red", 0, 255),
-      green: integer(cal.green, "output.calibration.green", 0, 255),
-      blue: integer(cal.blue, "output.calibration.blue", 0, 255)
-    };
-  }
-  const captureRaw = raw.capture === void 0 ? {} : object(raw.capture, "config.capture");
-  const cropRaw = captureRaw.crop === void 0 ? {} : object(captureRaw.crop, "config.capture.crop");
-  const crop = {
-    left: boundedFraction(cropRaw.left, "capture.crop.left", 0, CROP_MAX, DEFAULT_CAPTURE.crop.left),
-    right: boundedFraction(cropRaw.right, "capture.crop.right", 0, CROP_MAX, DEFAULT_CAPTURE.crop.right),
-    top: boundedFraction(cropRaw.top, "capture.crop.top", 0, CROP_MAX, DEFAULT_CAPTURE.crop.top),
-    bottom: boundedFraction(cropRaw.bottom, "capture.crop.bottom", 0, CROP_MAX, DEFAULT_CAPTURE.crop.bottom)
-  };
-  if (crop.left + crop.right > 0.9) {
-    throw new ConfigError("capture.crop", `left and right crop leave ${(1 - crop.left - crop.right).toFixed(2)} of the width`);
-  }
-  if (crop.top + crop.bottom > 0.9) {
-    throw new ConfigError("capture.crop", `top and bottom crop leave ${(1 - crop.top - crop.bottom).toFixed(2)} of the height`);
-  }
-  const source = captureRaw.source === void 0 ? "screen" : readCaptureSource(captureRaw.source, "capture.source");
-  if (source === "screen" && captureRaw.deviceId !== void 0) {
-    throw new ConfigError("capture.deviceId", "is only used when the source is a video input");
-  }
-  const capture = {
-    source,
-    gridWidth: integer(captureRaw.gridWidth ?? DEFAULT_CAPTURE.gridWidth, "capture.gridWidth", GRID_MIN, GRID_MAX),
-    gridHeight: integer(captureRaw.gridHeight ?? DEFAULT_CAPTURE.gridHeight, "capture.gridHeight", GRID_MIN, GRID_MAX),
-    fps: integer(captureRaw.fps ?? DEFAULT_CAPTURE.fps, "capture.fps", FPS_MIN, FPS_MAX),
-    crop
-  };
-  if (source === "device" && captureRaw.deviceId !== void 0) {
-    if (typeof captureRaw.deviceId !== "string" || captureRaw.deviceId === "") {
-      throw new ConfigError("capture.deviceId", `must be a non-empty string, got ${describe2(captureRaw.deviceId)}`);
-    }
-    capture.deviceId = captureRaw.deviceId;
-  }
-  const config = { layout, blacklist, colorOrder, output, capture };
-  let rects;
-  try {
-    rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
-  } catch (error) {
-    throw new ConfigError("layout", error instanceof Error ? error.message : String(error));
-  }
-  try {
-    applyBlacklist(rects, blacklist);
-  } catch (error) {
-    throw new ConfigError("blacklist", error instanceof Error ? error.message : String(error));
-  }
-  for (const at of Object.keys(colorOrder.overrides ?? {})) {
-    if (Number(at) >= rects.length) {
-      throw new ConfigError(`colorOrder.overrides.${at}`, `is past the ${rects.length} LEDs the layout describes`);
-    }
-  }
-  return config;
-}
-var MATRIX_ENGINE_CONFIG = Object.freeze({
-  layout: Object.freeze({ kind: "matrix", ...MATRIX_REFERENCE }),
-  blacklist: Object.freeze([]),
-  colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
-  output: DEFAULT_OUTPUT,
-  capture: DEFAULT_CAPTURE
-});
 
 // lib/engine/protocol.ts
 var HEADER_SIZE = 6;
@@ -4658,6 +4800,147 @@ function describe3(error) {
   return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
 }
 
+// lib/engine/pool.ts
+function sourceKey(config) {
+  const capture = config.capture;
+  const source = capture.source ?? "screen";
+  return source === "device" ? `device:${capture.deviceId ?? ""}:${capture.fps}` : `screen:${capture.fps}`;
+}
+function createEnginePool(host, initial = defaultInstances(), options = {}) {
+  const slots = [];
+  const fanouts = /* @__PURE__ */ new Map();
+  const opening = /* @__PURE__ */ new Map();
+  function report() {
+    options.onReport?.(stats());
+  }
+  function stats() {
+    return {
+      instances: slots.map((slot) => {
+        const error = slot.engine.error();
+        return {
+          id: slot.instance.id,
+          name: slot.instance.name,
+          enabled: slot.instance.enabled,
+          state: slot.state,
+          stats: slot.stats,
+          ...error === void 0 ? {} : { error }
+        };
+      }),
+      captures: fanouts.size
+    };
+  }
+  async function share(key, open, config) {
+    const existing = fanouts.get(key);
+    if (existing !== void 0 && !existing.ended()) return existing.attach();
+    if (existing !== void 0) fanouts.delete(key);
+    let pending = opening.get(key);
+    if (pending === void 0) {
+      pending = open(config).then((source) => {
+        const fan = createFanout(source);
+        fanouts.set(key, fan);
+        return fan;
+      }).finally(() => {
+        opening.delete(key);
+      });
+      opening.set(key, pending);
+    }
+    return (await pending).attach();
+  }
+  function hostFor(id) {
+    return {
+      clock: host.clock,
+      createCanvas: host.createCanvas,
+      openSource: async (config) => await share(sourceKey(config), host.openSource, config),
+      ...host.openSelfTest === void 0 ? {} : {
+        // One generated picture for every strip. It is a test of the whole
+        // chain, and running it on one strip at a time would make "do both
+        // of my strips work" two separate answers.
+        openSelfTest: async (config) => await share("selftest", host.openSelfTest, config)
+      },
+      onReport: (engineStats, state) => {
+        const slot = slots.find((candidate) => candidate.instance.id === id);
+        if (slot === void 0) return;
+        slot.stats = engineStats;
+        slot.state = state;
+        report();
+      }
+    };
+  }
+  function build2(instance) {
+    const engine = createEngine(hostFor(instance.id));
+    engine.applyConfig(instance.config);
+    return { instance, engine, state: "idle", stats: null };
+  }
+  function apply(next) {
+    for (let i = slots.length - 1; i >= 0; i--) {
+      const slot = slots[i];
+      if (next.some((instance) => instance.id === slot.instance.id)) continue;
+      slot.engine.stop("user");
+      slots.splice(i, 1);
+    }
+    next.forEach((instance, index) => {
+      const found = slots.findIndex((slot2) => slot2.instance.id === instance.id);
+      if (found === -1) {
+        slots.splice(index, 0, build2(instance));
+        return;
+      }
+      const slot = slots[found];
+      const wasEnabled = slot.instance.enabled;
+      slot.instance = instance;
+      slot.engine.applyConfig(instance.config);
+      if (wasEnabled && !instance.enabled) slot.engine.stop("user");
+      if (found !== index) slots.splice(index, 0, ...slots.splice(found, 1));
+    });
+    report();
+    return next;
+  }
+  apply(parseInstances(structuredCloneOrCopy(initial)));
+  async function startEach(run) {
+    const enabled = slots.filter((slot) => slot.instance.enabled);
+    const results = await Promise.allSettled(enabled.map(async (slot) => {
+      await run(slot.engine);
+    }));
+    report();
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed !== void 0 && enabled.length === 1) throw failed.reason;
+  }
+  return {
+    instances: () => slots.map((slot) => ({ ...slot.instance })),
+    engine: (id) => slots.find((slot) => slot.instance.id === id)?.engine ?? null,
+    engines: () => slots.map((slot) => slot.engine),
+    stats,
+    setInstances(value) {
+      return apply(parseInstances(value));
+    },
+    async start() {
+      await startEach(async (engine) => {
+        await engine.start();
+      });
+    },
+    async selfTest() {
+      await startEach(async (engine) => {
+        await engine.selfTest();
+      });
+    },
+    stop(reason) {
+      for (const slot of slots) slot.engine.stop(reason);
+      report();
+    },
+    async dispose() {
+      for (const slot of slots) slot.engine.stop("user");
+      const open = [...fanouts.values()];
+      fanouts.clear();
+      opening.clear();
+      await Promise.allSettled(open.map(async (fan) => {
+        await fan.stop();
+      }));
+    }
+  };
+}
+function structuredCloneOrCopy(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 // lib/engine/source.ts
 function defaultProcessor(track) {
   const ctor = globalThis.MediaStreamTrackProcessor;
@@ -4829,38 +5112,98 @@ async function openSelfTest() {
   if (track === void 0) throw new Error("captureStream video vermedi");
   return createStreamSource({ track, clock });
 }
-var engine = createEngine({
-  clock,
-  createCanvas: (width, height) => new OffscreenCanvas(width, height),
-  openSource,
-  openSelfTest,
-  onReport: (stats, state) => {
-    void chrome.runtime.sendMessage({ type: "ambiflux/stats", target: "sw", stats }).catch(() => {
-    });
-    void chrome.runtime.sendMessage({ type: "ambiflux/state", target: "sw", state }).catch(() => {
-    });
+var pool = createEnginePool(
+  {
+    clock,
+    createCanvas: (width, height) => new OffscreenCanvas(width, height),
+    openSource,
+    openSelfTest
+  },
+  defaultInstances(),
+  {
+    onReport: (stats) => {
+      const first = stats.instances.find((instance) => instance.enabled) ?? stats.instances[0];
+      void chrome.runtime.sendMessage({
+        type: "ambiflux/stats",
+        target: "sw",
+        stats: first?.stats ?? null,
+        pool: stats
+      }).catch(() => {
+      });
+      void chrome.runtime.sendMessage({
+        type: "ambiflux/state",
+        target: "sw",
+        state: first?.state ?? "idle"
+      }).catch(() => {
+      });
+    }
   }
-});
-function stopEngine() {
+);
+function addressed(id) {
+  if (id !== void 0) return pool.engine(id);
+  const first = pool.instances().find((instance) => instance.enabled) ?? pool.instances()[0];
+  return first === void 0 ? null : pool.engine(first.id);
+}
+function stopPool() {
   if (selfTestTimer !== null) {
     clearInterval(selfTestTimer);
     selfTestTimer = null;
   }
-  engine.stop();
+  pool.stop();
 }
 function describe5(error) {
   if (!(error instanceof Error)) return String(error);
   return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
 }
+function noSuchInstance(id) {
+  return { state: "idle", error: `\u015Ferit bulunamad\u0131: ${id ?? "?"}` };
+}
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!isMessage(message) || !("target" in message) || message.target !== "offscreen") return false;
   switch (message.type) {
+    // Starting and stopping are POOL-wide. "Start the capture" means all of
+    // them: one picker, every strip following the screen it shows. A per-strip
+    // start would ask for the screen again for the second strip, which is the
+    // one thing the pool exists to avoid.
     case "ambiflux/start":
-      engine.start().then(() => sendResponse({ state: engine.state(), error: engine.error() }));
+      pool.start().then(
+        () => sendResponse({ state: firstState(), error: firstError() }),
+        (error) => sendResponse({ state: firstState(), error: describe5(error) })
+      );
       return true;
     case "ambiflux/selftest":
-      engine.selfTest().then(() => sendResponse({ state: engine.state(), error: engine.error() }));
+      pool.selfTest().then(
+        () => sendResponse({ state: firstState(), error: firstError() }),
+        (error) => sendResponse({ state: firstState(), error: describe5(error) })
+      );
       return true;
+    case "ambiflux/stop":
+      stopPool();
+      sendResponse({ state: firstState() });
+      return false;
+    case "ambiflux/instances":
+      try {
+        sendResponse({ type: "ambiflux/instances-reply", instances: pool.setInstances(message.instances) });
+      } catch (error) {
+        sendResponse({
+          type: "ambiflux/instances-reply",
+          instances: pool.instances(),
+          error: describe5(error)
+        });
+      }
+      return false;
+    case "ambiflux/instances-get":
+      sendResponse({ type: "ambiflux/instances-reply", instances: pool.instances() });
+      return false;
+    default:
+      break;
+  }
+  const engine = addressed("instance" in message ? message.instance : void 0);
+  if (engine === null) {
+    sendResponse(noSuchInstance("instance" in message ? message.instance : void 0));
+    return false;
+  }
+  switch (message.type) {
     case "ambiflux/pattern":
       try {
         engine.runPattern(message.spec);
@@ -4891,9 +5234,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       engine.clearLayer(message.priority);
       sendResponse({ state: engine.state() });
       return false;
+    // The rules reach every strip, because an action that only some of them
+    // obeyed would need a rule to say which - and until a rule can, applying
+    // one to half a room is worse than applying it to all of it.
     case "ambiflux/schedule":
       try {
-        sendResponse({ type: "ambiflux/schedule-reply", rules: engine.setSchedule(message.rules) });
+        const rules = engine.setSchedule(message.rules);
+        for (const other of pool.engines()) if (other !== engine) other.setSchedule(rules);
+        sendResponse({ type: "ambiflux/schedule-reply", rules });
       } catch (error) {
         sendResponse({
           type: "ambiflux/schedule-reply",
@@ -4904,10 +5252,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return false;
     case "ambiflux/schedule-get":
       sendResponse({ type: "ambiflux/schedule-reply", rules: engine.schedule() });
-      return false;
-    case "ambiflux/stop":
-      stopEngine();
-      sendResponse({ state: engine.state() });
       return false;
     case "ambiflux/serial": {
       const link = engine.link();
@@ -4950,18 +5294,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return false;
   }
 });
-void chrome.runtime.sendMessage({ type: "ambiflux/config-get", target: "sw" }).then((reply) => {
-  if (typeof reply === "object" && reply !== null && reply.type === "ambiflux/config-reply") {
-    const config = reply.config;
-    if (config !== null && config !== void 0) engine.applyConfig(config);
+var firstState = () => addressed()?.state() ?? "idle";
+var firstError = () => addressed()?.error();
+void chrome.runtime.sendMessage({ type: "ambiflux/instances-get", target: "sw" }).then(async (reply) => {
+  const instances = reading(reply, "ambiflux/instances-reply", "instances");
+  if (Array.isArray(instances) && instances.length > 0) {
+    pool.setInstances(instances);
+    return;
   }
+  const older = await chrome.runtime.sendMessage({ type: "ambiflux/config-get", target: "sw" });
+  const config = reading(older, "ambiflux/config-reply", "config");
+  if (config !== null && config !== void 0) addressed()?.applyConfig(config);
 }).catch(() => {
 });
 void chrome.runtime.sendMessage({ type: "ambiflux/schedule-get", target: "sw" }).then((reply) => {
-  if (typeof reply === "object" && reply !== null && reply.type === "ambiflux/schedule-reply") {
-    const rules = reply.rules;
-    if (Array.isArray(rules) && rules.length > 0) engine.setSchedule(rules);
-  }
+  const rules = reading(reply, "ambiflux/schedule-reply", "rules");
+  if (Array.isArray(rules) && rules.length > 0) for (const engine of pool.engines()) engine.setSchedule(rules);
 }).catch(() => {
 });
+function reading(reply, type, field) {
+  if (typeof reply !== "object" || reply === null) return void 0;
+  if (reply.type !== type) return void 0;
+  return reply[field];
+}
 //# sourceMappingURL=offscreen.js.map

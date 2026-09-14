@@ -4,6 +4,7 @@ import {
   serialiseEngineConfig,
   type EngineConfig
 } from '#lib/engine/config'
+import { defaultInstances, parseInstances, type Instance } from '#lib/engine/instances'
 import { parseRules, type ScheduleRule } from '#lib/engine/schedule'
 
 /**
@@ -147,4 +148,67 @@ export function storeSchedule (rules: readonly ScheduleRule[], storage: StorageL
 
 function describeStorage (error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+// ---------------------------------------------------------------------------
+// The strips.
+// ---------------------------------------------------------------------------
+
+/**
+ * The instance list, and the migration into it.
+ *
+ * Until now the panel stored ONE configuration, because there was one strip.
+ * Everyone who has used this already has that key, and a release that quietly
+ * reset them to the reference rig would be a release that lost their layout -
+ * the single most expensive thing in the application to type back in.
+ *
+ * So a stored single configuration is not ignored and not deleted: it becomes
+ * the first instance. The old key is left where it is, because a user who rolls
+ * back to a previous build should find their strip still configured.
+ */
+export const INSTANCES_STORAGE_KEY = 'ambiflux/instances'
+
+export type InstancesLoad =
+  | { instances: Instance[], source: 'default' | 'stored' | 'migrated', problem?: undefined }
+  /** Stored and unusable. The reference rig stands and `problem` says why. */
+  | { instances: Instance[], source: 'default', problem: string }
+
+export function loadStoredInstances (storage: StorageLike | null = defaultStorage()): InstancesLoad {
+  if (storage === null) return { instances: defaultInstances(), source: 'default' }
+  let raw: string | null
+  try {
+    raw = storage.getItem(INSTANCES_STORAGE_KEY)
+  } catch (error) {
+    return { instances: defaultInstances(), source: 'default', problem: describeStorage(error) }
+  }
+
+  if (raw === null) {
+    // Nothing here yet - but there may be a single configuration from before
+    // there were instances, and that is somebody's layout.
+    const single = loadStoredConfig(storage)
+    if (single.source !== 'stored') return { instances: defaultInstances(), source: 'default' }
+    const carried = defaultInstances()
+    carried[0] = { ...(carried[0] as Instance), config: single.config }
+    return { instances: carried, source: 'migrated' }
+  }
+
+  try {
+    return { instances: parseInstances(JSON.parse(raw)), source: 'stored' }
+  } catch (error) {
+    return { instances: defaultInstances(), source: 'default', problem: describeStorage(error) }
+  }
+}
+
+/** Returns the reason it could not be stored, or null. */
+export function storeInstances (
+  instances: readonly Instance[],
+  storage: StorageLike | null = defaultStorage()
+): string | null {
+  if (storage === null) return 'tarayıcı yerel depolamaya izin vermiyor'
+  try {
+    storage.setItem(INSTANCES_STORAGE_KEY, JSON.stringify(instances))
+    return null
+  } catch (error) {
+    return describeStorage(error)
+  }
 }

@@ -97,8 +97,8 @@ export function CalibrationCard () {
   const apply = useCallback(async (order: string): Promise<void> => {
     const next = { ...config, colorOrder: { ...config.colorOrder, order: order as never } }
     const failure = await saveConfig(next)
-    if (failure !== null) {
-      setWizard((current) => (current === null ? current : { ...current, problem: t('cal.order.failed', { reason: failure }) }))
+    if (failure.error !== undefined) {
+      setWizard((current) => (current === null ? current : { ...current, problem: t('cal.order.failed', { reason: failure.error as string }) }))
       return
     }
     setConfig(next)

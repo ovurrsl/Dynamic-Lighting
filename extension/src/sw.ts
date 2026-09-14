@@ -1,6 +1,7 @@
 import { APP_VERSION } from '#data/version'
 
-import { DEFAULT_ENGINE_CONFIG, parseEngineConfig, type EngineConfig } from '#lib/engine/config'
+import { parseEngineConfig, type EngineConfig } from '#lib/engine/config'
+import { defaultInstances, findInstance, parseInstances, updateInstance, type Instance } from '#lib/engine/instances'
 import { isMessage, type Message } from '#lib/extension/messages'
 import { parseRules, type ScheduleRule } from '#lib/engine/schedule'
 
@@ -18,7 +19,15 @@ import { parseRules, type ScheduleRule } from '#lib/engine/schedule'
  */
 
 const OFFSCREEN_URL = 'offscreen.html'
-/** Where the configuration lives across a worker that Chrome keeps killing. */
+/**
+ * Where the strips live across a worker that Chrome keeps killing.
+ *
+ * `CONFIG_KEY` is the key from before there were strips. It is still read, once,
+ * and never written: an installation that has been configured already has a
+ * layout under it, and a release that silently reset that would lose the single
+ * most expensive thing in the application to type back in.
+ */
+const INSTANCES_KEY = 'ambiflux/instances'
 const CONFIG_KEY = 'ambiflux/config'
 /** And the time-of-day rules, beside it and for the same reason. */
 const SCHEDULE_KEY = 'ambiflux/schedule'
@@ -58,54 +67,99 @@ let lastState: Message & { type: 'ambiflux/state' } | null = null
 let lastStats: Message & { type: 'ambiflux/stats' } | null = null
 
 /**
- * The configuration in force, and the worker is its owner: the offscreen
- * document is destroyed whenever capture stops and this worker itself is killed
- * after ~30 s idle, so neither can hold it. chrome.storage.local survives both.
+ * The strips in force, and the worker is their owner: the offscreen document is
+ * destroyed whenever capture stops and this worker itself is killed after ~30 s
+ * idle, so neither can hold them. chrome.storage.local survives both.
  *
- * Read through `loadConfig`, which parses what storage returns rather than
+ * Read through `loadInstances`, which parses what storage returns rather than
  * trusting it: the stored value was written by an older version of this
  * extension, which is a trust boundary like any other.
  */
-let config: EngineConfig | null = null
+let instances: Instance[] | null = null
 
-async function loadConfig (): Promise<EngineConfig> {
-  if (config !== null) return config
+async function loadInstances (): Promise<Instance[]> {
+  if (instances !== null) return instances
   try {
-    const stored = await chrome.storage.local.get(CONFIG_KEY)
-    const raw = stored[CONFIG_KEY]
-    config = raw === undefined ? DEFAULT_ENGINE_CONFIG : parseEngineConfig(raw)
+    const stored = await chrome.storage.local.get([INSTANCES_KEY, CONFIG_KEY])
+    const raw = stored[INSTANCES_KEY]
+    if (raw !== undefined) {
+      instances = parseInstances(raw)
+      return instances
+    }
+    // Nothing under the new key: there may be a single configuration from
+    // before there were strips, and it is somebody's layout. It becomes the
+    // first strip, and the old key is left where it is so a rollback still
+    // finds it.
+    instances = defaultInstances()
+    const single = stored[CONFIG_KEY]
+    if (single !== undefined) {
+      instances = updateInstance(instances, (instances[0] as Instance).id, { config: parseEngineConfig(single) })
+    }
   } catch {
-    // A config this version cannot read is not a reason to light nothing; the
-    // reference rig stands until the panel sends a good one.
-    config = DEFAULT_ENGINE_CONFIG
+    // A stored list this version cannot read is not a reason to light nothing;
+    // one strip on the reference rig stands until the panel sends a good one.
+    instances = defaultInstances()
   }
-  return config
+  return instances
 }
 
 /**
- * Validates, stores and forwards a new configuration. Validation happens here
- * as well as in the engine because this is the boundary the panel talks to: a
- * config that cannot be built must never reach storage, or the next start
- * would load it and fail with no one listening.
+ * Validates, stores and forwards a new strip list. Validation happens here as
+ * well as in the pool because this is the boundary the panel talks to: a list
+ * that cannot be built must never reach storage, or the next start would load
+ * it and fail with no one listening.
  */
-async function setConfig (value: unknown): Promise<{ config: EngineConfig, error?: string }> {
-  let parsed: EngineConfig
+async function setInstances (value: unknown): Promise<{ instances: Instance[], error?: string }> {
+  let parsed: Instance[]
   try {
-    parsed = parseEngineConfig(value)
+    parsed = parseInstances(value)
   } catch (error) {
-    return { config: await loadConfig(), error: error instanceof Error ? error.message : String(error) }
+    return { instances: await loadInstances(), error: error instanceof Error ? error.message : String(error) }
   }
-  config = parsed
-  await chrome.storage.local.set({ [CONFIG_KEY]: parsed })
+  instances = parsed
+  await chrome.storage.local.set({ [INSTANCES_KEY]: parsed })
   // Only if the engine is up: creating the document just to configure it would
   // start a capture nobody asked for.
   if (await offscreenExists()) {
     try {
-      await chrome.runtime.sendMessage({ type: 'ambiflux/config', target: 'offscreen', config: parsed } satisfies Message)
+      await chrome.runtime.sendMessage({ type: 'ambiflux/instances', target: 'offscreen', instances: parsed } satisfies Message)
     } catch {
-      // The document went away between the check and the send; it will ask for
-      // the configuration itself when it next loads.
+      // The document went away between the check and the send; it asks for the
+      // strips itself when it next loads.
     }
+  }
+  return { instances: parsed }
+}
+
+/** The configuration of one strip - the first, when the caller did not say. */
+async function loadConfig (id?: string): Promise<EngineConfig> {
+  const list = await loadInstances()
+  const found = id === undefined ? list[0] : findInstance(list, id)
+  return (found ?? list[0] as Instance).config
+}
+
+/**
+ * Replaces one strip's configuration.
+ *
+ * Still its own message rather than folded into `instances`, because it is what
+ * every editor in the panel sends and none of them should have to resend the
+ * whole list - a layout editor that had to would be overwriting the OTHER
+ * strips with whatever copy of them it happened to be holding.
+ */
+async function setConfig (value: unknown, id?: string): Promise<{ config: EngineConfig, error?: string }> {
+  const list = await loadInstances()
+  const target = id ?? (list[0] as Instance).id
+  let parsed: EngineConfig
+  try {
+    parsed = parseEngineConfig(value)
+  } catch (error) {
+    return { config: await loadConfig(target), error: error instanceof Error ? error.message : String(error) }
+  }
+  try {
+    const result = await setInstances(updateInstance(list, target, { config: parsed }))
+    if (result.error !== undefined) return { config: await loadConfig(target), error: result.error }
+  } catch (error) {
+    return { config: await loadConfig(target), error: error instanceof Error ? error.message : String(error) }
   }
   return { config: parsed }
 }
@@ -190,11 +244,13 @@ async function offscreenExists (): Promise<boolean> {
  */
 async function status (): Promise<Message> {
   const alive = await offscreenExists()
+  const pool = alive ? lastStats?.pool : undefined
   return {
     type: 'ambiflux/status-reply',
     version: APP_VERSION,
     state: alive ? lastState?.state ?? 'idle' : 'idle',
-    stats: alive ? lastStats?.stats ?? null : null
+    stats: alive ? lastStats?.stats ?? null : null,
+    ...(pool === undefined ? {} : { pool })
   }
 }
 
@@ -216,7 +272,7 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
       return true
 
     case 'ambiflux/config':
-      setConfig(message.config).then(
+      setConfig(message.config, message.instance).then(
         (result) => sendResponse({
           type: 'ambiflux/config-reply',
           config: result.config,
@@ -227,9 +283,29 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
       return true
 
     case 'ambiflux/config-get':
-      loadConfig().then(
+      loadConfig(message.instance).then(
         (current) => sendResponse({ type: 'ambiflux/config-reply', config: current } satisfies Message),
         (error: unknown) => sendResponse({ type: 'ambiflux/config-reply', config: null, error: String(error) } satisfies Message)
+      )
+      return true
+
+    case 'ambiflux/instances':
+      setInstances(message.instances).then(
+        (result) => sendResponse({
+          type: 'ambiflux/instances-reply',
+          instances: result.instances,
+          ...(result.error === undefined ? {} : { error: result.error })
+        } satisfies Message),
+        (error: unknown) => sendResponse({ type: 'ambiflux/instances-reply', instances: null, error: String(error) } satisfies Message)
+      )
+      return true
+
+    // Answered from storage like the schedule, and for the same reason: a panel
+    // that opens the strips page must not be the reason the engine exists.
+    case 'ambiflux/instances-get':
+      loadInstances().then(
+        (list) => sendResponse({ type: 'ambiflux/instances-reply', instances: list } satisfies Message),
+        (error: unknown) => sendResponse({ type: 'ambiflux/instances-reply', instances: null, error: String(error) } satisfies Message)
       )
       return true
 

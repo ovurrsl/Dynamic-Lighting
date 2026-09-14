@@ -541,7 +541,7 @@ function parseEngineConfig(value) {
     }
     capture.deviceId = captureRaw.deviceId;
   }
-  const config2 = { layout, blacklist, colorOrder, output, capture };
+  const config = { layout, blacklist, colorOrder, output, capture };
   let rects;
   try {
     rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
@@ -558,7 +558,7 @@ function parseEngineConfig(value) {
       throw new ConfigError(`colorOrder.overrides.${at}`, `is past the ${rects.length} LEDs the layout describes`);
     }
   }
-  return config2;
+  return config;
 }
 var MATRIX_ENGINE_CONFIG = Object.freeze({
   layout: Object.freeze({ kind: "matrix", ...MATRIX_REFERENCE }),
@@ -567,6 +567,61 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE
 });
+
+// lib/engine/instances.ts
+var MAX_INSTANCES = 8;
+function defaultInstances() {
+  return [{ id: "instance-1", name: "\u015Eerit 1", enabled: true, config: DEFAULT_ENGINE_CONFIG }];
+}
+function updateInstance(list, id, change) {
+  let found = false;
+  const next = list.map((instance) => {
+    if (instance.id !== id) return instance;
+    found = true;
+    return { ...instance, ...change, id: instance.id };
+  });
+  if (!found) throw new RangeError(`instances: ${id} diye bir \u015Ferit yok`);
+  return next;
+}
+function findInstance(list, id) {
+  return list.find((instance) => instance.id === id) ?? null;
+}
+var InstanceError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "InstanceError";
+  }
+};
+function parseInstances(value) {
+  if (!Array.isArray(value)) throw new InstanceError("instances: bir dizi olmal\u0131");
+  if (value.length === 0) throw new InstanceError("instances: en az bir \u015Ferit olmal\u0131");
+  if (value.length > MAX_INSTANCES) {
+    throw new InstanceError(`instances: en fazla ${MAX_INSTANCES} \u015Ferit s\xFCr\xFClebilir, ${value.length} geldi`);
+  }
+  const seen = /* @__PURE__ */ new Set();
+  return value.map((entry, index) => {
+    const instance = parseInstance(entry, index);
+    if (seen.has(instance.id)) throw new InstanceError(`instances: ${instance.id} iki kez ge\xE7iyor`);
+    seen.add(instance.id);
+    return instance;
+  });
+}
+function parseInstance(value, index = 0) {
+  if (typeof value !== "object" || value === null) {
+    throw new InstanceError(`instances: ${index}. \u015Ferit bir nesne olmal\u0131`);
+  }
+  const raw = value;
+  const id = typeof raw.id === "string" && raw.id.trim() !== "" ? raw.id.trim() : `instance-${index + 1}`;
+  const name = typeof raw.name === "string" && raw.name.trim() !== "" ? raw.name.trim() : `\u015Eerit ${index + 1}`;
+  return {
+    id,
+    name,
+    enabled: raw.enabled !== false,
+    // Thrown as it comes: a ConfigError names the field that is wrong, which is
+    // more use than an "instance 2 is invalid" that hides it.
+    config: parseEngineConfig(raw.config)
+  };
+}
 
 // lib/extension/messages.ts
 function isMessage(value) {
@@ -697,6 +752,7 @@ function channel2(value, index) {
 
 // extension/src/sw.ts
 var OFFSCREEN_URL = "offscreen.html";
+var INSTANCES_KEY = "ambiflux/instances";
 var CONFIG_KEY = "ambiflux/config";
 var SCHEDULE_KEY = "ambiflux/schedule";
 var creating = null;
@@ -728,32 +784,62 @@ async function ensureOffscreen() {
 }
 var lastState = null;
 var lastStats = null;
-var config = null;
-async function loadConfig() {
-  if (config !== null) return config;
+var instances = null;
+async function loadInstances() {
+  if (instances !== null) return instances;
   try {
-    const stored = await chrome.storage.local.get(CONFIG_KEY);
-    const raw = stored[CONFIG_KEY];
-    config = raw === void 0 ? DEFAULT_ENGINE_CONFIG : parseEngineConfig(raw);
+    const stored = await chrome.storage.local.get([INSTANCES_KEY, CONFIG_KEY]);
+    const raw = stored[INSTANCES_KEY];
+    if (raw !== void 0) {
+      instances = parseInstances(raw);
+      return instances;
+    }
+    instances = defaultInstances();
+    const single = stored[CONFIG_KEY];
+    if (single !== void 0) {
+      instances = updateInstance(instances, instances[0].id, { config: parseEngineConfig(single) });
+    }
   } catch {
-    config = DEFAULT_ENGINE_CONFIG;
+    instances = defaultInstances();
   }
-  return config;
+  return instances;
 }
-async function setConfig(value) {
+async function setInstances(value) {
+  let parsed;
+  try {
+    parsed = parseInstances(value);
+  } catch (error) {
+    return { instances: await loadInstances(), error: error instanceof Error ? error.message : String(error) };
+  }
+  instances = parsed;
+  await chrome.storage.local.set({ [INSTANCES_KEY]: parsed });
+  if (await offscreenExists()) {
+    try {
+      await chrome.runtime.sendMessage({ type: "ambiflux/instances", target: "offscreen", instances: parsed });
+    } catch {
+    }
+  }
+  return { instances: parsed };
+}
+async function loadConfig(id) {
+  const list = await loadInstances();
+  const found = id === void 0 ? list[0] : findInstance(list, id);
+  return (found ?? list[0]).config;
+}
+async function setConfig(value, id) {
+  const list = await loadInstances();
+  const target = id ?? list[0].id;
   let parsed;
   try {
     parsed = parseEngineConfig(value);
   } catch (error) {
-    return { config: await loadConfig(), error: error instanceof Error ? error.message : String(error) };
+    return { config: await loadConfig(target), error: error instanceof Error ? error.message : String(error) };
   }
-  config = parsed;
-  await chrome.storage.local.set({ [CONFIG_KEY]: parsed });
-  if (await offscreenExists()) {
-    try {
-      await chrome.runtime.sendMessage({ type: "ambiflux/config", target: "offscreen", config: parsed });
-    } catch {
-    }
+  try {
+    const result = await setInstances(updateInstance(list, target, { config: parsed }));
+    if (result.error !== void 0) return { config: await loadConfig(target), error: result.error };
+  } catch (error) {
+    return { config: await loadConfig(target), error: error instanceof Error ? error.message : String(error) };
   }
   return { config: parsed };
 }
@@ -800,11 +886,13 @@ async function offscreenExists() {
 }
 async function status() {
   const alive = await offscreenExists();
+  const pool = alive ? lastStats?.pool : void 0;
   return {
     type: "ambiflux/status-reply",
     version: APP_VERSION,
     state: alive ? lastState?.state ?? "idle" : "idle",
-    stats: alive ? lastStats?.stats ?? null : null
+    stats: alive ? lastStats?.stats ?? null : null,
+    ...pool === void 0 ? {} : { pool }
   };
 }
 function handle(message, sendResponse) {
@@ -822,7 +910,7 @@ function handle(message, sendResponse) {
       status().then(sendResponse, (error) => sendResponse({ error: String(error) }));
       return true;
     case "ambiflux/config":
-      setConfig(message.config).then(
+      setConfig(message.config, message.instance).then(
         (result) => sendResponse({
           type: "ambiflux/config-reply",
           config: result.config,
@@ -832,9 +920,27 @@ function handle(message, sendResponse) {
       );
       return true;
     case "ambiflux/config-get":
-      loadConfig().then(
+      loadConfig(message.instance).then(
         (current) => sendResponse({ type: "ambiflux/config-reply", config: current }),
         (error) => sendResponse({ type: "ambiflux/config-reply", config: null, error: String(error) })
+      );
+      return true;
+    case "ambiflux/instances":
+      setInstances(message.instances).then(
+        (result) => sendResponse({
+          type: "ambiflux/instances-reply",
+          instances: result.instances,
+          ...result.error === void 0 ? {} : { error: result.error }
+        }),
+        (error) => sendResponse({ type: "ambiflux/instances-reply", instances: null, error: String(error) })
+      );
+      return true;
+    // Answered from storage like the schedule, and for the same reason: a panel
+    // that opens the strips page must not be the reason the engine exists.
+    case "ambiflux/instances-get":
+      loadInstances().then(
+        (list) => sendResponse({ type: "ambiflux/instances-reply", instances: list }),
+        (error) => sendResponse({ type: "ambiflux/instances-reply", instances: null, error: String(error) })
       );
       return true;
     case "ambiflux/schedule":

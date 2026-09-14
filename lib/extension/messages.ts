@@ -1,3 +1,4 @@
+import type { PoolStats } from '#lib/engine/pool'
 import type { EngineConfig } from '#lib/engine/config'
 
 /**
@@ -57,7 +58,7 @@ export type Message =
    * a separately installed program of a possibly different version - so the
    * engine parses it with `parsePatternSpec` and answers with the error.
    */
-  | { type: 'ambiflux/pattern'; target: Target; spec: unknown }
+  | { type: 'ambiflux/pattern'; target: Target; spec: unknown; instance?: string }
   /**
    * Starts an effect: light with no screen behind it.
    *
@@ -65,41 +66,41 @@ export type Message =
    * pattern is diagnostic and bypasses smoothing and the channel order on
    * purpose; an effect is content and goes through both.
    */
-  | { type: 'ambiflux/effect'; target: Target; spec: unknown }
+  | { type: 'ambiflux/effect'; target: Target; spec: unknown; instance?: string }
   /** Starts an audio visualiser. `input` picks the microphone or tab audio. */
-  | { type: 'ambiflux/audio'; target: Target; spec: unknown; input?: 'microphone' | 'display' }
+  | { type: 'ambiflux/audio'; target: Target; spec: unknown; input?: 'microphone' | 'display'; instance?: string }
   /**
    * Drives the strip with one colour. With `durationMs` it is an interruption
    * that expires on its own; without, it is a base that effects run on top of.
    */
-  | { type: 'ambiflux/color'; target: Target; color: { r: number, g: number, b: number }; durationMs?: number }
+  | { type: 'ambiflux/color'; target: Target; color: { r: number, g: number, b: number }; durationMs?: number; instance?: string }
   /** Drops one priority layer, leaving the rest running. */
-  | { type: 'ambiflux/clear-layer'; target: Target; priority: number }
+  | { type: 'ambiflux/clear-layer'; target: Target; priority: number; instance?: string }
   /**
    * Replaces the time-of-day rules. UNVALIDATED here on purpose: they arrive
    * from the panel or from storage, so the engine parses them and answers with
    * the error rather than trusting them.
    */
   | { type: 'ambiflux/schedule'; target: Target; rules: unknown }
-  | { type: 'ambiflux/schedule-get'; target: Target }
+  | { type: 'ambiflux/schedule-get'; target: Target; instance?: string }
   | { type: 'ambiflux/schedule-reply'; rules: unknown[]; error?: string }
   /** Asks the worker for the engine's state and its latest statistics. */
   | { type: 'ambiflux/status'; target: Target }
-  | { type: 'ambiflux/status-reply'; version: string; state: EngineState; stats: EngineStats | null }
+  | { type: 'ambiflux/status-reply'; version: string; state: EngineState; stats: EngineStats | null; pool?: PoolStats }
   /**
    * The popup paired a serial port (navigator.serial.requestPort needs a
    * gesture); the engine should look again with getPorts() and connect.
    */
-  | { type: 'ambiflux/serial'; target: Target }
+  | { type: 'ambiflux/serial'; target: Target; instance?: string }
   /**
    * Replaces the engine's configuration - the layout, the blacklist, the
    * channel order. `config` is UNVALIDATED here on purpose: it arrives from
    * the panel or from chrome.storage, so the worker parses it with
    * parseEngineConfig and answers with the error rather than trusting it.
    */
-  | { type: 'ambiflux/config'; target: Target; config: unknown }
+  | { type: 'ambiflux/config'; target: Target; config: unknown; instance?: string }
   /** Asks for the configuration in force. */
-  | { type: 'ambiflux/config-get'; target: Target }
+  | { type: 'ambiflux/config-get'; target: Target; instance?: string }
   /**
    * The BOARD's own configuration, over the AxC control channel - a different
    * thing from the engine's config above, which never leaves this machine.
@@ -109,11 +110,27 @@ export type Message =
    * never carries a half-validated byte array, and a passphrase is not turned
    * into a number array that outlives the call in some log.
    */
-  | { type: 'ambiflux/control'; target: Target; control: ControlRequest }
+  | { type: 'ambiflux/control'; target: Target; control: ControlRequest; instance?: string }
   | { type: 'ambiflux/control-reply'; sent: boolean; error?: string }
   | { type: 'ambiflux/config-reply'; config: EngineConfig | null; error?: string }
-  /** Offscreen -> worker: the latest statistics, kept for whoever asks next. */
-  | { type: 'ambiflux/stats'; target: Target; stats: EngineStats }
+  /**
+   * The strips this installation drives.
+   *
+   * `instances` is UNVALIDATED for the same reason the configuration is: it
+   * comes from the panel or from chrome.storage, so the worker parses it and
+   * answers with the error rather than trusting it.
+   */
+  | { type: 'ambiflux/instances'; target: Target; instances: unknown }
+  | { type: 'ambiflux/instances-get'; target: Target }
+  | { type: 'ambiflux/instances-reply'; instances: unknown[] | null; error?: string }
+  /**
+   * Offscreen -> worker: the latest statistics, kept for whoever asks next.
+   *
+   * `stats` and `state` stay flat and describe ONE strip - whichever the panel
+   * is showing - because every card reads them and none of them should have to
+   * learn about instances to keep working. `pool` carries the rest.
+   */
+  | { type: 'ambiflux/stats'; target: Target; stats: EngineStats | null; pool?: PoolStats }
   | { type: 'ambiflux/state'; target: Target; state: EngineState }
 
 /** What the panel can ask the board to change about itself. */

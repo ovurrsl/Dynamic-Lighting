@@ -114,10 +114,12 @@ export function CaptureCard () {
     const next = { ...config, capture: current }
     void saveConfig(next).then((failure) => {
       setSaving(false)
-      if (failure !== null) { setNotice(t('capture.failed', { reason: failure })); return }
+      if (failure.error !== undefined) { setNotice(t('capture.failed', { reason: failure.error })); return }
       setConfig(next)
       setDraft(null)
-      setNotice(t('capture.applied'))
+      setNotice(failure.notStored === undefined
+        ? t('capture.applied')
+        : t('layout.appliedNotStored', { reason: failure.notStored }))
     })
   }, [config, current, problem, saveConfig, setConfig, t])
 

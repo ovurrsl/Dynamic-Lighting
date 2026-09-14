@@ -14,6 +14,7 @@ import {
   type MatrixLayoutSpec
 } from '#lib/engine/layout'
 import { COLOR_ORDERS, DEFAULT_COLOR_ORDER, type ColorOrder } from '#lib/engine/order'
+import { SMOOTHING_PROFILES } from '#lib/engine/smooth'
 import type { Calibration } from '#lib/engine/protocol'
 import type { LedRect } from '#lib/engine/types'
 
@@ -163,6 +164,41 @@ export interface CaptureConfig {
   crop: { left: number, right: number, top: number, bottom: number }
 }
 
+/**
+ * How hard the strip is smoothed.
+ *
+ * Until now these were the smoother's own defaults, compiled in: good numbers,
+ * but the right ones depend on what is on screen rather than on taste. A film
+ * is 24 fps of deliberate cuts, a game is continuous motion you are reacting
+ * to, and the smoothing that flatters one is wrong for the other - which is
+ * why the design plan ships three named profiles rather than a slider.
+ *
+ * Only the numbers are stored; the profile NAME is derived from them
+ * (`profileOf`). A stored name could otherwise say "balanced" over cinema's
+ * numbers, which is a state that can exist and means nothing.
+ */
+export interface SmoothingConfig {
+  /**
+   * Time constant while a channel RISES, ms. Short keeps flashes sharp, which
+   * is where the eye is sensitive.
+   */
+  attackMs: number
+  /**
+   * Time constant while a channel FALLS, ms. Long kills the shimmer, which is
+   * where the eye reads noise. The asymmetry is the whole point: Hyperion uses
+   * one constant for both and loses one of the two.
+   */
+  releaseMs: number
+  /**
+   * Mean |target - output| across every channel above which the frame SNAPS
+   * instead of being smoothed - a scene cut, reproduced as a cut.
+   *
+   * 1 turns it off exactly rather than by a sentinel: each channel's difference
+   * is at most 1, so a mean ABOVE 1 is unreachable.
+   */
+  cutThreshold: number
+}
+
 export interface EngineConfig {
   layout: LayoutConfig
   /** LEDs that are wired but must never light. */
@@ -170,6 +206,7 @@ export interface EngineConfig {
   colorOrder: ColorOrderConfig
   output: OutputConfig
   capture: CaptureConfig
+  smoothing: SmoothingConfig
 }
 
 export const DEFAULT_OUTPUT: Readonly<OutputConfig> = Object.freeze({
@@ -214,6 +251,19 @@ export const DEFAULT_CAPTURE: Readonly<CaptureConfig> = Object.freeze({
   crop: Object.freeze({ left: 0, right: 0, top: 0, bottom: 0 })
 })
 
+export const DEFAULT_SMOOTHING: Readonly<SmoothingConfig> = Object.freeze({ ...SMOOTHING_PROFILES.balanced })
+
+/**
+ * Time-constant bounds.
+ *
+ * The low end is one output period at 120 Hz: a constant shorter than the gap
+ * between two frames is not smoothing, it is a copy, and offering it would be
+ * offering a knob that does nothing below 8 ms. The high end is where the
+ * strip stops following the screen and starts following the last minute of it.
+ */
+export const SMOOTHING_MS_MIN = 0
+export const SMOOTHING_MS_MAX = 2000
+
 /** Grid bounds. The low end is where a 35-LED edge starts sharing cells between LEDs. */
 export const GRID_MIN = 16
 export const GRID_MAX = 480
@@ -228,7 +278,8 @@ export const DEFAULT_ENGINE_CONFIG: Readonly<EngineConfig> = Object.freeze({
   blacklist: Object.freeze([]) as unknown as BlacklistRange[],
   colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
   output: DEFAULT_OUTPUT,
-  capture: DEFAULT_CAPTURE
+  capture: DEFAULT_CAPTURE,
+  smoothing: DEFAULT_SMOOTHING
 })
 
 /** Number of LEDs the layout describes, before the blacklist (which keeps the count). */
@@ -556,7 +607,14 @@ export function parseEngineConfig (value: unknown): EngineConfig {
     capture.deviceId = captureRaw.deviceId
   }
 
-  const config: EngineConfig = { layout, blacklist, colorOrder, output, capture }
+  const smoothingRaw = raw.smoothing === undefined ? {} : object(raw.smoothing, 'config.smoothing')
+  const smoothing: SmoothingConfig = {
+    attackMs: boundedFraction(smoothingRaw.attackMs, 'smoothing.attackMs', SMOOTHING_MS_MIN, SMOOTHING_MS_MAX, DEFAULT_SMOOTHING.attackMs),
+    releaseMs: boundedFraction(smoothingRaw.releaseMs, 'smoothing.releaseMs', SMOOTHING_MS_MIN, SMOOTHING_MS_MAX, DEFAULT_SMOOTHING.releaseMs),
+    cutThreshold: boundedFraction(smoothingRaw.cutThreshold, 'smoothing.cutThreshold', 0, 1, DEFAULT_SMOOTHING.cutThreshold)
+  }
+
+  const config: EngineConfig = { layout, blacklist, colorOrder, output, capture, smoothing }
 
   // The generators own their rules; ask them. A layout that cannot be built is
   // a config error with the generator's own message, which names the knob.
@@ -601,5 +659,6 @@ export const MATRIX_ENGINE_CONFIG: Readonly<EngineConfig> = Object.freeze({
   blacklist: Object.freeze([]) as unknown as BlacklistRange[],
   colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
   output: DEFAULT_OUTPUT,
-  capture: DEFAULT_CAPTURE
+  capture: DEFAULT_CAPTURE,
+  smoothing: DEFAULT_SMOOTHING
 })

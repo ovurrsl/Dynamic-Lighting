@@ -340,7 +340,18 @@ export function createEngine (host: EngineHost): Engine {
         order: config.colorOrder.order,
         ...(config.colorOrder.overrides === undefined ? {} : { overrides: config.colorOrder.overrides })
       }),
-      smoother: createSmoother({ mode: 'asymmetric', count: leds, outputHz: OUTPUT_HZ }, clock),
+      // The smoothing constants come from the configuration rather than from
+      // the smoother's defaults. They were compiled in until profiles existed,
+      // and the numbers were good - but "how hard to smooth" depends on what
+      // is on screen, and a film and a game want opposite answers.
+      smoother: createSmoother({
+        mode: 'asymmetric',
+        count: leds,
+        outputHz: OUTPUT_HZ,
+        attackMs: config.smoothing.attackMs,
+        releaseMs: config.smoothing.releaseMs,
+        cutThreshold: config.smoothing.cutThreshold
+      }, clock),
       target: allocLedColors(leds),
       // Built with the stages rather than with the effect: it depends on the
       // layout, and a layout edit while an effect is running must not leave the

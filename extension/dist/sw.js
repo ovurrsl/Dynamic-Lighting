@@ -269,6 +269,31 @@ var PERMUTATIONS = Object.freeze({
   bgr: Object.freeze([2, 1, 0])
 });
 
+// lib/engine/types.ts
+var NO_BORDER = Object.freeze({ unknown: false, topBottom: 0, leftRight: 0 });
+
+// lib/engine/smooth.ts
+var SMOOTHING_DEFAULTS = Object.freeze({
+  outputHz: 120,
+  settlingMs: 150,
+  minStep: 1 / 65535,
+  decay: 1,
+  attackMs: 15,
+  releaseMs: 90,
+  absFloor: 4 / 65535,
+  relFloor: 0.01,
+  cutThreshold: 0.25
+});
+var SMOOTHING_PROFILES = Object.freeze({
+  /** Deliberate cuts, long dwell: smooth hard and let the bypass catch the cuts. */
+  cinema: Object.freeze({ attackMs: 40, releaseMs: 200, cutThreshold: 0.25 }),
+  /** The default. Sharp on the way up, quiet on the way down. */
+  balanced: Object.freeze({ attackMs: 15, releaseMs: 90, cutThreshold: 0.25 }),
+  /** Continuous motion you are reacting to: nearly transparent, no bypass. */
+  competitive: Object.freeze({ attackMs: 6, releaseMs: 30, cutThreshold: 1 })
+});
+var SMOOTHING_PROFILE_NAMES = Object.freeze(["cinema", "balanced", "competitive"]);
+
 // lib/engine/config.ts
 var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
 var OUTPUT_TRANSPORTS = Object.freeze(["serial", "websocket", "wled"]);
@@ -284,6 +309,9 @@ var DEFAULT_CAPTURE = Object.freeze({
   fps: 60,
   crop: Object.freeze({ left: 0, right: 0, top: 0, bottom: 0 })
 });
+var DEFAULT_SMOOTHING = Object.freeze({ ...SMOOTHING_PROFILES.balanced });
+var SMOOTHING_MS_MIN = 0;
+var SMOOTHING_MS_MAX = 2e3;
 var GRID_MIN = 16;
 var GRID_MAX = 480;
 var FPS_MIN = 1;
@@ -294,7 +322,8 @@ var DEFAULT_ENGINE_CONFIG = Object.freeze({
   blacklist: Object.freeze([]),
   colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
   output: DEFAULT_OUTPUT,
-  capture: DEFAULT_CAPTURE
+  capture: DEFAULT_CAPTURE,
+  smoothing: DEFAULT_SMOOTHING
 });
 var ConfigError = class extends Error {
   path;
@@ -541,7 +570,13 @@ function parseEngineConfig(value) {
     }
     capture.deviceId = captureRaw.deviceId;
   }
-  const config = { layout, blacklist, colorOrder, output, capture };
+  const smoothingRaw = raw.smoothing === void 0 ? {} : object(raw.smoothing, "config.smoothing");
+  const smoothing = {
+    attackMs: boundedFraction(smoothingRaw.attackMs, "smoothing.attackMs", SMOOTHING_MS_MIN, SMOOTHING_MS_MAX, DEFAULT_SMOOTHING.attackMs),
+    releaseMs: boundedFraction(smoothingRaw.releaseMs, "smoothing.releaseMs", SMOOTHING_MS_MIN, SMOOTHING_MS_MAX, DEFAULT_SMOOTHING.releaseMs),
+    cutThreshold: boundedFraction(smoothingRaw.cutThreshold, "smoothing.cutThreshold", 0, 1, DEFAULT_SMOOTHING.cutThreshold)
+  };
+  const config = { layout, blacklist, colorOrder, output, capture, smoothing };
   let rects;
   try {
     rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
@@ -565,7 +600,8 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   blacklist: Object.freeze([]),
   colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
   output: DEFAULT_OUTPUT,
-  capture: DEFAULT_CAPTURE
+  capture: DEFAULT_CAPTURE,
+  smoothing: DEFAULT_SMOOTHING
 });
 
 // lib/engine/instances.ts

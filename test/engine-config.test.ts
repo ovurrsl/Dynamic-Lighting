@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ConfigError, DEFAULT_CAPTURE, DEFAULT_ENGINE_CONFIG, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, switchTransport, type EngineConfig } from '#lib/engine/config'
+import { ConfigError, DEFAULT_CAPTURE, DEFAULT_ENGINE_CONFIG, DEFAULT_SMOOTHING, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, switchTransport, type EngineConfig } from '#lib/engine/config'
 import { DARK_RECT, REFERENCE_LAYOUT, classicLayout, matrixLayout } from '#lib/engine/layout'
+import { SMOOTHING_PROFILES, profileOf } from '#lib/engine/smooth'
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 const classic = (over: Record<string, unknown> = {}): unknown =>
@@ -351,4 +352,50 @@ test('every transport, from every other, produces something applicable', () => {
       assert.ok(parseEngineConfig(withOutput(filled)), `${from.transport} -> ${to}`)
     }
   }
+})
+
+// ---------------------------------------------------------------------------
+// Smoothing.
+// ---------------------------------------------------------------------------
+
+test('smoothing defaults to Balanced, which is what the strip ran before it was a knob', () => {
+  const config = parseEngineConfig({ layout: { kind: 'classic', ...REFERENCE_LAYOUT } })
+  assert.deepEqual(config.smoothing, { attackMs: 15, releaseMs: 90, cutThreshold: 0.25 })
+  assert.equal(profileOf(config.smoothing), 'balanced')
+})
+
+test('the profile name is derived, so it can never disagree with the numbers', () => {
+  // A stored name could say "balanced" over cinema's numbers, which is a state
+  // that can exist and means nothing.
+  assert.equal(profileOf(SMOOTHING_PROFILES.cinema), 'cinema')
+  assert.equal(profileOf(SMOOTHING_PROFILES.competitive), 'competitive')
+  assert.equal(profileOf({ attackMs: 15, releaseMs: 91, cutThreshold: 0.25 }), null, 'one edited number is custom')
+})
+
+test('the cut bypass is turned off exactly, not by a sentinel', () => {
+  // It fires when the mean |target - output| is ABOVE the threshold, and each
+  // channel differs by at most 1 - so a mean above 1 is unreachable.
+  assert.equal(SMOOTHING_PROFILES.competitive.cutThreshold, 1)
+  const off = parseEngineConfig({ layout: { kind: 'classic', ...REFERENCE_LAYOUT }, smoothing: { cutThreshold: 1 } })
+  assert.equal(off.smoothing.cutThreshold, 1)
+  assert.throws(
+    () => parseEngineConfig({ layout: { kind: 'classic', ...REFERENCE_LAYOUT }, smoothing: { cutThreshold: 1.5 } }),
+    /smoothing\.cutThreshold/
+  )
+})
+
+test('a time constant out of range is refused by name', () => {
+  const base = { layout: { kind: 'classic', ...REFERENCE_LAYOUT } }
+  assert.throws(() => parseEngineConfig({ ...base, smoothing: { attackMs: -1 } }), /smoothing\.attackMs/)
+  assert.throws(() => parseEngineConfig({ ...base, smoothing: { releaseMs: 5000 } }), /smoothing\.releaseMs/)
+  assert.throws(() => parseEngineConfig({ ...base, smoothing: { attackMs: 'hızlı' } }), /smoothing\.attackMs/)
+  assert.throws(() => parseEngineConfig({ ...base, smoothing: 'sinema' }), /config\.smoothing/)
+})
+
+test('a config written before smoothing was a setting still loads', () => {
+  // Everyone who has used this has one of these stored, and it must not be
+  // the reason their strip stops working after an update.
+  const older = JSON.parse(serialiseEngineConfig(DEFAULT_ENGINE_CONFIG)) as Record<string, unknown>
+  delete older.smoothing
+  assert.deepEqual(parseEngineConfig(older).smoothing, DEFAULT_SMOOTHING)
 })

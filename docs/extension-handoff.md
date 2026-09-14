@@ -646,7 +646,7 @@ tüm zinciri** ölçen tek yöntem bu.
 | (h) | Kalibrasyon sihirbazı | önkoşulu (j) hazır; köşe tıklama arayüzü kaldı |
 | (i) | Kanal sırası sihirbazı | **yapıldı** — panelde Kalibrasyon bölümünde |
 | (j) | Test deseni kaynağı | **yapıldı** — `lib/engine/patterns.ts`, 14 test |
-| (k) | Yumuşatma profilleri | açık |
+| (k) | Yumuşatma profilleri | **yapıldı** — üç profil + iki sabit + kesme bypass'ı, yeni Görüntü sayfası |
 | (l) | Renk düzeltme arayüzü | açık |
 | (m) | Kenar algılama modu | açık |
 | (n) | Telemetri paneli | kısmen — sayaçlar ve aşama kırılımı var, grafik yok |

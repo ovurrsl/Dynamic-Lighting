@@ -1,7 +1,8 @@
 'use client'
 
-import { createContext, useCallback, useContext, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useEngine } from '#components/Engine'
 import { DEFAULT_ENGINE_CONFIG, type EngineConfig } from '#lib/engine/config'
 
 /**
@@ -22,6 +23,14 @@ import { DEFAULT_ENGINE_CONFIG, type EngineConfig } from '#lib/engine/config'
  * - `loaded` is a profile handed to the editor as a draft. It is never applied
  *   here, so the rule holds everywhere: the strip changes on Apply, not while
  *   somebody browses.
+ *
+ * `config` is seeded from the ACTIVE STRIP rather than by whichever card
+ * happens to mount first. It used to be filled in by the layout editor
+ * reporting upwards, which worked only if you had visited the layout page: open
+ * the panel straight onto the capture or the picture settings and every card
+ * there was editing the reference rig instead of your strip, and pressing Apply
+ * would write it over the real one. The strip list is the one thing that has
+ * already been read from storage and validated, so it is what this follows.
  */
 
 export interface EngineConfigStore {
@@ -37,9 +46,29 @@ export interface EngineConfigStore {
 const Context = createContext<EngineConfigStore | null>(null)
 
 export function EngineConfigProvider ({ children }: { children: React.ReactNode }) {
+  const { instances, activeId } = useEngine()
   const [config, setConfig] = useState<EngineConfig>(DEFAULT_ENGINE_CONFIG as EngineConfig)
   const [draft, setDraft] = useState<EngineConfig>(DEFAULT_ENGINE_CONFIG as EngineConfig)
   const [loaded, setLoaded] = useState<{ config: EngineConfig, at: number } | undefined>(undefined)
+
+  /**
+   * Follows the active strip.
+   *
+   * The draft follows too, but only when the STRIP changes - not on every
+   * update of the list. Otherwise saving one card would reset a half-finished
+   * edit in the layout editor on another page, which is the draft's whole
+   * reason for existing.
+   */
+  const seeded = useRef<string | null>(null)
+  useEffect(() => {
+    const active = instances.find((instance) => instance.id === activeId)
+    if (active === undefined) return
+    setConfig(active.config)
+    if (seeded.current !== activeId) {
+      seeded.current = activeId
+      setDraft(active.config)
+    }
+  }, [instances, activeId])
 
   const load = useCallback((next: EngineConfig) => {
     setLoaded({ config: next, at: Date.now() })

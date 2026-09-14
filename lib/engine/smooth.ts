@@ -147,6 +147,66 @@ export const SMOOTHING_DEFAULTS = Object.freeze({
 })
 
 /**
+ * The three named profiles, and what separates them.
+ *
+ * These are the numbers from the design plan, and the reason there are three
+ * rather than a slider is that the right answer depends on what is on screen
+ * rather than on taste: a film is 24 fps of deliberate cuts, a game is
+ * continuous motion you are reacting to, and the smoothing that flatters one
+ * is wrong for the other.
+ *
+ * A profile is a PRESET, not a mode: only the numbers are stored, and the name
+ * is worked out by comparing them (`profileOf`). Storing the name as well would
+ * allow a configuration that says "balanced" and holds cinema's numbers, which
+ * is a state that can exist and means nothing.
+ *
+ * `cutThreshold: 1` is the scene-cut bypass turned OFF, exactly rather than by
+ * a sentinel: the bypass fires when the mean |target - output| across every
+ * channel is ABOVE the threshold, and each channel's difference is at most 1,
+ * so a mean above 1 is unreachable. Competitive turns it off because with a
+ * 6 ms attack the smoother is already nearly transparent - a snap on top of
+ * that is a visible step for nothing.
+ */
+export interface SmoothingProfileSettings {
+  attackMs: number
+  releaseMs: number
+  cutThreshold: number
+}
+
+export const SMOOTHING_PROFILES = Object.freeze({
+  /** Deliberate cuts, long dwell: smooth hard and let the bypass catch the cuts. */
+  cinema: Object.freeze({ attackMs: 40, releaseMs: 200, cutThreshold: 0.25 }),
+  /** The default. Sharp on the way up, quiet on the way down. */
+  balanced: Object.freeze({ attackMs: 15, releaseMs: 90, cutThreshold: 0.25 }),
+  /** Continuous motion you are reacting to: nearly transparent, no bypass. */
+  competitive: Object.freeze({ attackMs: 6, releaseMs: 30, cutThreshold: 1 })
+}) as Readonly<Record<SmoothingProfileName, SmoothingProfileSettings>>
+
+export type SmoothingProfileName = 'cinema' | 'balanced' | 'competitive'
+
+export const SMOOTHING_PROFILE_NAMES: readonly SmoothingProfileName[] =
+  Object.freeze(['cinema', 'balanced', 'competitive'])
+
+/**
+ * Which profile these numbers are, or null when they are somebody's own.
+ *
+ * Derived rather than stored, so the name shown and the numbers in force can
+ * never disagree - and editing any number makes the panel say "custom" without
+ * anything having to remember to.
+ */
+export function profileOf (settings: SmoothingProfileSettings): SmoothingProfileName | null {
+  for (const name of SMOOTHING_PROFILE_NAMES) {
+    const preset = SMOOTHING_PROFILES[name]
+    if (preset.attackMs === settings.attackMs &&
+        preset.releaseMs === settings.releaseMs &&
+        preset.cutThreshold === settings.cutThreshold) {
+      return name
+    }
+  }
+  return null
+}
+
+/**
  * Tolerance on the "is a slot open" comparison, in ms. A caller that steps its
  * clock by k * period accumulates a few ulps of drift and would otherwise miss
  * a period every so often; a nanosecond is far below anything a clock resolves.

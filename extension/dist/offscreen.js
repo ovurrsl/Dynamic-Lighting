@@ -315,6 +315,337 @@ function requireOrder(order) {
   if (!COLOR_ORDERS.includes(order)) throw new RangeError(`order: unknown colour order ${String(order)}`);
 }
 
+// lib/engine/types.ts
+var NO_BORDER = Object.freeze({ unknown: false, topBottom: 0, leftRight: 0 });
+function allocLedColors(count) {
+  return new Float32Array(count * 3);
+}
+
+// lib/engine/smooth.ts
+var SMOOTHING_DEFAULTS = Object.freeze({
+  outputHz: 120,
+  settlingMs: 150,
+  minStep: 1 / 65535,
+  decay: 1,
+  attackMs: 15,
+  releaseMs: 90,
+  absFloor: 4 / 65535,
+  relFloor: 0.01,
+  cutThreshold: 0.25
+});
+var SMOOTHING_PROFILES = Object.freeze({
+  /** Deliberate cuts, long dwell: smooth hard and let the bypass catch the cuts. */
+  cinema: Object.freeze({ attackMs: 40, releaseMs: 200, cutThreshold: 0.25 }),
+  /** The default. Sharp on the way up, quiet on the way down. */
+  balanced: Object.freeze({ attackMs: 15, releaseMs: 90, cutThreshold: 0.25 }),
+  /** Continuous motion you are reacting to: nearly transparent, no bypass. */
+  competitive: Object.freeze({ attackMs: 6, releaseMs: 30, cutThreshold: 1 })
+});
+var SMOOTHING_PROFILE_NAMES = Object.freeze(["cinema", "balanced", "competitive"]);
+var TIME_EPS = 1e-6;
+var Cadence = class {
+  period;
+  nextDue = null;
+  lastTaken = -Infinity;
+  constructor(period) {
+    this.period = period;
+  }
+  /** True when a slot is open at `now`, and takes it. */
+  take(now) {
+    if (this.nextDue !== null && now + TIME_EPS < this.nextDue) return false;
+    if (now - this.lastTaken < this.period / 2) return false;
+    this.nextDue = this.nextDue === null || now - this.nextDue >= this.period ? now + this.period : this.nextDue + this.period;
+    this.lastTaken = now;
+    return true;
+  }
+};
+function decayWeight(decay, s, t) {
+  if (decay === 1) return t - s;
+  return (decay + 1) * (Math.pow(t, decay) - Math.pow(s, decay));
+}
+function createSmoother(options, clock2) {
+  switch (options.mode) {
+    case "linear":
+      return new LinearSmoother(options, clock2);
+    case "decay":
+      return new DecaySmoother(options, clock2);
+    case "asymmetric":
+      return new AsymmetricSmoother(options, clock2);
+    default:
+      throw new RangeError(`smooth: unknown mode ${String(options.mode)}`);
+  }
+}
+var SmootherBase = class {
+  clock;
+  outputHz;
+  ledCount;
+  /** Where the output is now. Float32 so the emitted frame is bit-identical to it. */
+  state;
+  target;
+  /** Time the current target arrived; null before the first `setTarget`. */
+  targetSetTime = null;
+  /** Time of the last emitted frame; null before the first. */
+  lastEmit = null;
+  output;
+  out;
+  constructor(options, clock2) {
+    this.clock = clock2;
+    this.outputHz = options.outputHz ?? SMOOTHING_DEFAULTS.outputHz;
+    requirePositive("outputHz", this.outputHz);
+    this.output = new Cadence(1e3 / this.outputHz);
+    this.ledCount = validateCount(options.count);
+    this.state = allocLedColors(this.ledCount);
+    this.target = allocLedColors(this.ledCount);
+    this.out = allocLedColors(this.ledCount);
+  }
+  get count() {
+    return this.ledCount;
+  }
+  setTarget(colors, now = this.clock()) {
+    if (colors.length !== this.ledCount * 3) {
+      if (colors.length % 3 !== 0) throw new RangeError(`smooth: frame length ${colors.length} is not a multiple of 3`);
+      this.reset(colors.length / 3);
+    }
+    let changed = this.targetSetTime === null;
+    if (!changed) {
+      const target = this.target;
+      for (let i = 0; i < target.length; i++) {
+        if (target[i] !== colors[i]) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    this.target.set(colors);
+    this.targetSetTime = now;
+    this.onTarget(now, changed);
+  }
+  tick(now = this.clock()) {
+    this.observe(now);
+    if (!this.output.take(now)) return null;
+    this.advance(now);
+    this.out.set(this.state);
+    this.lastEmit = now;
+    return this.out;
+  }
+  current() {
+    return this.out;
+  }
+  reset(count = this.ledCount) {
+    this.ledCount = validateCount(count);
+    this.state = allocLedColors(this.ledCount);
+    this.target = allocLedColors(this.ledCount);
+    this.out = allocLedColors(this.ledCount);
+    this.targetSetTime = null;
+    this.lastEmit = null;
+    this.onReset();
+  }
+  /** Called after a new target is stored; `changed` is false for a repeat of the previous one. Must not move `state`. */
+  onTarget(_now, _changed) {
+  }
+  /** Called on every tick, emitting or not. */
+  observe(_now) {
+  }
+  onReset() {
+  }
+};
+var LinearSmoother = class extends SmootherBase {
+  mode = "linear";
+  settlingMs;
+  minStep;
+  targetTime = -Infinity;
+  constructor(options, clock2) {
+    super(options, clock2);
+    this.settlingMs = options.settlingMs ?? SMOOTHING_DEFAULTS.settlingMs;
+    this.minStep = options.minStep ?? SMOOTHING_DEFAULTS.minStep;
+    requireNonNegative("settlingMs", this.settlingMs);
+    requirePositive("minStep", this.minStep);
+  }
+  onTarget(now, changed) {
+    if (changed) this.targetTime = now + this.settlingMs;
+  }
+  advance(now) {
+    const { state, target } = this;
+    if (now >= this.targetTime) {
+      state.set(target);
+      return;
+    }
+    const previousWrite = this.lastEmit ?? this.targetSetTime ?? now;
+    const span = this.targetTime - previousWrite;
+    let k = span > 0 ? 1 - (this.targetTime - now) / span : 1;
+    if (k < 0) k = 0;
+    else if (k > 1) k = 1;
+    const minStep = this.minStep;
+    for (let i = 0; i < state.length; i++) {
+      const prev = state[i];
+      const goal = target[i];
+      const diff = goal - prev;
+      if (diff === 0) continue;
+      const distance = Math.abs(diff);
+      let step = k * distance;
+      if (step < minStep) step = minStep;
+      if (step > distance) step = distance;
+      let next = diff < 0 ? prev - step : prev + step;
+      if (Math.fround(next) === prev) {
+        next = nudgeFloat32(prev, goal);
+        if (diff < 0 ? next < goal : next > goal) next = goal;
+      }
+      state[i] = next;
+    }
+  }
+};
+function nudgeFloat32(value, towards) {
+  const magnitude = Math.abs(value);
+  const ulp = magnitude === 0 ? 2 ** -149 : 2 ** (Math.floor(Math.log2(magnitude)) - 23);
+  return towards > value ? value + ulp : value - ulp;
+}
+var DecaySmoother = class extends SmootherBase {
+  mode = "decay";
+  window;
+  decay;
+  interpolation;
+  normalizePartialWindow;
+  history = [];
+  /** Buffers of pruned frames, reused so a 120 Hz input does not churn the heap. */
+  pool = [];
+  /** Float64 accumulator: the sum is over up to hundreds of frames and Float32 would lose the small weights. */
+  acc;
+  constructor(options, clock2) {
+    super(options, clock2);
+    this.window = options.settlingMs ?? SMOOTHING_DEFAULTS.settlingMs;
+    this.decay = options.decay ?? SMOOTHING_DEFAULTS.decay;
+    const interpolationHz = options.interpolationHz ?? this.outputHz;
+    this.normalizePartialWindow = options.normalizePartialWindow ?? false;
+    requirePositive("settlingMs", this.window);
+    if (!(this.decay >= 1) || !Number.isFinite(this.decay)) throw new RangeError(`smooth: decay must be a finite number of at least 1, got ${this.decay}`);
+    requirePositive("interpolationHz", interpolationHz);
+    this.interpolation = new Cadence(1e3 / interpolationHz);
+    this.acc = new Float64Array(this.ledCount * 3);
+  }
+  onTarget(now, _changed) {
+    const windowStart = now - this.window;
+    let stale = -1;
+    for (const frame of this.history) {
+      if (frame.time >= windowStart) break;
+      stale++;
+    }
+    if (stale > 0) {
+      for (const frame of this.history.splice(0, stale)) this.pool.push(frame.colors);
+    }
+    const colors = this.pool.pop() ?? allocLedColors(this.ledCount);
+    colors.set(this.target);
+    this.history.push({ time: now, colors });
+  }
+  observe(now) {
+    if (this.interpolation.take(now)) this.interpolate(now);
+  }
+  advance(_now) {
+  }
+  onReset() {
+    this.history = [];
+    this.pool = [];
+    this.acc = new Float64Array(this.ledCount * 3);
+  }
+  /** Port of `interpolateFrame` (cpp:375-425). */
+  interpolate(now) {
+    const { acc, history, window, decay } = this;
+    const windowStart = now - window;
+    acc.fill(0);
+    let fs = 0;
+    let frameEnd = now;
+    for (let i = history.length - 1; i >= 0 && frameEnd > windowStart; i--) {
+      const frame = history[i];
+      let frameStart = frame.time > windowStart ? frame.time : windowStart;
+      if (frameStart > frameEnd) frameStart = frameEnd;
+      const weight = decayWeight(decay, (frameStart - windowStart) / window, (frameEnd - windowStart) / window);
+      fs += weight;
+      if (weight > 0) {
+        const colors = frame.colors;
+        for (let c = 0; c < acc.length; c++) acc[c] = acc[c] + weight * colors[c];
+      }
+      frameEnd = frameStart;
+    }
+    let divisor;
+    if (this.normalizePartialWindow) divisor = fs > 0 ? fs : 1;
+    else divisor = fs < 1 ? 1 : fs;
+    const state = this.state;
+    for (let c = 0; c < state.length; c++) state[c] = acc[c] / divisor;
+  }
+};
+var AsymmetricSmoother = class extends SmootherBase {
+  mode = "asymmetric";
+  attackMs;
+  releaseMs;
+  absFloor;
+  relFloor;
+  cutThreshold;
+  /** The deadbanded target the output heads for. */
+  accepted;
+  constructor(options, clock2) {
+    super(options, clock2);
+    this.attackMs = options.attackMs ?? SMOOTHING_DEFAULTS.attackMs;
+    this.releaseMs = options.releaseMs ?? SMOOTHING_DEFAULTS.releaseMs;
+    this.absFloor = options.absFloor ?? SMOOTHING_DEFAULTS.absFloor;
+    this.relFloor = options.relFloor ?? SMOOTHING_DEFAULTS.relFloor;
+    this.cutThreshold = options.cutThreshold ?? SMOOTHING_DEFAULTS.cutThreshold;
+    requirePositive("attackMs", this.attackMs);
+    requirePositive("releaseMs", this.releaseMs);
+    requireNonNegative("absFloor", this.absFloor);
+    requireNonNegative("relFloor", this.relFloor);
+    requireNonNegative("cutThreshold", this.cutThreshold);
+    this.accepted = allocLedColors(this.ledCount);
+  }
+  onTarget(_now, _changed) {
+    const { target, accepted, absFloor, relFloor } = this;
+    for (let i = 0; i < target.length; i++) {
+      const x = target[i];
+      if (!Number.isFinite(x)) continue;
+      const a = accepted[i];
+      const diff = x - a;
+      const eps = Math.max(absFloor, relFloor * a);
+      if (diff < eps && diff > -eps) continue;
+      accepted[i] = x;
+    }
+  }
+  onReset() {
+    this.accepted = allocLedColors(this.ledCount);
+  }
+  advance(now) {
+    const { state, accepted, absFloor } = this;
+    let totalDistance = 0;
+    for (let i = 0; i < state.length; i++) totalDistance += Math.abs(accepted[i] - state[i]);
+    if (totalDistance / state.length > this.cutThreshold) {
+      state.set(accepted);
+      return;
+    }
+    let dt = now - (this.lastEmit ?? this.targetSetTime ?? now);
+    if (dt < 0) dt = 0;
+    const attack = 1 - Math.exp(-dt / this.attackMs);
+    const release = 1 - Math.exp(-dt / this.releaseMs);
+    for (let i = 0; i < state.length; i++) {
+      const y = state[i];
+      const x = accepted[i];
+      const diff = x - y;
+      if (diff === 0) continue;
+      if (diff < absFloor && diff > -absFloor) {
+        state[i] = x;
+        continue;
+      }
+      state[i] = y + diff * (diff > 0 ? attack : release);
+    }
+  }
+};
+function validateCount(count) {
+  if (!Number.isInteger(count) || count < 1) throw new RangeError(`smooth: count must be a positive integer, got ${count}`);
+  return count;
+}
+function requirePositive(name, value) {
+  if (!(value > 0) || !Number.isFinite(value)) throw new RangeError(`smooth: ${name} must be a positive finite number, got ${value}`);
+}
+function requireNonNegative(name, value) {
+  if (!(value >= 0) || !Number.isFinite(value)) throw new RangeError(`smooth: ${name} must be a non-negative finite number, got ${value}`);
+}
+
 // lib/engine/config.ts
 var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
 var OUTPUT_TRANSPORTS = Object.freeze(["serial", "websocket", "wled"]);
@@ -330,6 +661,9 @@ var DEFAULT_CAPTURE = Object.freeze({
   fps: 60,
   crop: Object.freeze({ left: 0, right: 0, top: 0, bottom: 0 })
 });
+var DEFAULT_SMOOTHING = Object.freeze({ ...SMOOTHING_PROFILES.balanced });
+var SMOOTHING_MS_MIN = 0;
+var SMOOTHING_MS_MAX = 2e3;
 var GRID_MIN = 16;
 var GRID_MAX = 480;
 var FPS_MIN = 1;
@@ -340,7 +674,8 @@ var DEFAULT_ENGINE_CONFIG = Object.freeze({
   blacklist: Object.freeze([]),
   colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
   output: DEFAULT_OUTPUT,
-  capture: DEFAULT_CAPTURE
+  capture: DEFAULT_CAPTURE,
+  smoothing: DEFAULT_SMOOTHING
 });
 function resolveLayout(config) {
   const layout = config.layout;
@@ -592,7 +927,13 @@ function parseEngineConfig(value) {
     }
     capture.deviceId = captureRaw.deviceId;
   }
-  const config = { layout, blacklist, colorOrder, output, capture };
+  const smoothingRaw = raw.smoothing === void 0 ? {} : object(raw.smoothing, "config.smoothing");
+  const smoothing = {
+    attackMs: boundedFraction(smoothingRaw.attackMs, "smoothing.attackMs", SMOOTHING_MS_MIN, SMOOTHING_MS_MAX, DEFAULT_SMOOTHING.attackMs),
+    releaseMs: boundedFraction(smoothingRaw.releaseMs, "smoothing.releaseMs", SMOOTHING_MS_MIN, SMOOTHING_MS_MAX, DEFAULT_SMOOTHING.releaseMs),
+    cutThreshold: boundedFraction(smoothingRaw.cutThreshold, "smoothing.cutThreshold", 0, 1, DEFAULT_SMOOTHING.cutThreshold)
+  };
+  const config = { layout, blacklist, colorOrder, output, capture, smoothing };
   let rects;
   try {
     rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
@@ -616,7 +957,8 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   blacklist: Object.freeze([]),
   colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
   output: DEFAULT_OUTPUT,
-  capture: DEFAULT_CAPTURE
+  capture: DEFAULT_CAPTURE,
+  smoothing: DEFAULT_SMOOTHING
 });
 
 // lib/engine/instances.ts
@@ -1386,12 +1728,6 @@ async function openDisplayAudio(options = {}) {
 function describe2(error) {
   if (!(error instanceof Error)) return String(error);
   return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
-}
-
-// lib/engine/types.ts
-var NO_BORDER = Object.freeze({ unknown: false, topBottom: 0, leftRight: 0 });
-function allocLedColors(count) {
-  return new Float32Array(count * 3);
 }
 
 // lib/engine/border.ts
@@ -3595,322 +3931,6 @@ function createLoopbackSink(options) {
   };
 }
 
-// lib/engine/smooth.ts
-var SMOOTHING_DEFAULTS = Object.freeze({
-  outputHz: 120,
-  settlingMs: 150,
-  minStep: 1 / 65535,
-  decay: 1,
-  attackMs: 15,
-  releaseMs: 90,
-  absFloor: 4 / 65535,
-  relFloor: 0.01,
-  cutThreshold: 0.25
-});
-var TIME_EPS = 1e-6;
-var Cadence = class {
-  period;
-  nextDue = null;
-  lastTaken = -Infinity;
-  constructor(period) {
-    this.period = period;
-  }
-  /** True when a slot is open at `now`, and takes it. */
-  take(now) {
-    if (this.nextDue !== null && now + TIME_EPS < this.nextDue) return false;
-    if (now - this.lastTaken < this.period / 2) return false;
-    this.nextDue = this.nextDue === null || now - this.nextDue >= this.period ? now + this.period : this.nextDue + this.period;
-    this.lastTaken = now;
-    return true;
-  }
-};
-function decayWeight(decay, s, t) {
-  if (decay === 1) return t - s;
-  return (decay + 1) * (Math.pow(t, decay) - Math.pow(s, decay));
-}
-function createSmoother(options, clock2) {
-  switch (options.mode) {
-    case "linear":
-      return new LinearSmoother(options, clock2);
-    case "decay":
-      return new DecaySmoother(options, clock2);
-    case "asymmetric":
-      return new AsymmetricSmoother(options, clock2);
-    default:
-      throw new RangeError(`smooth: unknown mode ${String(options.mode)}`);
-  }
-}
-var SmootherBase = class {
-  clock;
-  outputHz;
-  ledCount;
-  /** Where the output is now. Float32 so the emitted frame is bit-identical to it. */
-  state;
-  target;
-  /** Time the current target arrived; null before the first `setTarget`. */
-  targetSetTime = null;
-  /** Time of the last emitted frame; null before the first. */
-  lastEmit = null;
-  output;
-  out;
-  constructor(options, clock2) {
-    this.clock = clock2;
-    this.outputHz = options.outputHz ?? SMOOTHING_DEFAULTS.outputHz;
-    requirePositive("outputHz", this.outputHz);
-    this.output = new Cadence(1e3 / this.outputHz);
-    this.ledCount = validateCount(options.count);
-    this.state = allocLedColors(this.ledCount);
-    this.target = allocLedColors(this.ledCount);
-    this.out = allocLedColors(this.ledCount);
-  }
-  get count() {
-    return this.ledCount;
-  }
-  setTarget(colors, now = this.clock()) {
-    if (colors.length !== this.ledCount * 3) {
-      if (colors.length % 3 !== 0) throw new RangeError(`smooth: frame length ${colors.length} is not a multiple of 3`);
-      this.reset(colors.length / 3);
-    }
-    let changed = this.targetSetTime === null;
-    if (!changed) {
-      const target = this.target;
-      for (let i = 0; i < target.length; i++) {
-        if (target[i] !== colors[i]) {
-          changed = true;
-          break;
-        }
-      }
-    }
-    this.target.set(colors);
-    this.targetSetTime = now;
-    this.onTarget(now, changed);
-  }
-  tick(now = this.clock()) {
-    this.observe(now);
-    if (!this.output.take(now)) return null;
-    this.advance(now);
-    this.out.set(this.state);
-    this.lastEmit = now;
-    return this.out;
-  }
-  current() {
-    return this.out;
-  }
-  reset(count = this.ledCount) {
-    this.ledCount = validateCount(count);
-    this.state = allocLedColors(this.ledCount);
-    this.target = allocLedColors(this.ledCount);
-    this.out = allocLedColors(this.ledCount);
-    this.targetSetTime = null;
-    this.lastEmit = null;
-    this.onReset();
-  }
-  /** Called after a new target is stored; `changed` is false for a repeat of the previous one. Must not move `state`. */
-  onTarget(_now, _changed) {
-  }
-  /** Called on every tick, emitting or not. */
-  observe(_now) {
-  }
-  onReset() {
-  }
-};
-var LinearSmoother = class extends SmootherBase {
-  mode = "linear";
-  settlingMs;
-  minStep;
-  targetTime = -Infinity;
-  constructor(options, clock2) {
-    super(options, clock2);
-    this.settlingMs = options.settlingMs ?? SMOOTHING_DEFAULTS.settlingMs;
-    this.minStep = options.minStep ?? SMOOTHING_DEFAULTS.minStep;
-    requireNonNegative("settlingMs", this.settlingMs);
-    requirePositive("minStep", this.minStep);
-  }
-  onTarget(now, changed) {
-    if (changed) this.targetTime = now + this.settlingMs;
-  }
-  advance(now) {
-    const { state, target } = this;
-    if (now >= this.targetTime) {
-      state.set(target);
-      return;
-    }
-    const previousWrite = this.lastEmit ?? this.targetSetTime ?? now;
-    const span = this.targetTime - previousWrite;
-    let k = span > 0 ? 1 - (this.targetTime - now) / span : 1;
-    if (k < 0) k = 0;
-    else if (k > 1) k = 1;
-    const minStep = this.minStep;
-    for (let i = 0; i < state.length; i++) {
-      const prev = state[i];
-      const goal = target[i];
-      const diff = goal - prev;
-      if (diff === 0) continue;
-      const distance = Math.abs(diff);
-      let step = k * distance;
-      if (step < minStep) step = minStep;
-      if (step > distance) step = distance;
-      let next = diff < 0 ? prev - step : prev + step;
-      if (Math.fround(next) === prev) {
-        next = nudgeFloat32(prev, goal);
-        if (diff < 0 ? next < goal : next > goal) next = goal;
-      }
-      state[i] = next;
-    }
-  }
-};
-function nudgeFloat32(value, towards) {
-  const magnitude = Math.abs(value);
-  const ulp = magnitude === 0 ? 2 ** -149 : 2 ** (Math.floor(Math.log2(magnitude)) - 23);
-  return towards > value ? value + ulp : value - ulp;
-}
-var DecaySmoother = class extends SmootherBase {
-  mode = "decay";
-  window;
-  decay;
-  interpolation;
-  normalizePartialWindow;
-  history = [];
-  /** Buffers of pruned frames, reused so a 120 Hz input does not churn the heap. */
-  pool = [];
-  /** Float64 accumulator: the sum is over up to hundreds of frames and Float32 would lose the small weights. */
-  acc;
-  constructor(options, clock2) {
-    super(options, clock2);
-    this.window = options.settlingMs ?? SMOOTHING_DEFAULTS.settlingMs;
-    this.decay = options.decay ?? SMOOTHING_DEFAULTS.decay;
-    const interpolationHz = options.interpolationHz ?? this.outputHz;
-    this.normalizePartialWindow = options.normalizePartialWindow ?? false;
-    requirePositive("settlingMs", this.window);
-    if (!(this.decay >= 1) || !Number.isFinite(this.decay)) throw new RangeError(`smooth: decay must be a finite number of at least 1, got ${this.decay}`);
-    requirePositive("interpolationHz", interpolationHz);
-    this.interpolation = new Cadence(1e3 / interpolationHz);
-    this.acc = new Float64Array(this.ledCount * 3);
-  }
-  onTarget(now, _changed) {
-    const windowStart = now - this.window;
-    let stale = -1;
-    for (const frame of this.history) {
-      if (frame.time >= windowStart) break;
-      stale++;
-    }
-    if (stale > 0) {
-      for (const frame of this.history.splice(0, stale)) this.pool.push(frame.colors);
-    }
-    const colors = this.pool.pop() ?? allocLedColors(this.ledCount);
-    colors.set(this.target);
-    this.history.push({ time: now, colors });
-  }
-  observe(now) {
-    if (this.interpolation.take(now)) this.interpolate(now);
-  }
-  advance(_now) {
-  }
-  onReset() {
-    this.history = [];
-    this.pool = [];
-    this.acc = new Float64Array(this.ledCount * 3);
-  }
-  /** Port of `interpolateFrame` (cpp:375-425). */
-  interpolate(now) {
-    const { acc, history, window, decay } = this;
-    const windowStart = now - window;
-    acc.fill(0);
-    let fs = 0;
-    let frameEnd = now;
-    for (let i = history.length - 1; i >= 0 && frameEnd > windowStart; i--) {
-      const frame = history[i];
-      let frameStart = frame.time > windowStart ? frame.time : windowStart;
-      if (frameStart > frameEnd) frameStart = frameEnd;
-      const weight = decayWeight(decay, (frameStart - windowStart) / window, (frameEnd - windowStart) / window);
-      fs += weight;
-      if (weight > 0) {
-        const colors = frame.colors;
-        for (let c = 0; c < acc.length; c++) acc[c] = acc[c] + weight * colors[c];
-      }
-      frameEnd = frameStart;
-    }
-    let divisor;
-    if (this.normalizePartialWindow) divisor = fs > 0 ? fs : 1;
-    else divisor = fs < 1 ? 1 : fs;
-    const state = this.state;
-    for (let c = 0; c < state.length; c++) state[c] = acc[c] / divisor;
-  }
-};
-var AsymmetricSmoother = class extends SmootherBase {
-  mode = "asymmetric";
-  attackMs;
-  releaseMs;
-  absFloor;
-  relFloor;
-  cutThreshold;
-  /** The deadbanded target the output heads for. */
-  accepted;
-  constructor(options, clock2) {
-    super(options, clock2);
-    this.attackMs = options.attackMs ?? SMOOTHING_DEFAULTS.attackMs;
-    this.releaseMs = options.releaseMs ?? SMOOTHING_DEFAULTS.releaseMs;
-    this.absFloor = options.absFloor ?? SMOOTHING_DEFAULTS.absFloor;
-    this.relFloor = options.relFloor ?? SMOOTHING_DEFAULTS.relFloor;
-    this.cutThreshold = options.cutThreshold ?? SMOOTHING_DEFAULTS.cutThreshold;
-    requirePositive("attackMs", this.attackMs);
-    requirePositive("releaseMs", this.releaseMs);
-    requireNonNegative("absFloor", this.absFloor);
-    requireNonNegative("relFloor", this.relFloor);
-    requireNonNegative("cutThreshold", this.cutThreshold);
-    this.accepted = allocLedColors(this.ledCount);
-  }
-  onTarget(_now, _changed) {
-    const { target, accepted, absFloor, relFloor } = this;
-    for (let i = 0; i < target.length; i++) {
-      const x = target[i];
-      if (!Number.isFinite(x)) continue;
-      const a = accepted[i];
-      const diff = x - a;
-      const eps = Math.max(absFloor, relFloor * a);
-      if (diff < eps && diff > -eps) continue;
-      accepted[i] = x;
-    }
-  }
-  onReset() {
-    this.accepted = allocLedColors(this.ledCount);
-  }
-  advance(now) {
-    const { state, accepted, absFloor } = this;
-    let totalDistance = 0;
-    for (let i = 0; i < state.length; i++) totalDistance += Math.abs(accepted[i] - state[i]);
-    if (totalDistance / state.length > this.cutThreshold) {
-      state.set(accepted);
-      return;
-    }
-    let dt = now - (this.lastEmit ?? this.targetSetTime ?? now);
-    if (dt < 0) dt = 0;
-    const attack = 1 - Math.exp(-dt / this.attackMs);
-    const release = 1 - Math.exp(-dt / this.releaseMs);
-    for (let i = 0; i < state.length; i++) {
-      const y = state[i];
-      const x = accepted[i];
-      const diff = x - y;
-      if (diff === 0) continue;
-      if (diff < absFloor && diff > -absFloor) {
-        state[i] = x;
-        continue;
-      }
-      state[i] = y + diff * (diff > 0 ? attack : release);
-    }
-  }
-};
-function validateCount(count) {
-  if (!Number.isInteger(count) || count < 1) throw new RangeError(`smooth: count must be a positive integer, got ${count}`);
-  return count;
-}
-function requirePositive(name, value) {
-  if (!(value > 0) || !Number.isFinite(value)) throw new RangeError(`smooth: ${name} must be a positive finite number, got ${value}`);
-}
-function requireNonNegative(name, value) {
-  if (!(value >= 0) || !Number.isFinite(value)) throw new RangeError(`smooth: ${name} must be a non-negative finite number, got ${value}`);
-}
-
 // lib/engine/stats.ts
 function createValueMeter(capacity = 256) {
   if (!Number.isInteger(capacity) || capacity < 1) throw new RangeError(`stats: capacity must be a positive integer, got ${capacity}`);
@@ -4101,7 +4121,18 @@ function createEngine(host) {
         order: config.colorOrder.order,
         ...config.colorOrder.overrides === void 0 ? {} : { overrides: config.colorOrder.overrides }
       }),
-      smoother: createSmoother({ mode: "asymmetric", count: leds, outputHz: OUTPUT_HZ }, clock2),
+      // The smoothing constants come from the configuration rather than from
+      // the smoother's defaults. They were compiled in until profiles existed,
+      // and the numbers were good - but "how hard to smooth" depends on what
+      // is on screen, and a film and a game want opposite answers.
+      smoother: createSmoother({
+        mode: "asymmetric",
+        count: leds,
+        outputHz: OUTPUT_HZ,
+        attackMs: config.smoothing.attackMs,
+        releaseMs: config.smoothing.releaseMs,
+        cutThreshold: config.smoothing.cutThreshold
+      }, clock2),
       target: allocLedColors(leds),
       // Built with the stages rather than with the effect: it depends on the
       // layout, and a layout edit while an effect is running must not leave the

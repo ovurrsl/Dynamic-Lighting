@@ -24,6 +24,7 @@ import { useTranslate } from '#components/Preferences'
 import { ProfilesCard } from '#components/ProfilesCard'
 import { RoadmapCard } from '#components/RoadmapCard'
 import { ScheduleCard } from '#components/ScheduleCard'
+import { SmoothingCard } from '#components/SmoothingCard'
 import {
   DEFAULT_SECTION,
   GROUP_TITLE,
@@ -58,6 +59,7 @@ function sectionBody (id: SectionId, enabled: boolean) {
     case 'strips': return <InstancesCard />
     case 'layout': return <LayoutSection />
     case 'capture': return <CaptureCard />
+    case 'picture': return <SmoothingCard />
     case 'calibration': return <CalibrationCard />
     case 'profiles': return <ProfilesSection />
     case 'effects': return <EffectsCard />

@@ -16,6 +16,7 @@ import {
 import { COLOR_ORDERS, DEFAULT_COLOR_ORDER, type ColorOrder } from '#lib/engine/order'
 import { ADJUSTMENT_DEFAULTS, TEMPERATURE_MAX, TEMPERATURE_MIN } from '#lib/engine/adjust'
 import { BORDER_DEFAULTS, BORDER_MODES, type BorderMode } from '#lib/engine/border'
+import { parseEffectSpec, type EffectKind } from '#lib/engine/effects'
 import { SMOOTHING_PROFILES } from '#lib/engine/smooth'
 import type { Calibration } from '#lib/engine/protocol'
 import type { LedRect } from '#lib/engine/types'
@@ -271,6 +272,45 @@ export interface BorderConfig {
   blurRemovePx: number
 }
 
+/**
+ * The two layers that are not started by a person.
+ *
+ * The priority muxer has reserved a background slot since it was written -
+ * `BACKGROUND_PRIORITY`, deliberately spared by `clearAll()` and ignored by the
+ * idle check - and nothing has ever registered a source there. The mechanism
+ * was complete and unreachable, which is the third time this has happened in
+ * this engine.
+ *
+ * What it is for is one sentence from the gap analysis, and it is a thing
+ * people actually ask for: **"leave warm white behind it when the screen goes
+ * dark."** A capture that ends leaves the strip black today; a background makes
+ * it fall back to something instead.
+ *
+ * `startup` is the other half - Hyperion calls it `foregroundEffect`, which is
+ * a confusing name for a boot animation. It runs ABOVE everything (priority 1)
+ * for a fixed time and then lets go, so the strip says "this is on" before
+ * anyone has picked a screen.
+ *
+ * Both are OFF by default. They change what an existing installation does the
+ * moment they are on, and nobody asked for that on an update.
+ */
+export interface LayerConfig {
+  enabled: boolean
+  /** A flat colour, or one of the built-in effects. */
+  kind: 'color' | 'effect'
+  /** sRGB 0..255, as a person picks it. Used when `kind` is 'color'. */
+  color: { r: number, g: number, b: number }
+  /** Used when `kind` is 'effect'. */
+  effect: EffectKind
+}
+
+export interface StartupConfig extends LayerConfig {
+  /** How long it holds the strip before letting go. */
+  durationMs: number
+}
+
+export const LAYER_KINDS: readonly LayerConfig['kind'][] = Object.freeze(['color', 'effect'])
+
 export interface EngineConfig {
   layout: LayoutConfig
   /** LEDs that are wired but must never light. */
@@ -281,6 +321,10 @@ export interface EngineConfig {
   smoothing: SmoothingConfig
   color: ColorConfig
   border: BorderConfig
+  /** What the strip falls back to when nothing else is showing. */
+  background: LayerConfig
+  /** What it shows for a moment when the engine starts. */
+  startup: StartupConfig
 }
 
 export const DEFAULT_OUTPUT: Readonly<OutputConfig> = Object.freeze({
@@ -367,6 +411,32 @@ export const BORDER_THRESHOLD_MAX = 0.2
 export const BLUR_REMOVE_MAX = 8
 
 /**
+ * Both off, so an update changes nothing on a strip that is already working.
+ *
+ * The colour is a warm white rather than Hyperion's orange: the request this
+ * exists for is "warm white behind it", and an installation that switches the
+ * background on should get the thing it was asked for without also having to
+ * find the colour picker.
+ */
+export const DEFAULT_BACKGROUND: Readonly<LayerConfig> = Object.freeze({
+  enabled: false,
+  kind: 'color' as LayerConfig['kind'],
+  color: Object.freeze({ r: 255, g: 170, b: 100 }),
+  effect: 'candle' as EffectKind
+})
+
+export const DEFAULT_STARTUP: Readonly<StartupConfig> = Object.freeze({
+  ...DEFAULT_BACKGROUND,
+  kind: 'effect' as LayerConfig['kind'],
+  effect: 'rainbow' as EffectKind,
+  durationMs: 3000
+})
+
+/** Hyperion's own floor and a ceiling past which a boot animation is a hostage situation. */
+export const STARTUP_MS_MIN = 100
+export const STARTUP_MS_MAX = 30000
+
+/**
  * Time-constant bounds.
  *
  * The low end is one output period at 120 Hz: a constant shorter than the gap
@@ -394,7 +464,9 @@ export const DEFAULT_ENGINE_CONFIG: Readonly<EngineConfig> = Object.freeze({
   capture: DEFAULT_CAPTURE,
   smoothing: DEFAULT_SMOOTHING,
   color: DEFAULT_COLOR,
-  border: DEFAULT_BORDER
+  border: DEFAULT_BORDER,
+  background: DEFAULT_BACKGROUND,
+  startup: DEFAULT_STARTUP
 })
 
 /** Number of LEDs the layout describes, before the blacklist (which keeps the count). */
@@ -445,6 +517,42 @@ function object (value: unknown, path: string): Obj {
 function integer (value: unknown, path: string, min: number, max = Number.MAX_SAFE_INTEGER): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
     throw new ConfigError(path, `must be an integer in ${min}..${max}, got ${describe(value)}`)
+  }
+  return value
+}
+
+/**
+ * One of the two automatic layers.
+ *
+ * Both arms are read whatever `kind` says, so switching a layer from a colour
+ * to an effect and back does not lose the colour that was picked - the same
+ * reason `switchTransport` carries the host between the two network transports.
+ */
+function readLayer (value: unknown, path: string, fallback: Readonly<LayerConfig>): LayerConfig {
+  const raw = value === undefined ? {} : object(value, `config.${path}`)
+  const colorRaw = raw.color === undefined ? undefined : object(raw.color, `${path}.color`)
+  const kind = raw.kind === undefined ? fallback.kind : readLayerKind(raw.kind, `${path}.kind`)
+  return {
+    enabled: raw.enabled === undefined ? fallback.enabled : boolean(raw.enabled, `${path}.enabled`),
+    kind,
+    color: colorRaw === undefined
+      ? { ...fallback.color }
+      : {
+          r: integer(colorRaw.r, `${path}.color.r`, 0, 255),
+          g: integer(colorRaw.g, `${path}.color.g`, 0, 255),
+          b: integer(colorRaw.b, `${path}.color.b`, 0, 255)
+        },
+    // The effects module owns what a valid effect is; asking it here keeps one
+    // definition rather than two that drift.
+    effect: raw.effect === undefined
+      ? fallback.effect
+      : parseEffectSpec({ kind: raw.effect }).kind
+  }
+}
+
+function readLayerKind (value: unknown, path: string): LayerConfig['kind'] {
+  if (value !== 'color' && value !== 'effect') {
+    throw new ConfigError(path, `must be one of ${LAYER_KINDS.join(', ')}, got ${describe(value)}`)
   }
   return value
 }
@@ -756,7 +864,20 @@ export function parseEngineConfig (value: unknown): EngineConfig {
     blurRemovePx: integer(borderRaw.blurRemovePx ?? DEFAULT_BORDER.blurRemovePx, 'border.blurRemovePx', 0, BLUR_REMOVE_MAX)
   }
 
-  const config: EngineConfig = { layout, blacklist, colorOrder, output, capture, smoothing, color, border }
+  const background = readLayer(raw.background, 'background', DEFAULT_BACKGROUND)
+  const startupBase = readLayer(raw.startup, 'startup', DEFAULT_STARTUP)
+  const startupRaw = raw.startup === undefined ? {} : object(raw.startup, 'config.startup')
+  const startup: StartupConfig = {
+    ...startupBase,
+    durationMs: integer(
+      startupRaw.durationMs ?? DEFAULT_STARTUP.durationMs,
+      'startup.durationMs', STARTUP_MS_MIN, STARTUP_MS_MAX
+    )
+  }
+
+  const config: EngineConfig = {
+    layout, blacklist, colorOrder, output, capture, smoothing, color, border, background, startup
+  }
 
   // The generators own their rules; ask them. A layout that cannot be built is
   // a config error with the generator's own message, which names the knob.
@@ -804,5 +925,7 @@ export const MATRIX_ENGINE_CONFIG: Readonly<EngineConfig> = Object.freeze({
   capture: DEFAULT_CAPTURE,
   smoothing: DEFAULT_SMOOTHING,
   color: DEFAULT_COLOR,
-  border: DEFAULT_BORDER
+  border: DEFAULT_BORDER,
+  background: DEFAULT_BACKGROUND,
+  startup: DEFAULT_STARTUP
 })

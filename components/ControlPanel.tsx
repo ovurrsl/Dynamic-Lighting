@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { Button, Surface, Switch } from '@heroui/react'
 
 import { AudioCard } from '#components/AudioCard'
+import { AutoLayersCard } from '#components/AutoLayersCard'
 import { CalibrationCard } from '#components/CalibrationCard'
 import { CapabilitiesCard } from '#components/CapabilitiesCard'
 import { CaptureCard } from '#components/CaptureCard'
@@ -14,7 +15,7 @@ import { BorderCard } from '#components/BorderCard'
 import { DeviceCard } from '#components/DeviceCard'
 import { EffectsCard } from '#components/EffectsCard'
 import { HostCard } from '#components/HostCard'
-import { LayersCard } from '#components/LayersCard'
+import { COMPONENT_KEY, LayersCard } from '#components/LayersCard'
 import { useEngine } from '#components/Engine'
 import { EngineConfigProvider, useEngineConfig } from '#components/EngineConfig'
 import { GuideCard } from '#components/GuideCard'
@@ -65,7 +66,7 @@ function sectionBody (id: SectionId, enabled: boolean) {
     case 'picture': return <PictureSection />
     case 'calibration': return <CalibrationCard />
     case 'profiles': return <ProfilesSection />
-    case 'effects': return <EffectsCard />
+    case 'effects': return <EffectsSection />
     case 'audio': return <AudioCard />
     case 'schedule': return <ScheduleCard />
     case 'device': return <DeviceSection />
@@ -132,6 +133,22 @@ function PictureSection () {
   )
 }
 
+/**
+ * Effects, and the two layers nobody starts by hand.
+ *
+ * The background and the boot animation sit with the effects because that is
+ * what they usually are, and because the alternative is a page of their own
+ * holding two switches.
+ */
+function EffectsSection () {
+  return (
+    <div className="flex flex-col gap-6">
+      <EffectsCard />
+      <AutoLayersCard />
+    </div>
+  )
+}
+
 /** Thin wrappers, so the two cards that need shared state do not have to know about the shell. */
 function LayoutSection () {
   const { loaded, setConfig, setDraft } = useEngineConfig()
@@ -158,10 +175,21 @@ function ProfilesSection () {
  * fault. What is running is the useful thing to say there; the capture rate is
  * only meaningful when something is being captured.
  */
-function describeRate (stats: EngineStats): string {
+function describeRate (stats: EngineStats, t: (key: MessageKey) => string): string {
   if (stats.audio !== undefined) return stats.audio.kind
   if (stats.effect !== undefined) return stats.effect
   if (stats.pattern !== undefined) return stats.pattern
+  // No capture layer means `deliveredFps` counts nothing, and "0 fps" beside a
+  // strip that is visibly lit reads as a fault. Naming what is actually
+  // showing is both true and more use - and this now covers the background and
+  // the startup layer as well as a plain colour.
+  const winning = stats.layers?.find((layer) => layer.winning)
+  if (winning !== undefined && winning.component !== 'capture') {
+    // Through the same table the layer list uses: this is the one place in the
+    // panel where an internal tag would otherwise reach a user.
+    const key = COMPONENT_KEY[winning.component]
+    return key === undefined ? winning.component : t(key)
+  }
   return `${stats.deliveredFps.toFixed(0)} fps`
 }
 
@@ -186,7 +214,7 @@ function EngineBadge () {
         <span aria-hidden className={`size-2 rounded-full ${running ? 'bg-success' : state === 'error' ? 'bg-danger' : 'bg-default'}`} />
         <span className="text-muted">
           {t(STATE_LABEL[state])}
-          {running && stats !== null && ` · ${describeRate(stats)}`}
+          {running && stats !== null && ` · ${describeRate(stats, t)}`}
           {` · ${t('host.page')}`}
         </span>
       </span>
@@ -213,7 +241,7 @@ function EngineBadge () {
       />
       <span className="text-muted">
         {t(STATE_LABEL[state])}
-        {state === 'running' && stats !== null && ` · ${describeRate(stats)}`}
+        {state === 'running' && stats !== null && ` · ${describeRate(stats, t)}`}
       </span>
     </span>
   )

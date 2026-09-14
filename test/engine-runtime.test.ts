@@ -3,6 +3,7 @@ import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { PRIORITY, createEngine, type CanvasLike, type Engine, type EngineHost } from '#lib/engine/runtime'
+import { DEFAULT_ENGINE_CONFIG } from '#lib/engine/config'
 import type { FrameSource } from '#lib/engine/source'
 import type { EngineStats } from '#lib/extension/messages'
 
@@ -171,5 +172,145 @@ test('the layer list names the priorities the panel shows', () => {
   assert.deepEqual(list.map((l) => l.priority), [PRIORITY.effect, PRIORITY.color])
   // Highest priority first, which is what a list wants to read like.
   assert.ok((list[0]?.priority ?? 0) < (list[1]?.priority ?? 0))
+  h.engine.stop()
+})
+
+// ---------------------------------------------------------------------------
+// The two layers nobody starts by hand.
+// ---------------------------------------------------------------------------
+
+/** The reference rig with one of the automatic layers switched on. */
+const withLayers = (over: Record<string, unknown>): unknown => ({
+  ...JSON.parse(JSON.stringify(DEFAULT_ENGINE_CONFIG)),
+  ...over
+})
+
+test('a background is UNDER everything and is what an ending capture falls back to', () => {
+  // The whole point, in the gap analysis's own words: "leave warm white behind
+  // it when the screen goes dark." Before this the muxer reserved a background
+  // slot that nothing could ever register in.
+  const h = harness()
+  h.engine.applyConfig(withLayers({
+    background: { enabled: true, kind: 'color', color: { r: 255, g: 170, b: 100 }, effect: 'candle' }
+  }))
+
+  h.engine.runEffect({ kind: 'rainbow' })
+  assert.equal(winner(h.engine), 'effect', 'a real layer still wins')
+  assert.ok(layers(h.engine).some((l) => l.component === 'background'), 'and the background is under it')
+
+  h.engine.clearLayer(PRIORITY.effect)
+  assert.equal(winner(h.engine), 'background', 'the strip falls back rather than going dark')
+  assert.equal(h.engine.state(), 'running', 'and the engine is not idle')
+  h.engine.stop()
+})
+
+test('stopping really stops: the background belongs to running, not to idle', () => {
+  // A strip still glowing after the user pressed Stop is a strip that ignored
+  // them.
+  const h = harness()
+  h.engine.applyConfig(withLayers({
+    background: { enabled: true, kind: 'color', color: { r: 255, g: 170, b: 100 }, effect: 'candle' }
+  }))
+  h.engine.setColor({ r: 0, g: 0, b: 255 })
+  assert.ok(layers(h.engine).some((l) => l.component === 'background'))
+
+  h.engine.stop()
+  assert.equal(h.engine.state(), 'idle')
+  assert.deepEqual(layers(h.engine), [], 'nothing is left registered')
+})
+
+test('turning the background off takes it away without touching anything else', () => {
+  const h = harness()
+  h.engine.applyConfig(withLayers({
+    background: { enabled: true, kind: 'color', color: { r: 255, g: 170, b: 100 }, effect: 'candle' }
+  }))
+  h.engine.runEffect({ kind: 'police' })
+  assert.ok(layers(h.engine).some((l) => l.component === 'background'))
+
+  h.engine.applyConfig(withLayers({ background: { enabled: false, kind: 'color', color: { r: 1, g: 2, b: 3 }, effect: 'candle' } }))
+  assert.ok(!layers(h.engine).some((l) => l.component === 'background'), 'gone')
+  assert.equal(winner(h.engine), 'effect', 'and the effect never noticed')
+  h.engine.stop()
+})
+
+test('a background EFFECT renders continuously, not once', () => {
+  // A colour is fed once and stays; an effect has to keep being drawn, and it
+  // shares the effect timer rather than starting a second one on its own phase.
+  const h = harness()
+  h.engine.applyConfig(withLayers({
+    background: { enabled: true, kind: 'effect', color: { r: 0, g: 0, b: 0 }, effect: 'rainbow' }
+  }))
+  h.engine.setColor({ r: 0, g: 0, b: 255 })
+  assert.ok(layers(h.engine).some((l) => l.component === 'background'))
+  h.engine.stop()
+})
+
+test('the startup layer runs ABOVE everything and lets go on its own', async () => {
+  // A boot animation that had to be dismissed would not be a boot animation.
+  // The duration is the muxer's timeout, so there is one expiry mechanism.
+  const h = harness()
+  h.engine.applyConfig(withLayers({
+    startup: { enabled: true, kind: 'color', color: { r: 255, g: 0, b: 0 }, effect: 'rainbow', durationMs: 3000 }
+  }))
+
+  h.engine.runEffect({ kind: 'candle' })
+  assert.equal(winner(h.engine), 'startup', 'it covers even a freshly started effect')
+
+  // Arbitration happens on the engine's own tick, so the clock moving is not
+  // enough on its own - the same reason a source that expires between two
+  // frames never gets a frame of its own.
+  h.advance(3500)
+  await delay(20)
+  assert.equal(winner(h.engine), 'effect', 'and hands the strip back when its time is up')
+  h.engine.stop()
+})
+
+test('the startup layer fires on the IDLE edge only, not on every source', async () => {
+  // Replaying the boot animation over a capture somebody is watching would be a
+  // bug rather than a flourish.
+  const h = harness()
+  h.engine.applyConfig(withLayers({
+    startup: { enabled: true, kind: 'color', color: { r: 255, g: 0, b: 0 }, effect: 'rainbow', durationMs: 1000 }
+  }))
+  h.engine.setColor({ r: 0, g: 255, b: 0 })
+  assert.equal(winner(h.engine), 'startup')
+
+  h.advance(1500)
+  await delay(20)
+  assert.equal(winner(h.engine), 'color', 'it let go')
+
+  h.engine.runEffect({ kind: 'comet' })
+  assert.equal(winner(h.engine), 'effect', 'starting a second source does not replay it')
+  h.engine.stop()
+})
+
+test('both layers are off by default, so an update changes nothing', () => {
+  const h = harness()
+  h.engine.setColor({ r: 1, g: 2, b: 3 })
+  assert.deepEqual(layers(h.engine).map((l) => l.component), ['color'])
+  h.engine.stop()
+})
+
+test('an ANIMATED startup layer also lets go — it cannot reset its own expiry', async () => {
+  // The bug this exists for, and it was right in the case you test first: the
+  // duration was the muxer's inactivity timeout, which measures from the last
+  // input. A flat colour is fed once and expired correctly; an effect feeds a
+  // frame every tick and so pushed its own deadline forward forever. The boot
+  // animation never ended.
+  const h = harness()
+  h.engine.applyConfig(withLayers({
+    startup: { enabled: true, kind: 'effect', color: { r: 0, g: 0, b: 0 }, effect: 'rainbow', durationMs: 2000 }
+  }))
+
+  h.engine.setColor({ r: 0, g: 255, b: 0 })
+  assert.equal(winner(h.engine), 'startup')
+
+  // Let it actually render several frames, which is what used to keep it alive.
+  for (let i = 0; i < 4; i++) {
+    h.advance(600)
+    await delay(20)
+  }
+  assert.equal(winner(h.engine), 'color', 'it let go despite rendering all the way through')
+  assert.ok(!layers(h.engine).some((l) => l.component === 'startup'), 'and it is gone, not merely losing')
   h.engine.stop()
 })

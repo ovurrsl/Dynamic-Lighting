@@ -93,17 +93,36 @@ Serial, WebUSB, WebHID ve Web Bluetooth'un dördü de yok, tek yol ağ.
 `getUserMedia({audio:true})` + `AnalyserNode`. Hyperion'un Windows/Linux'a ayrı
 ayrı yazdığı şey bizde tek bir Web Audio çağrısı.
 
-### (D) Öncelik ve kaynak katmanları — yarısı var
+### (D) Öncelik ve kaynak katmanları — ✅ 2026-09-14
 
-`priority.ts` var ama onu besleyen kaynaklar yok. Hyperion'da:
+`priority.ts` vardı ama onu besleyen kaynaklar yoktu. Üçünün de durumu:
 
-- `foregroundEffect` — açılışta çalışan, süreli efekt/renk
-- `backgroundEffect` — altta her zaman duran katman
-- `instCapture` — ekran/video/ses kaynakları, her biri **kendi önceliğiyle** ve
-  hareketsizlik zaman aşımıyla
+- `backgroundEffect` — ✅ **bitti.** Muxer yazıldığı günden beri bir arka plan
+  yuvası ayırıyordu (`BACKGROUND_PRIORITY`, `clearAll()` tarafından bilerek
+  korunuyor, boşta kontrolü tarafından görmezden geliniyor) ve oraya hiçbir şey
+  kaydolmuyordu — mekanizma tamamlanmış ve ulaşılamazdı. Artık yapılandırmada
+  bir katman: renk ya da efekt, ve **biten bir yakalama siyahlık değil onu
+  bırakıyor.** Analizin kendi cümlesi olan "ekran karardığında arkada sıcak
+  beyaz kalsın" isteği karşılanıyor.
+- `foregroundEffect` — ✅ **bitti**, ama bizde adı `startup`: Hyperion'un adı
+  bir açılış animasyonu için kafa karıştırıcı. Öncelik 1'de, her şeyin üstünde,
+  süresi dolunca kendiliğinden bırakıyor.
+- `instCapture` — **kısmen.** Kaynak başına hareketsizlik zaman aşımları
+  `DEFAULT_STREAM_TIMEOUT_MS`'te Hyperion'un değerleriyle duruyor ama ayar
+  değil; öncelikler de sabit. Açık kalan tek parça bu.
 
-Bu olmadan "ekran karardığında arkada sıcak beyaz kalsın" gibi temel bir istek
-karşılanamıyor.
+İki karar ve ikisi de teste dayanıyor:
+
+**Arka plan `idleIfEmpty()` için gerçek bir katman.** Bu kontrol arka plan
+yuvasını atlıyordu — oraya hiçbir şey kaydolamazken doğruydu, ve şimdi arka
+planın var olma sebebi olan tam durumda şeridi karartırdı.
+
+**Açılış katmanının kendi son tarihi var, muxer'ın hareketsizlik zaman aşımı
+değil.** O zaman aşımı son GİRDİDEN itibaren ölçüyor; animasyonlu bir katman
+her tick'te kare besliyor, yani kendi bitişini sonsuza kadar öteliyordu. Düz
+renk doğru sona eriyor, efekt hiç ermiyordu — yani ilk test ettiğin durumda
+doğru olan cinsten bir hata. Tarayıcı probu yakaladı, sonra o yolu sabitleyen
+bir test yazıldı.
 
 ### (E) Çoklu örnek (instance) — ✅ 2026-09-14
 

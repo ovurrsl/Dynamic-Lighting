@@ -314,6 +314,62 @@ var BORDER_DEFAULTS = Object.freeze({
 });
 var UNKNOWN_BORDER = Object.freeze({ unknown: true, topBottom: 0, leftRight: 0 });
 
+// lib/engine/effects.ts
+var EFFECT_KINDS = [
+  "rainbow",
+  "blobs",
+  "breathe",
+  "candle",
+  "comet",
+  "police",
+  "plasma"
+];
+function isEffectKind(value) {
+  return typeof value === "string" && EFFECT_KINDS.includes(value);
+}
+var SPEED_MIN = 0.05;
+var SPEED_MAX = 8;
+var DEFAULT_SPEED = 1;
+var clamp012 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
+function clampSpeed(value) {
+  if (!Number.isFinite(value)) return DEFAULT_SPEED;
+  return Math.min(SPEED_MAX, Math.max(SPEED_MIN, value));
+}
+function parseEffectSpec(value) {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError("effects: a spec must be an object");
+  }
+  const raw = value;
+  if (!isEffectKind(raw.kind)) {
+    throw new RangeError(`effects: kind must be one of ${EFFECT_KINDS.join(", ")}, got ${String(raw.kind)}`);
+  }
+  const spec = { kind: raw.kind };
+  if (raw.speed !== void 0) {
+    if (typeof raw.speed !== "number" || !Number.isFinite(raw.speed)) {
+      throw new TypeError("effects: speed must be a finite number");
+    }
+    spec.speed = clampSpeed(raw.speed);
+  }
+  if (raw.brightness !== void 0) {
+    if (typeof raw.brightness !== "number" || !Number.isFinite(raw.brightness)) {
+      throw new TypeError("effects: brightness must be a finite number");
+    }
+    spec.brightness = clamp012(raw.brightness);
+  }
+  if (raw.color !== void 0) {
+    const color = raw.color;
+    if (typeof color !== "object" || color === null) throw new TypeError("effects: color must be an object");
+    spec.color = { r: channel(color.r), g: channel(color.g), b: channel(color.b) };
+  }
+  return spec;
+}
+function channel(value) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
+    throw new RangeError(`effects: a colour channel is an integer 0..255, got ${String(value)}`);
+  }
+  return value;
+}
+
 // lib/engine/smooth.ts
 var SMOOTHING_DEFAULTS = Object.freeze({
   outputHz: 120,
@@ -340,6 +396,7 @@ var SMOOTHING_PROFILE_NAMES = Object.freeze(["cinema", "balanced", "competitive"
 var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
 var OUTPUT_TRANSPORTS = Object.freeze(["serial", "websocket", "wled"]);
 var CAPTURE_SOURCES = Object.freeze(["screen", "device"]);
+var LAYER_KINDS = Object.freeze(["color", "effect"]);
 var DEFAULT_OUTPUT = Object.freeze({
   transport: "serial",
   format: "Afx"
@@ -370,6 +427,20 @@ var DEFAULT_BORDER = Object.freeze({
 });
 var BORDER_THRESHOLD_MAX = 0.2;
 var BLUR_REMOVE_MAX = 8;
+var DEFAULT_BACKGROUND = Object.freeze({
+  enabled: false,
+  kind: "color",
+  color: Object.freeze({ r: 255, g: 170, b: 100 }),
+  effect: "candle"
+});
+var DEFAULT_STARTUP = Object.freeze({
+  ...DEFAULT_BACKGROUND,
+  kind: "effect",
+  effect: "rainbow",
+  durationMs: 3e3
+});
+var STARTUP_MS_MIN = 100;
+var STARTUP_MS_MAX = 3e4;
 var SMOOTHING_MS_MIN = 0;
 var SMOOTHING_MS_MAX = 2e3;
 var GRID_MIN = 16;
@@ -385,7 +456,9 @@ var DEFAULT_ENGINE_CONFIG = Object.freeze({
   capture: DEFAULT_CAPTURE,
   smoothing: DEFAULT_SMOOTHING,
   color: DEFAULT_COLOR,
-  border: DEFAULT_BORDER
+  border: DEFAULT_BORDER,
+  background: DEFAULT_BACKGROUND,
+  startup: DEFAULT_STARTUP
 });
 var ConfigError = class extends Error {
   path;
@@ -404,6 +477,29 @@ function object(value, path) {
 function integer(value, path, min, max = Number.MAX_SAFE_INTEGER) {
   if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
     throw new ConfigError(path, `must be an integer in ${min}..${max}, got ${describe(value)}`);
+  }
+  return value;
+}
+function readLayer(value, path, fallback) {
+  const raw = value === void 0 ? {} : object(value, `config.${path}`);
+  const colorRaw = raw.color === void 0 ? void 0 : object(raw.color, `${path}.color`);
+  const kind = raw.kind === void 0 ? fallback.kind : readLayerKind(raw.kind, `${path}.kind`);
+  return {
+    enabled: raw.enabled === void 0 ? fallback.enabled : boolean(raw.enabled, `${path}.enabled`),
+    kind,
+    color: colorRaw === void 0 ? { ...fallback.color } : {
+      r: integer(colorRaw.r, `${path}.color.r`, 0, 255),
+      g: integer(colorRaw.g, `${path}.color.g`, 0, 255),
+      b: integer(colorRaw.b, `${path}.color.b`, 0, 255)
+    },
+    // The effects module owns what a valid effect is; asking it here keeps one
+    // definition rather than two that drift.
+    effect: raw.effect === void 0 ? fallback.effect : parseEffectSpec({ kind: raw.effect }).kind
+  };
+}
+function readLayerKind(value, path) {
+  if (value !== "color" && value !== "effect") {
+    throw new ConfigError(path, `must be one of ${LAYER_KINDS.join(", ")}, got ${describe(value)}`);
   }
   return value;
 }
@@ -660,7 +756,30 @@ function parseEngineConfig(value) {
     threshold: boundedFraction(borderRaw.threshold, "border.threshold", 0, BORDER_THRESHOLD_MAX, DEFAULT_BORDER.threshold),
     blurRemovePx: integer(borderRaw.blurRemovePx ?? DEFAULT_BORDER.blurRemovePx, "border.blurRemovePx", 0, BLUR_REMOVE_MAX)
   };
-  const config = { layout, blacklist, colorOrder, output, capture, smoothing, color, border };
+  const background = readLayer(raw.background, "background", DEFAULT_BACKGROUND);
+  const startupBase = readLayer(raw.startup, "startup", DEFAULT_STARTUP);
+  const startupRaw = raw.startup === void 0 ? {} : object(raw.startup, "config.startup");
+  const startup = {
+    ...startupBase,
+    durationMs: integer(
+      startupRaw.durationMs ?? DEFAULT_STARTUP.durationMs,
+      "startup.durationMs",
+      STARTUP_MS_MIN,
+      STARTUP_MS_MAX
+    )
+  };
+  const config = {
+    layout,
+    blacklist,
+    colorOrder,
+    output,
+    capture,
+    smoothing,
+    color,
+    border,
+    background,
+    startup
+  };
   let rects;
   try {
     rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
@@ -687,7 +806,9 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   capture: DEFAULT_CAPTURE,
   smoothing: DEFAULT_SMOOTHING,
   color: DEFAULT_COLOR,
-  border: DEFAULT_BORDER
+  border: DEFAULT_BORDER,
+  background: DEFAULT_BACKGROUND,
+  startup: DEFAULT_STARTUP
 });
 
 // lib/engine/instances.ts
@@ -748,62 +869,6 @@ function parseInstance(value, index = 0) {
 // lib/extension/messages.ts
 function isMessage(value) {
   return typeof value === "object" && value !== null && typeof value.type === "string" && value.type.startsWith("ambiflux/");
-}
-
-// lib/engine/effects.ts
-var EFFECT_KINDS = [
-  "rainbow",
-  "blobs",
-  "breathe",
-  "candle",
-  "comet",
-  "police",
-  "plasma"
-];
-function isEffectKind(value) {
-  return typeof value === "string" && EFFECT_KINDS.includes(value);
-}
-var SPEED_MIN = 0.05;
-var SPEED_MAX = 8;
-var DEFAULT_SPEED = 1;
-var clamp012 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
-function clampSpeed(value) {
-  if (!Number.isFinite(value)) return DEFAULT_SPEED;
-  return Math.min(SPEED_MAX, Math.max(SPEED_MIN, value));
-}
-function parseEffectSpec(value) {
-  if (typeof value !== "object" || value === null) {
-    throw new TypeError("effects: a spec must be an object");
-  }
-  const raw = value;
-  if (!isEffectKind(raw.kind)) {
-    throw new RangeError(`effects: kind must be one of ${EFFECT_KINDS.join(", ")}, got ${String(raw.kind)}`);
-  }
-  const spec = { kind: raw.kind };
-  if (raw.speed !== void 0) {
-    if (typeof raw.speed !== "number" || !Number.isFinite(raw.speed)) {
-      throw new TypeError("effects: speed must be a finite number");
-    }
-    spec.speed = clampSpeed(raw.speed);
-  }
-  if (raw.brightness !== void 0) {
-    if (typeof raw.brightness !== "number" || !Number.isFinite(raw.brightness)) {
-      throw new TypeError("effects: brightness must be a finite number");
-    }
-    spec.brightness = clamp012(raw.brightness);
-  }
-  if (raw.color !== void 0) {
-    const color = raw.color;
-    if (typeof color !== "object" || color === null) throw new TypeError("effects: color must be an object");
-    spec.color = { r: channel(color.r), g: channel(color.g), b: channel(color.b) };
-  }
-  return spec;
-}
-function channel(value) {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
-    throw new RangeError(`effects: a colour channel is an integer 0..255, got ${String(value)}`);
-  }
-  return value;
 }
 
 // lib/engine/schedule.ts

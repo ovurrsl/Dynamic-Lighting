@@ -14,6 +14,7 @@ import { createPattern, parsePatternSpec, type Pattern } from '#lib/engine/patte
 import {
   BACKGROUND_PRIORITY,
   DEFAULT_STREAM_TIMEOUT_MS,
+  HIGHEST_PRIORITY,
   PriorityMuxer,
   type SourceInfo
 } from '#lib/engine/priority'
@@ -278,6 +279,27 @@ export function createEngine (host: EngineHost): Engine {
   let effect: Effect | null = null
   let effectSpec: unknown = null
   let effectTimer: ReturnType<typeof setInterval> | null = null
+  /**
+   * The two layers nobody starts by hand.
+   *
+   * Separate `Effect` instances rather than one shared with the user's effect:
+   * they run at the same time by definition - the whole point of the background
+   * is that it is underneath something else - and one instance driven from two
+   * places would render one animation into two buffers a frame apart.
+   */
+  let backgroundEffect: Effect | null = null
+  let startupEffect: Effect | null = null
+  /**
+   * When the startup layer must let go, on the injected clock.
+   *
+   * Its own deadline rather than the muxer's inactivity timeout, and the
+   * difference is not stylistic: that timeout measures from the last INPUT, and
+   * an animated startup layer feeds a frame every tick - so it would reset its
+   * own expiry forever and the boot animation would never end. A colour would
+   * have expired correctly and an effect never would, which is the worst kind
+   * of bug: right in the case you test first.
+   */
+  let startupUntil: number | null = null
   let audioTimer: ReturnType<typeof setInterval> | null = null
   let visualiser: Visualiser | null = null
   let audio: AudioSource | null = null
@@ -310,6 +332,8 @@ export function createEngine (host: EngineHost): Engine {
   let audioTarget = allocLedColors(1)
   let patternTarget = allocLedColors(1)
   let colorTarget = allocLedColors(1)
+  let backgroundTarget = allocLedColors(1)
+  let startupTarget = allocLedColors(1)
 
   function sizeBuffers (leds: number): void {
     if (captureTarget.length === leds * 3) return
@@ -318,6 +342,8 @@ export function createEngine (host: EngineHost): Engine {
     audioTarget = allocLedColors(leds)
     patternTarget = allocLedColors(leds)
     colorTarget = allocLedColors(leds)
+    backgroundTarget = allocLedColors(leds)
+    startupTarget = allocLedColors(leds)
   }
 
   // -------------------------------------------------------------------------
@@ -676,6 +702,9 @@ export function createEngine (host: EngineHost): Engine {
     if (state !== 'running') return
     const s = stages
     const now = clock()
+    // Here as well as in the effect loop: a startup layer showing a flat colour
+    // has no effect timer to end it, and the tick is the only clock it gets.
+    endStartupIfDue(now)
     const won = muxer.tick(now)
     if (won === null) return
     if (won.input.kind !== 'colors') return
@@ -716,11 +745,137 @@ export function createEngine (host: EngineHost): Engine {
    * nothing" is the right amount for a second code path to be doing.
    */
   function emitEffect (): void {
-    const e = effect
-    if (e === null || state !== 'running') return
-    e.render(effectTarget, clock())
-    feed(PRIORITY.effect, 'effect', effectTarget)
+    if (state !== 'running') return
+    const now = clock()
+    if (effect !== null) {
+      effect.render(effectTarget, now)
+      feed(PRIORITY.effect, 'effect', effectTarget)
+    }
+    // The two automatic layers ride the same timer. A second interval for them
+    // would render the same kind of thing at the same rate on a different
+    // phase, which on a strip is two animations a few milliseconds apart.
+    if (backgroundEffect !== null) {
+      backgroundEffect.render(backgroundTarget, now)
+      feed(BACKGROUND_PRIORITY, 'background', backgroundTarget)
+    }
+    if (startupEffect !== null) {
+      startupEffect.render(startupTarget, now)
+      feed(HIGHEST_PRIORITY, 'startup', startupTarget)
+    }
+    endStartupIfDue(now)
     tick()
+  }
+
+  /**
+   * Keeps the effect timer alive exactly while something needs rendering.
+   *
+   * Three layers share it now, so neither starting nor stopping any one of them
+   * can decide on its own whether the timer should run.
+   */
+  function ensureEffectTimer (): void {
+    if (effect === null && backgroundEffect === null && startupEffect === null) {
+      idleEffectTimer()
+      return
+    }
+    effectTimer ??= setInterval(emitEffect, Math.round(1000 / OUTPUT_HZ))
+  }
+
+  function idleEffectTimer (): void {
+    if (effect !== null || backgroundEffect !== null || startupEffect !== null) return
+    if (effectTimer !== null) {
+      clearInterval(effectTimer)
+      effectTimer = null
+    }
+  }
+
+  /**
+   * Puts the configured background under everything, or takes it away.
+   *
+   * Called whenever the engine starts running and whenever the configuration
+   * changes, because both can turn it on or off. A colour is fed once and stays
+   * - the muxer holds the input, and a static colour has nothing to re-render.
+   */
+  function applyBackground (): void {
+    const layer = stages.config.background
+    if (!layer.enabled || state !== 'running') {
+      backgroundEffect = null
+      muxer.clear(BACKGROUND_PRIORITY)
+      idleEffectTimer()
+      return
+    }
+    sizeBuffers(stages.leds)
+    if (layer.kind === 'effect') {
+      backgroundEffect = createEffect({ kind: layer.effect }, stages.geometry, clock)
+      ensureEffectTimer()
+      // Drawn once straight away rather than at the next tick: waiting a frame
+      // for the fallback to appear is a visible gap in the exact moment the
+      // background exists to cover.
+      emitEffect()
+      return
+    }
+    backgroundEffect = null
+    fillLinear(backgroundTarget, layer.color)
+    feed(BACKGROUND_PRIORITY, 'background', backgroundTarget)
+    idleEffectTimer()
+  }
+
+  /**
+   * Runs the startup layer once, above everything, on its own deadline.
+   *
+   * The deadline is ours rather than the muxer's inactivity timeout because an
+   * animated layer feeds every tick and would keep resetting that timeout - see
+   * `startupUntil`.
+   */
+  function runStartup (): void {
+    const layer = stages.config.startup
+    if (!layer.enabled) return
+    sizeBuffers(stages.leds)
+    startupUntil = clock() + layer.durationMs
+    muxer.register(HIGHEST_PRIORITY, { component: 'startup' })
+    if (layer.kind === 'effect') {
+      startupEffect = createEffect({ kind: layer.effect }, stages.geometry, clock)
+      ensureEffectTimer()
+      emitEffect()
+      return
+    }
+    startupEffect = null
+    fillLinear(startupTarget, layer.color)
+    muxer.setInput(HIGHEST_PRIORITY, { kind: 'colors', colors: startupTarget })
+  }
+
+  /** Lets the startup layer go when its time is up, from wherever the clock is read. */
+  function endStartupIfDue (now: number): void {
+    if (startupUntil === null || now < startupUntil) return
+    startupUntil = null
+    startupEffect = null
+    idleEffectTimer()
+    muxer.clear(HIGHEST_PRIORITY)
+  }
+
+  /** sRGB bytes as a person picked them, decoded once into the engine's linear light. */
+  function fillLinear (into: LedColors, color: { r: number, g: number, b: number }): void {
+    const r = srgbToLinear(color.r / 255)
+    const g = srgbToLinear(color.g / 255)
+    const b = srgbToLinear(color.b / 255)
+    for (let i = 0; i < into.length; i += 3) {
+      into[i] = r
+      into[i + 1] = g
+      into[i + 2] = b
+    }
+  }
+
+  /**
+   * Everything that has to happen the moment the engine starts producing.
+   *
+   * Only on the IDLE -> RUNNING edge: starting a second source while one is
+   * already running is not a boot, and replaying the boot animation over a
+   * capture somebody is watching would be a bug rather than a flourish.
+   */
+  function enterRunning (): void {
+    if (state === 'running') return
+    state = 'running'
+    applyBackground()
+    runStartup()
   }
 
   /**
@@ -794,10 +949,8 @@ export function createEngine (host: EngineHost): Engine {
   function stopEffect (): void {
     effect = null
     effectSpec = null
-    if (effectTimer !== null) {
-      clearInterval(effectTimer)
-      effectTimer = null
-    }
+    // Only if nothing else is rendering: a background effect keeps the timer.
+    idleEffectTimer()
     muxer.clear(PRIORITY.effect)
     idleIfEmpty()
   }
@@ -841,9 +994,15 @@ export function createEngine (host: EngineHost): Engine {
    * Checked after each layer stops rather than assumed: "the last source ended"
    * and "a source ended" need different things done, and only the first of them
    * should leave the strip dark.
+   *
+   * A background counts as a layer here, and that is the whole feature: "the
+   * capture ended" has to leave warm white behind it rather than darkness. This
+   * used to skip the background slot, which was correct while nothing could
+   * ever register there - and would now black the strip in exactly the case the
+   * background exists for.
    */
   function idleIfEmpty (): void {
-    if (muxer.sources().some((info) => info.priority !== BACKGROUND_PRIORITY)) {
+    if (muxer.sources().length > 0) {
       // Arbitrate NOW rather than waiting for the 4 ms timer: a layer that has
       // just been cleared should reveal what is under it immediately, and until
       // a tick runs both the strip and the reported winner are still showing
@@ -932,7 +1091,7 @@ export function createEngine (host: EngineHost): Engine {
       sourceKind = next.kind
       resetCounters()
       sizeBuffers(stages.leds)
-      state = 'running'
+      enterRunning()
       startClocks()
       void connectLink()
       next.start(onFrame, (error) => {
@@ -971,6 +1130,12 @@ export function createEngine (host: EngineHost): Engine {
     source = null
     sourceKind = undefined
     void s?.stop().catch(() => { /* already gone */ })
+    // The background goes too: it belongs to "running", not to "idle". A strip
+    // still glowing after the user pressed Stop is a strip that ignored them.
+    backgroundEffect = null
+    startupEffect = null
+    startupUntil = null
+    idleEffectTimer()
     muxer.clearAll()
     muxer.clear(BACKGROUND_PRIORITY)
     if (state !== 'error') state = 'idle'
@@ -1099,6 +1264,10 @@ export function createEngine (host: EngineHost): Engine {
           outputHz: OUTPUT_HZ
         })
       }
+      // The background is a configured layer, so a configuration change is the
+      // only way it ever turns on or off. Rebuilt rather than left alone for
+      // the same reason the effect is: it holds the geometry it was made with.
+      applyBackground()
       return config
     },
 
@@ -1133,11 +1302,12 @@ export function createEngine (host: EngineHost): Engine {
       effectSpec = parsed
       sizeBuffers(stages.leds)
       effect = createEffect(parsed, stages.geometry, clock)
-      state = 'running'
+      enterRunning()
       void connectLink()
       // The smoother paces the output; this timer only has to keep the target
-      // moving, so it runs at the output rate and no faster.
-      effectTimer = setInterval(emitEffect, Math.round(1000 / OUTPUT_HZ))
+      // moving, so it runs at the output rate and no faster. Shared with the
+      // background and startup layers, so it is claimed rather than created.
+      ensureEffectTimer()
       startClocks()
       emitEffect()
       report()
@@ -1168,7 +1338,7 @@ export function createEngine (host: EngineHost): Engine {
           binCount: opened.binCount,
           outputHz: OUTPUT_HZ
         })
-        state = 'running'
+        enterRunning()
         void connectLink()
         audioTimer = setInterval(emitAudio, Math.round(1000 / OUTPUT_HZ))
         startClocks()
@@ -1192,7 +1362,7 @@ export function createEngine (host: EngineHost): Engine {
       lastError = undefined
       sizeBuffers(stages.leds)
       pattern = createPattern(parsed, stages.leds, clock)
-      state = 'running'
+      enterRunning()
       void connectLink()
       patternTimer = setInterval(emitPattern, Math.round(1000 / OUTPUT_HZ))
       startClocks()
@@ -1251,7 +1421,7 @@ export function createEngine (host: EngineHost): Engine {
         ...(durationMs !== undefined ? { durationMs } : {})
       })
       muxer.setInput(priority, { kind: 'colors', colors: colorTarget })
-      state = 'running'
+      enterRunning()
       void connectLink()
       startClocks()
       tick()

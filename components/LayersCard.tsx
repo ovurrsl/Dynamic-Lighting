@@ -21,13 +21,18 @@ import type { MessageKey } from '#lib/i18n/strings'
  * separately would disagree with the strip exactly when it mattered.
  */
 
-const COMPONENT_KEY: Record<string, MessageKey | undefined> = {
+export const COMPONENT_KEY: Record<string, MessageKey | undefined> = {
   capture: 'layers.component.capture',
   effect: 'layers.component.effect',
   audio: 'layers.component.audio',
   color: 'layers.component.color',
   flash: 'layers.component.flash',
-  pattern: 'layers.component.pattern'
+  pattern: 'layers.component.pattern',
+  // The two automatic layers name themselves here too. Without these the list
+  // shows the raw component tag, which is the one place in the panel a user
+  // would see an internal name.
+  background: 'layers.component.background',
+  startup: 'layers.component.startup'
 }
 
 export function LayersCard () {

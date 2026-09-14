@@ -878,6 +878,261 @@ function requireDuration(name, value) {
   return value;
 }
 
+// lib/engine/effects.ts
+var EFFECT_KINDS = [
+  "rainbow",
+  "blobs",
+  "breathe",
+  "candle",
+  "comet",
+  "police",
+  "plasma"
+];
+function isEffectKind(value) {
+  return typeof value === "string" && EFFECT_KINDS.includes(value);
+}
+var SPEED_MIN = 0.05;
+var SPEED_MAX = 8;
+var DEFAULT_SPEED = 1;
+var DEFAULT_BRIGHTNESS = 1;
+function effectGeometry(layout) {
+  const count = layout.length;
+  const centres = new Float32Array(Math.max(1, count) * 2);
+  const along = new Float32Array(Math.max(1, count));
+  if (count === 0) return { count: 0, centres, along };
+  for (let i = 0; i < count; i++) {
+    const rect = layout[i];
+    centres[i * 2] = (rect.xMin + rect.xMax) / 2;
+    centres[i * 2 + 1] = (rect.yMin + rect.yMax) / 2;
+  }
+  let total = 0;
+  for (let i = 1; i < count; i++) {
+    const dx = centres[i * 2] - centres[(i - 1) * 2];
+    const dy = centres[i * 2 + 1] - centres[(i - 1) * 2 + 1];
+    total += Math.hypot(dx, dy);
+    along[i] = total;
+  }
+  const closing = count > 1 ? Math.hypot(
+    centres[0] - centres[(count - 1) * 2],
+    centres[1] - centres[(count - 1) * 2 + 1]
+  ) : 0;
+  const perimeter = total + closing;
+  if (perimeter > 0) {
+    for (let i = 0; i < count; i++) along[i] = along[i] / perimeter;
+  }
+  return { count, centres, along };
+}
+function hue(h, out, at, value = 1) {
+  const t = (h % 1 + 1) % 1;
+  const sector = t * 6;
+  const c = Math.floor(sector);
+  const f = sector - c;
+  const rising = f;
+  const falling = 1 - f;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  switch (c % 6) {
+    case 0:
+      r = 1;
+      g = rising;
+      break;
+    case 1:
+      r = falling;
+      g = 1;
+      break;
+    case 2:
+      g = 1;
+      b = rising;
+      break;
+    case 3:
+      g = falling;
+      b = 1;
+      break;
+    case 4:
+      r = rising;
+      b = 1;
+      break;
+    default:
+      r = 1;
+      b = falling;
+      break;
+  }
+  out[at] = srgbToLinear(r) * value;
+  out[at + 1] = srgbToLinear(g) * value;
+  out[at + 2] = srgbToLinear(b) * value;
+}
+function seeded(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = a + 1831565813 >>> 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+var clamp012 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
+function noiseTable(size, seed) {
+  const random = seeded(seed);
+  const table = new Float32Array(size);
+  for (let i = 0; i < size; i++) table[i] = random();
+  return table;
+}
+function noiseAt(table, t) {
+  const size = table.length;
+  const scaled = (t % size + size) % size;
+  const i = Math.floor(scaled);
+  const f = scaled - i;
+  const a = table[i];
+  const b = table[(i + 1) % size];
+  const w = f * f * (3 - 2 * f);
+  return a + (b - a) * w;
+}
+function createEffect(spec, geometry, clock2) {
+  const speed = clampSpeed(spec.speed ?? DEFAULT_SPEED);
+  const brightness = clamp012(spec.brightness ?? DEFAULT_BRIGHTNESS);
+  const { count, centres, along } = geometry;
+  const start = clock2();
+  const flicker = noiseTable(64, 2654435769);
+  const base = spec.color ?? { r: 255, g: 160, b: 60 };
+  const baseLinear = new Float32Array([
+    srgbToLinear(base.r / 255),
+    srgbToLinear(base.g / 255),
+    srgbToLinear(base.b / 255)
+  ]);
+  const scratch = new Float32Array(3);
+  const render = (out, nowMs) => {
+    const t = (nowMs - start) / 1e3 * speed;
+    switch (spec.kind) {
+      case "rainbow": {
+        for (let i = 0; i < count; i++) {
+          hue(along[i] - t * 0.1, out, i * 3, brightness);
+        }
+        break;
+      }
+      case "blobs": {
+        for (let i = 0; i < count; i++) {
+          const x = centres[i * 2];
+          const y = centres[i * 2 + 1];
+          let r = 0;
+          let g = 0;
+          let b = 0;
+          for (let blob = 0; blob < 3; blob++) {
+            const phase = t * 0.13 + blob * 2.1;
+            const bx = 0.5 + 0.45 * Math.sin(phase * 1.07 + blob);
+            const by = 0.5 + 0.45 * Math.cos(phase * 0.89 + blob * 1.7);
+            const d = Math.hypot(x - bx, y - by);
+            const weight = Math.exp(-(d * d) / 0.06);
+            hue(blob / 3 + t * 0.03, scratch, 0, 1);
+            r += scratch[0] * weight;
+            g += scratch[1] * weight;
+            b += scratch[2] * weight;
+          }
+          const at = i * 3;
+          out[at] = clamp012(r) * brightness;
+          out[at + 1] = clamp012(g) * brightness;
+          out[at + 2] = clamp012(b) * brightness;
+        }
+        break;
+      }
+      case "breathe": {
+        const level = (0.15 + 0.85 * (0.5 - 0.5 * Math.cos(t * 0.9))) * brightness;
+        for (let i = 0; i < count; i++) {
+          const at = i * 3;
+          out[at] = baseLinear[0] * level;
+          out[at + 1] = baseLinear[1] * level;
+          out[at + 2] = baseLinear[2] * level;
+        }
+        break;
+      }
+      case "candle": {
+        for (let i = 0; i < count; i++) {
+          const n = noiseAt(flicker, t * 3 + i * 0.7);
+          const level = (0.45 + 0.55 * n) * brightness;
+          const at = i * 3;
+          out[at] = baseLinear[0] * level;
+          out[at + 1] = baseLinear[1] * level * (0.75 + 0.25 * n);
+          out[at + 2] = baseLinear[2] * level * (0.4 + 0.6 * n * n);
+        }
+        break;
+      }
+      case "comet": {
+        const head = (t * 0.35 % 1 + 1) % 1;
+        for (let i = 0; i < count; i++) {
+          let d = head - along[i];
+          if (d < 0) d += 1;
+          const level = Math.exp(-d / 0.12) * brightness;
+          const at = i * 3;
+          out[at] = baseLinear[0] * level;
+          out[at + 1] = baseLinear[1] * level;
+          out[at + 2] = baseLinear[2] * level;
+        }
+        break;
+      }
+      case "police": {
+        const phase = Math.floor(t * 2) % 2 === 0;
+        for (let i = 0; i < count; i++) {
+          const left = centres[i * 2] < 0.5;
+          const on = left === phase;
+          const at = i * 3;
+          out[at] = on && left ? brightness : 0;
+          out[at + 1] = 0;
+          out[at + 2] = on && !left ? brightness : 0;
+        }
+        break;
+      }
+      default: {
+        for (let i = 0; i < count; i++) {
+          const x = centres[i * 2];
+          const y = centres[i * 2 + 1];
+          const v = Math.sin(x * 6 + t * 0.7) + Math.sin(y * 5 - t * 0.53) + Math.sin((x + y) * 4 + t * 0.31);
+          hue(v / 6 + 0.5, out, i * 3, brightness);
+        }
+        break;
+      }
+    }
+  };
+  return { kind: spec.kind, render };
+}
+function clampSpeed(value) {
+  if (!Number.isFinite(value)) return DEFAULT_SPEED;
+  return Math.min(SPEED_MAX, Math.max(SPEED_MIN, value));
+}
+function parseEffectSpec(value) {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError("effects: a spec must be an object");
+  }
+  const raw = value;
+  if (!isEffectKind(raw.kind)) {
+    throw new RangeError(`effects: kind must be one of ${EFFECT_KINDS.join(", ")}, got ${String(raw.kind)}`);
+  }
+  const spec = { kind: raw.kind };
+  if (raw.speed !== void 0) {
+    if (typeof raw.speed !== "number" || !Number.isFinite(raw.speed)) {
+      throw new TypeError("effects: speed must be a finite number");
+    }
+    spec.speed = clampSpeed(raw.speed);
+  }
+  if (raw.brightness !== void 0) {
+    if (typeof raw.brightness !== "number" || !Number.isFinite(raw.brightness)) {
+      throw new TypeError("effects: brightness must be a finite number");
+    }
+    spec.brightness = clamp012(raw.brightness);
+  }
+  if (raw.color !== void 0) {
+    const color = raw.color;
+    if (typeof color !== "object" || color === null) throw new TypeError("effects: color must be an object");
+    spec.color = { r: channel(color.r), g: channel(color.g), b: channel(color.b) };
+  }
+  return spec;
+}
+function channel(value) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
+    throw new RangeError(`effects: a colour channel is an integer 0..255, got ${String(value)}`);
+  }
+  return value;
+}
+
 // lib/engine/smooth.ts
 var SMOOTHING_DEFAULTS = Object.freeze({
   outputHz: 120,
@@ -1207,6 +1462,7 @@ function requireNonNegative(name, value) {
 var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
 var OUTPUT_TRANSPORTS = Object.freeze(["serial", "websocket", "wled"]);
 var CAPTURE_SOURCES = Object.freeze(["screen", "device"]);
+var LAYER_KINDS = Object.freeze(["color", "effect"]);
 var DEFAULT_OUTPUT = Object.freeze({
   transport: "serial",
   format: "Afx"
@@ -1237,6 +1493,20 @@ var DEFAULT_BORDER = Object.freeze({
 });
 var BORDER_THRESHOLD_MAX = 0.2;
 var BLUR_REMOVE_MAX = 8;
+var DEFAULT_BACKGROUND = Object.freeze({
+  enabled: false,
+  kind: "color",
+  color: Object.freeze({ r: 255, g: 170, b: 100 }),
+  effect: "candle"
+});
+var DEFAULT_STARTUP = Object.freeze({
+  ...DEFAULT_BACKGROUND,
+  kind: "effect",
+  effect: "rainbow",
+  durationMs: 3e3
+});
+var STARTUP_MS_MIN = 100;
+var STARTUP_MS_MAX = 3e4;
 var SMOOTHING_MS_MIN = 0;
 var SMOOTHING_MS_MAX = 2e3;
 var GRID_MIN = 16;
@@ -1252,7 +1522,9 @@ var DEFAULT_ENGINE_CONFIG = Object.freeze({
   capture: DEFAULT_CAPTURE,
   smoothing: DEFAULT_SMOOTHING,
   color: DEFAULT_COLOR,
-  border: DEFAULT_BORDER
+  border: DEFAULT_BORDER,
+  background: DEFAULT_BACKGROUND,
+  startup: DEFAULT_STARTUP
 });
 function resolveLayout(config) {
   const layout = config.layout;
@@ -1276,6 +1548,29 @@ function object(value, path) {
 function integer(value, path, min, max = Number.MAX_SAFE_INTEGER) {
   if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
     throw new ConfigError(path, `must be an integer in ${min}..${max}, got ${describe(value)}`);
+  }
+  return value;
+}
+function readLayer(value, path, fallback) {
+  const raw = value === void 0 ? {} : object(value, `config.${path}`);
+  const colorRaw = raw.color === void 0 ? void 0 : object(raw.color, `${path}.color`);
+  const kind = raw.kind === void 0 ? fallback.kind : readLayerKind(raw.kind, `${path}.kind`);
+  return {
+    enabled: raw.enabled === void 0 ? fallback.enabled : boolean(raw.enabled, `${path}.enabled`),
+    kind,
+    color: colorRaw === void 0 ? { ...fallback.color } : {
+      r: integer(colorRaw.r, `${path}.color.r`, 0, 255),
+      g: integer(colorRaw.g, `${path}.color.g`, 0, 255),
+      b: integer(colorRaw.b, `${path}.color.b`, 0, 255)
+    },
+    // The effects module owns what a valid effect is; asking it here keeps one
+    // definition rather than two that drift.
+    effect: raw.effect === void 0 ? fallback.effect : parseEffectSpec({ kind: raw.effect }).kind
+  };
+}
+function readLayerKind(value, path) {
+  if (value !== "color" && value !== "effect") {
+    throw new ConfigError(path, `must be one of ${LAYER_KINDS.join(", ")}, got ${describe(value)}`);
   }
   return value;
 }
@@ -1532,7 +1827,30 @@ function parseEngineConfig(value) {
     threshold: boundedFraction(borderRaw.threshold, "border.threshold", 0, BORDER_THRESHOLD_MAX, DEFAULT_BORDER.threshold),
     blurRemovePx: integer(borderRaw.blurRemovePx ?? DEFAULT_BORDER.blurRemovePx, "border.blurRemovePx", 0, BLUR_REMOVE_MAX)
   };
-  const config = { layout, blacklist, colorOrder, output, capture, smoothing, color, border: border2 };
+  const background = readLayer(raw.background, "background", DEFAULT_BACKGROUND);
+  const startupBase = readLayer(raw.startup, "startup", DEFAULT_STARTUP);
+  const startupRaw = raw.startup === void 0 ? {} : object(raw.startup, "config.startup");
+  const startup = {
+    ...startupBase,
+    durationMs: integer(
+      startupRaw.durationMs ?? DEFAULT_STARTUP.durationMs,
+      "startup.durationMs",
+      STARTUP_MS_MIN,
+      STARTUP_MS_MAX
+    )
+  };
+  const config = {
+    layout,
+    blacklist,
+    colorOrder,
+    output,
+    capture,
+    smoothing,
+    color,
+    border: border2,
+    background,
+    startup
+  };
   let rects;
   try {
     rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
@@ -1559,7 +1877,9 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   capture: DEFAULT_CAPTURE,
   smoothing: DEFAULT_SMOOTHING,
   color: DEFAULT_COLOR,
-  border: DEFAULT_BORDER
+  border: DEFAULT_BORDER,
+  background: DEFAULT_BACKGROUND,
+  startup: DEFAULT_STARTUP
 });
 
 // lib/engine/instances.ts
@@ -1747,8 +2067,8 @@ function createFollower(releasePerSecond = 0.5, outputHz = 120) {
     }
   };
 }
-var clamp012 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
-function hue(h, out, at, value) {
+var clamp013 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
+function hue2(h, out, at, value) {
   const t = (h % 1 + 1) % 1;
   const sector = t * 6;
   const c = Math.floor(sector);
@@ -1790,8 +2110,8 @@ function createVisualiser(options) {
   const { spec, geometry, sampleRate, binCount } = options;
   const outputHz = options.outputHz ?? 120;
   const gain = Math.min(GAIN_MAX, Math.max(GAIN_MIN, spec.gain ?? DEFAULT_GAIN));
-  const brightness = clamp012(spec.brightness ?? 1);
-  const decay = clamp012(spec.decay ?? DEFAULT_DECAY);
+  const brightness = clamp013(spec.brightness ?? 1);
+  const decay = clamp013(spec.decay ?? DEFAULT_DECAY);
   const { count, centres, along } = geometry;
   const base = spec.color ?? { r: 0, g: 180, b: 255 };
   const baseLinear = new Float32Array([
@@ -1829,7 +2149,7 @@ function createVisualiser(options) {
     switch (spec.kind) {
       case "spectrum": {
         for (let b = 0; b < bandCount; b++) {
-          const value = clamp012(bands[b] * scale);
+          const value = clamp013(bands[b] * scale);
           const previous = held[b];
           held[b] = value > previous ? value : previous * (1 - decay);
         }
@@ -1837,7 +2157,7 @@ function createVisualiser(options) {
           const position = count === 1 ? 0 : along[i];
           const b = Math.min(bandCount - 1, Math.floor(position * bandCount));
           const value = held[b];
-          hue(
+          hue2(
             0.66 - 0.66 * (b / Math.max(1, bandCount - 1)),
             out,
             i * 3,
@@ -1849,7 +2169,7 @@ function createVisualiser(options) {
       case "level": {
         let sum = 0;
         for (let b = 0; b < bandCount; b++) sum += bands[b];
-        const value = clamp012(sum / bandCount * scale);
+        const value = clamp013(sum / bandCount * scale);
         smoothLevel = value > smoothLevel ? value : smoothLevel * (1 - decay);
         const level = smoothLevel < NOISE_FLOOR ? 0 : smoothLevel * brightness;
         for (let i = 0; i < count; i++) {
@@ -1864,14 +2184,14 @@ function createVisualiser(options) {
         const lowBands = Math.max(1, Math.floor(bandCount / 4));
         let bass = 0;
         for (let b = 0; b < lowBands; b++) bass = Math.max(bass, bands[b]);
-        const value = clamp012(bass * scale);
+        const value = clamp013(bass * scale);
         smoothLevel = value > smoothLevel ? value : smoothLevel * (1 - decay);
         const reach = smoothLevel;
         for (let i = 0; i < count; i++) {
           const dx = centres[i * 2] - 0.5;
           const dy = centres[i * 2 + 1] - 0.5;
           const d = Math.min(1, Math.hypot(dx, dy) / 0.7071);
-          const lit = clamp012((reach - d) / 0.35);
+          const lit = clamp013((reach - d) / 0.35);
           const level = lit < NOISE_FLOOR ? 0 : lit * brightness;
           const at = i * 3;
           out[at] = baseLinear[0] * level;
@@ -1903,20 +2223,20 @@ function parseAudioSpec(value) {
     if (typeof raw.brightness !== "number" || !Number.isFinite(raw.brightness)) {
       throw new TypeError("audio: brightness must be a finite number");
     }
-    spec.brightness = clamp012(raw.brightness);
+    spec.brightness = clamp013(raw.brightness);
   }
   if (raw.decay !== void 0) {
     if (typeof raw.decay !== "number" || !Number.isFinite(raw.decay)) throw new TypeError("audio: decay must be a finite number");
-    spec.decay = clamp012(raw.decay);
+    spec.decay = clamp013(raw.decay);
   }
   if (raw.color !== void 0) {
     const color = raw.color;
     if (typeof color !== "object" || color === null) throw new TypeError("audio: color must be an object");
-    spec.color = { r: channel(color.r), g: channel(color.g), b: channel(color.b) };
+    spec.color = { r: channel2(color.r), g: channel2(color.g), b: channel2(color.b) };
   }
   return spec;
 }
-function channel(value) {
+function channel2(value) {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
     throw new RangeError(`audio: a colour channel is an integer 0..255, got ${String(value)}`);
   }
@@ -2486,7 +2806,7 @@ function createFrameEncoder(format, leds, calibration) {
 
 // lib/engine/wled.ts
 var HEX = "0123456789ABCDEF";
-function channel2(value) {
+function channel3(value) {
   return Math.round(clamp01(value) * 255);
 }
 function hex2(value) {
@@ -2507,9 +2827,9 @@ function wledFrame(colors, leds, options = {}) {
   const parts = [];
   for (let led = 0; led < leds; led++) {
     const at = led * 3;
-    const r = channel2(colors[at] ?? 0);
-    const g = channel2(colors[at + 1] ?? 0);
-    const b = channel2(colors[at + 2] ?? 0);
+    const r = channel3(colors[at] ?? 0);
+    const g = channel3(colors[at + 1] ?? 0);
+    const b = channel3(colors[at + 2] ?? 0);
     parts.push(encoding === "hex" ? `"${hex2(r)}${hex2(g)}${hex2(b)}"` : `[${r},${g},${b}]`);
   }
   const body = `{"id":${segment},"i":[${parts.join(",")}]}`;
@@ -2686,261 +3006,6 @@ function createWledSink(options) {
     },
     stats: () => ({ sent, bytes, leds, ...link.stats() })
   };
-}
-
-// lib/engine/effects.ts
-var EFFECT_KINDS = [
-  "rainbow",
-  "blobs",
-  "breathe",
-  "candle",
-  "comet",
-  "police",
-  "plasma"
-];
-function isEffectKind(value) {
-  return typeof value === "string" && EFFECT_KINDS.includes(value);
-}
-var SPEED_MIN = 0.05;
-var SPEED_MAX = 8;
-var DEFAULT_SPEED = 1;
-var DEFAULT_BRIGHTNESS = 1;
-function effectGeometry(layout) {
-  const count = layout.length;
-  const centres = new Float32Array(Math.max(1, count) * 2);
-  const along = new Float32Array(Math.max(1, count));
-  if (count === 0) return { count: 0, centres, along };
-  for (let i = 0; i < count; i++) {
-    const rect = layout[i];
-    centres[i * 2] = (rect.xMin + rect.xMax) / 2;
-    centres[i * 2 + 1] = (rect.yMin + rect.yMax) / 2;
-  }
-  let total = 0;
-  for (let i = 1; i < count; i++) {
-    const dx = centres[i * 2] - centres[(i - 1) * 2];
-    const dy = centres[i * 2 + 1] - centres[(i - 1) * 2 + 1];
-    total += Math.hypot(dx, dy);
-    along[i] = total;
-  }
-  const closing = count > 1 ? Math.hypot(
-    centres[0] - centres[(count - 1) * 2],
-    centres[1] - centres[(count - 1) * 2 + 1]
-  ) : 0;
-  const perimeter = total + closing;
-  if (perimeter > 0) {
-    for (let i = 0; i < count; i++) along[i] = along[i] / perimeter;
-  }
-  return { count, centres, along };
-}
-function hue2(h, out, at, value = 1) {
-  const t = (h % 1 + 1) % 1;
-  const sector = t * 6;
-  const c = Math.floor(sector);
-  const f = sector - c;
-  const rising = f;
-  const falling = 1 - f;
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  switch (c % 6) {
-    case 0:
-      r = 1;
-      g = rising;
-      break;
-    case 1:
-      r = falling;
-      g = 1;
-      break;
-    case 2:
-      g = 1;
-      b = rising;
-      break;
-    case 3:
-      g = falling;
-      b = 1;
-      break;
-    case 4:
-      r = rising;
-      b = 1;
-      break;
-    default:
-      r = 1;
-      b = falling;
-      break;
-  }
-  out[at] = srgbToLinear(r) * value;
-  out[at + 1] = srgbToLinear(g) * value;
-  out[at + 2] = srgbToLinear(b) * value;
-}
-function seeded(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a = a + 1831565813 >>> 0;
-    let t = Math.imul(a ^ a >>> 15, 1 | a);
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  };
-}
-var clamp013 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
-function noiseTable(size, seed) {
-  const random = seeded(seed);
-  const table = new Float32Array(size);
-  for (let i = 0; i < size; i++) table[i] = random();
-  return table;
-}
-function noiseAt(table, t) {
-  const size = table.length;
-  const scaled = (t % size + size) % size;
-  const i = Math.floor(scaled);
-  const f = scaled - i;
-  const a = table[i];
-  const b = table[(i + 1) % size];
-  const w = f * f * (3 - 2 * f);
-  return a + (b - a) * w;
-}
-function createEffect(spec, geometry, clock2) {
-  const speed = clampSpeed(spec.speed ?? DEFAULT_SPEED);
-  const brightness = clamp013(spec.brightness ?? DEFAULT_BRIGHTNESS);
-  const { count, centres, along } = geometry;
-  const start = clock2();
-  const flicker = noiseTable(64, 2654435769);
-  const base = spec.color ?? { r: 255, g: 160, b: 60 };
-  const baseLinear = new Float32Array([
-    srgbToLinear(base.r / 255),
-    srgbToLinear(base.g / 255),
-    srgbToLinear(base.b / 255)
-  ]);
-  const scratch = new Float32Array(3);
-  const render = (out, nowMs) => {
-    const t = (nowMs - start) / 1e3 * speed;
-    switch (spec.kind) {
-      case "rainbow": {
-        for (let i = 0; i < count; i++) {
-          hue2(along[i] - t * 0.1, out, i * 3, brightness);
-        }
-        break;
-      }
-      case "blobs": {
-        for (let i = 0; i < count; i++) {
-          const x = centres[i * 2];
-          const y = centres[i * 2 + 1];
-          let r = 0;
-          let g = 0;
-          let b = 0;
-          for (let blob = 0; blob < 3; blob++) {
-            const phase = t * 0.13 + blob * 2.1;
-            const bx = 0.5 + 0.45 * Math.sin(phase * 1.07 + blob);
-            const by = 0.5 + 0.45 * Math.cos(phase * 0.89 + blob * 1.7);
-            const d = Math.hypot(x - bx, y - by);
-            const weight = Math.exp(-(d * d) / 0.06);
-            hue2(blob / 3 + t * 0.03, scratch, 0, 1);
-            r += scratch[0] * weight;
-            g += scratch[1] * weight;
-            b += scratch[2] * weight;
-          }
-          const at = i * 3;
-          out[at] = clamp013(r) * brightness;
-          out[at + 1] = clamp013(g) * brightness;
-          out[at + 2] = clamp013(b) * brightness;
-        }
-        break;
-      }
-      case "breathe": {
-        const level = (0.15 + 0.85 * (0.5 - 0.5 * Math.cos(t * 0.9))) * brightness;
-        for (let i = 0; i < count; i++) {
-          const at = i * 3;
-          out[at] = baseLinear[0] * level;
-          out[at + 1] = baseLinear[1] * level;
-          out[at + 2] = baseLinear[2] * level;
-        }
-        break;
-      }
-      case "candle": {
-        for (let i = 0; i < count; i++) {
-          const n = noiseAt(flicker, t * 3 + i * 0.7);
-          const level = (0.45 + 0.55 * n) * brightness;
-          const at = i * 3;
-          out[at] = baseLinear[0] * level;
-          out[at + 1] = baseLinear[1] * level * (0.75 + 0.25 * n);
-          out[at + 2] = baseLinear[2] * level * (0.4 + 0.6 * n * n);
-        }
-        break;
-      }
-      case "comet": {
-        const head = (t * 0.35 % 1 + 1) % 1;
-        for (let i = 0; i < count; i++) {
-          let d = head - along[i];
-          if (d < 0) d += 1;
-          const level = Math.exp(-d / 0.12) * brightness;
-          const at = i * 3;
-          out[at] = baseLinear[0] * level;
-          out[at + 1] = baseLinear[1] * level;
-          out[at + 2] = baseLinear[2] * level;
-        }
-        break;
-      }
-      case "police": {
-        const phase = Math.floor(t * 2) % 2 === 0;
-        for (let i = 0; i < count; i++) {
-          const left = centres[i * 2] < 0.5;
-          const on = left === phase;
-          const at = i * 3;
-          out[at] = on && left ? brightness : 0;
-          out[at + 1] = 0;
-          out[at + 2] = on && !left ? brightness : 0;
-        }
-        break;
-      }
-      default: {
-        for (let i = 0; i < count; i++) {
-          const x = centres[i * 2];
-          const y = centres[i * 2 + 1];
-          const v = Math.sin(x * 6 + t * 0.7) + Math.sin(y * 5 - t * 0.53) + Math.sin((x + y) * 4 + t * 0.31);
-          hue2(v / 6 + 0.5, out, i * 3, brightness);
-        }
-        break;
-      }
-    }
-  };
-  return { kind: spec.kind, render };
-}
-function clampSpeed(value) {
-  if (!Number.isFinite(value)) return DEFAULT_SPEED;
-  return Math.min(SPEED_MAX, Math.max(SPEED_MIN, value));
-}
-function parseEffectSpec(value) {
-  if (typeof value !== "object" || value === null) {
-    throw new TypeError("effects: a spec must be an object");
-  }
-  const raw = value;
-  if (!isEffectKind(raw.kind)) {
-    throw new RangeError(`effects: kind must be one of ${EFFECT_KINDS.join(", ")}, got ${String(raw.kind)}`);
-  }
-  const spec = { kind: raw.kind };
-  if (raw.speed !== void 0) {
-    if (typeof raw.speed !== "number" || !Number.isFinite(raw.speed)) {
-      throw new TypeError("effects: speed must be a finite number");
-    }
-    spec.speed = clampSpeed(raw.speed);
-  }
-  if (raw.brightness !== void 0) {
-    if (typeof raw.brightness !== "number" || !Number.isFinite(raw.brightness)) {
-      throw new TypeError("effects: brightness must be a finite number");
-    }
-    spec.brightness = clamp013(raw.brightness);
-  }
-  if (raw.color !== void 0) {
-    const color = raw.color;
-    if (typeof color !== "object" || color === null) throw new TypeError("effects: color must be an object");
-    spec.color = { r: channel3(color.r), g: channel3(color.g), b: channel3(color.b) };
-  }
-  return spec;
-}
-function channel3(value) {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
-    throw new RangeError(`effects: a colour channel is an integer 0..255, got ${String(value)}`);
-  }
-  return value;
 }
 
 // lib/engine/patterns.ts
@@ -4137,6 +4202,9 @@ function createEngine(host) {
   let effect = null;
   let effectSpec = null;
   let effectTimer = null;
+  let backgroundEffect = null;
+  let startupEffect = null;
+  let startupUntil = null;
   let audioTimer = null;
   let visualiser = null;
   let audio = null;
@@ -4149,6 +4217,8 @@ function createEngine(host) {
   let audioTarget = allocLedColors(1);
   let patternTarget = allocLedColors(1);
   let colorTarget = allocLedColors(1);
+  let backgroundTarget = allocLedColors(1);
+  let startupTarget = allocLedColors(1);
   function sizeBuffers(leds) {
     if (captureTarget.length === leds * 3) return;
     captureTarget = allocLedColors(leds);
@@ -4156,6 +4226,8 @@ function createEngine(host) {
     audioTarget = allocLedColors(leds);
     patternTarget = allocLedColors(leds);
     colorTarget = allocLedColors(leds);
+    backgroundTarget = allocLedColors(leds);
+    startupTarget = allocLedColors(leds);
   }
   function build2(config) {
     const layout = resolveLayout(config);
@@ -4428,6 +4500,7 @@ function createEngine(host) {
     if (state !== "running") return;
     const s = stages;
     const now = clock2();
+    endStartupIfDue(now);
     const won = muxer.tick(now);
     if (won === null) return;
     if (won.input.kind !== "colors") return;
@@ -4451,11 +4524,95 @@ function createEngine(host) {
     muxer.setInput(priority, { kind: "colors", colors });
   }
   function emitEffect() {
-    const e = effect;
-    if (e === null || state !== "running") return;
-    e.render(effectTarget, clock2());
-    feed(PRIORITY.effect, "effect", effectTarget);
+    if (state !== "running") return;
+    const now = clock2();
+    if (effect !== null) {
+      effect.render(effectTarget, now);
+      feed(PRIORITY.effect, "effect", effectTarget);
+    }
+    if (backgroundEffect !== null) {
+      backgroundEffect.render(backgroundTarget, now);
+      feed(BACKGROUND_PRIORITY, "background", backgroundTarget);
+    }
+    if (startupEffect !== null) {
+      startupEffect.render(startupTarget, now);
+      feed(HIGHEST_PRIORITY, "startup", startupTarget);
+    }
+    endStartupIfDue(now);
     tick();
+  }
+  function ensureEffectTimer() {
+    if (effect === null && backgroundEffect === null && startupEffect === null) {
+      idleEffectTimer();
+      return;
+    }
+    effectTimer ??= setInterval(emitEffect, Math.round(1e3 / OUTPUT_HZ));
+  }
+  function idleEffectTimer() {
+    if (effect !== null || backgroundEffect !== null || startupEffect !== null) return;
+    if (effectTimer !== null) {
+      clearInterval(effectTimer);
+      effectTimer = null;
+    }
+  }
+  function applyBackground() {
+    const layer = stages.config.background;
+    if (!layer.enabled || state !== "running") {
+      backgroundEffect = null;
+      muxer.clear(BACKGROUND_PRIORITY);
+      idleEffectTimer();
+      return;
+    }
+    sizeBuffers(stages.leds);
+    if (layer.kind === "effect") {
+      backgroundEffect = createEffect({ kind: layer.effect }, stages.geometry, clock2);
+      ensureEffectTimer();
+      emitEffect();
+      return;
+    }
+    backgroundEffect = null;
+    fillLinear(backgroundTarget, layer.color);
+    feed(BACKGROUND_PRIORITY, "background", backgroundTarget);
+    idleEffectTimer();
+  }
+  function runStartup() {
+    const layer = stages.config.startup;
+    if (!layer.enabled) return;
+    sizeBuffers(stages.leds);
+    startupUntil = clock2() + layer.durationMs;
+    muxer.register(HIGHEST_PRIORITY, { component: "startup" });
+    if (layer.kind === "effect") {
+      startupEffect = createEffect({ kind: layer.effect }, stages.geometry, clock2);
+      ensureEffectTimer();
+      emitEffect();
+      return;
+    }
+    startupEffect = null;
+    fillLinear(startupTarget, layer.color);
+    muxer.setInput(HIGHEST_PRIORITY, { kind: "colors", colors: startupTarget });
+  }
+  function endStartupIfDue(now) {
+    if (startupUntil === null || now < startupUntil) return;
+    startupUntil = null;
+    startupEffect = null;
+    idleEffectTimer();
+    muxer.clear(HIGHEST_PRIORITY);
+  }
+  function fillLinear(into, color) {
+    const r = srgbToLinear(color.r / 255);
+    const g = srgbToLinear(color.g / 255);
+    const b = srgbToLinear(color.b / 255);
+    for (let i = 0; i < into.length; i += 3) {
+      into[i] = r;
+      into[i + 1] = g;
+      into[i + 2] = b;
+    }
+  }
+  function enterRunning() {
+    if (state === "running") return;
+    state = "running";
+    applyBackground();
+    runStartup();
   }
   function emitAudio() {
     const v = visualiser;
@@ -4507,10 +4664,7 @@ function createEngine(host) {
   function stopEffect() {
     effect = null;
     effectSpec = null;
-    if (effectTimer !== null) {
-      clearInterval(effectTimer);
-      effectTimer = null;
-    }
+    idleEffectTimer();
     muxer.clear(PRIORITY.effect);
     idleIfEmpty();
   }
@@ -4553,7 +4707,7 @@ function createEngine(host) {
     }
   }
   function idleIfEmpty() {
-    if (muxer.sources().some((info) => info.priority !== BACKGROUND_PRIORITY)) {
+    if (muxer.sources().length > 0) {
       tick();
       report();
       return;
@@ -4618,7 +4772,7 @@ function createEngine(host) {
       sourceKind = next.kind;
       resetCounters();
       sizeBuffers(stages.leds);
-      state = "running";
+      enterRunning();
       startClocks();
       void connectLink();
       next.start(onFrame, (error) => {
@@ -4654,6 +4808,10 @@ function createEngine(host) {
     sourceKind = void 0;
     void s?.stop().catch(() => {
     });
+    backgroundEffect = null;
+    startupEffect = null;
+    startupUntil = null;
+    idleEffectTimer();
     muxer.clearAll();
     muxer.clear(BACKGROUND_PRIORITY);
     if (state !== "error") state = "idle";
@@ -4753,6 +4911,7 @@ function createEngine(host) {
           outputHz: OUTPUT_HZ
         });
       }
+      applyBackground();
       return config;
     },
     async start() {
@@ -4782,9 +4941,9 @@ function createEngine(host) {
       effectSpec = parsed;
       sizeBuffers(stages.leds);
       effect = createEffect(parsed, stages.geometry, clock2);
-      state = "running";
+      enterRunning();
       void connectLink();
-      effectTimer = setInterval(emitEffect, Math.round(1e3 / OUTPUT_HZ));
+      ensureEffectTimer();
       startClocks();
       emitEffect();
       report();
@@ -4814,7 +4973,7 @@ function createEngine(host) {
           binCount: opened.binCount,
           outputHz: OUTPUT_HZ
         });
-        state = "running";
+        enterRunning();
         void connectLink();
         audioTimer = setInterval(emitAudio, Math.round(1e3 / OUTPUT_HZ));
         startClocks();
@@ -4831,7 +4990,7 @@ function createEngine(host) {
       lastError = void 0;
       sizeBuffers(stages.leds);
       pattern = createPattern(parsed, stages.leds, clock2);
-      state = "running";
+      enterRunning();
       void connectLink();
       patternTimer = setInterval(emitPattern, Math.round(1e3 / OUTPUT_HZ));
       startClocks();
@@ -4881,7 +5040,7 @@ function createEngine(host) {
         ...durationMs !== void 0 ? { durationMs } : {}
       });
       muxer.setInput(priority, { kind: "colors", colors: colorTarget });
-      state = "running";
+      enterRunning();
       void connectLink();
       startClocks();
       tick();

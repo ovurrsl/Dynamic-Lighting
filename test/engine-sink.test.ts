@@ -194,3 +194,41 @@ test('closing a bytes sink releases the transport and goes idle', async () => {
   assert.ok(closed)
   assert.equal(sink.state(), 'idle')
 })
+
+test('idle resolves at once with nothing in flight, and after the write otherwise', async () => {
+  // The engine awaits this before tearing a link down, so "resolves eventually"
+  // is not enough: with nothing outstanding it must not wait for a frame that
+  // is never coming, and with a frame outstanding it must not resolve early.
+  const sink = slowSink()
+  const writer = createFrameWriter(sink)
+
+  let settledWithNothingInFlight = false
+  void writer.idle().then(() => { settledWithNothingInFlight = true })
+  await Promise.resolve()
+  assert.equal(settledWithNothingInFlight, true)
+
+  writer.send(colours(0.5))
+  let settled = false
+  void writer.idle().then(() => { settled = true })
+  await Promise.resolve()
+  assert.equal(settled, false, 'idle resolved while a send was still outstanding')
+  ;(sink.pending[0] as Deferred).resolve()
+  await writer.idle()
+  assert.equal(writer.stats().written, 1)
+})
+
+test('the loopback can simulate link time through an injected wait', async () => {
+  // How the pipeline was measured against a slow link before any board existed:
+  // the wait is injected, so a test drives it instead of sleeping.
+  const waited: number[] = []
+  const sink = createLoopbackSink({
+    encoder: createFrameEncoder('Afx', 4),
+    latencyMs: 12,
+    wait: async (ms) => { waited.push(ms) }
+  })
+  await sink.send(colours(0.25))
+  await sink.send(colours(0.5))
+  assert.deepEqual(waited, [12, 12])
+  assert.equal(sink.loopback().accepted, 2)
+  assert.equal(sink.loopback().rejected, 0)
+})

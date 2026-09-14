@@ -7,6 +7,7 @@ import { AudioCard } from '#components/AudioCard'
 import { CalibrationCard } from '#components/CalibrationCard'
 import { CapabilitiesCard } from '#components/CapabilitiesCard'
 import { CaptureCard } from '#components/CaptureCard'
+import { ColourAdjustCard } from '#components/ColourAdjustCard'
 import { ColourCard } from '#components/ColourCard'
 import { BoardNetworkCard } from '#components/BoardNetworkCard'
 import { DeviceCard } from '#components/DeviceCard'
@@ -59,7 +60,7 @@ function sectionBody (id: SectionId, enabled: boolean) {
     case 'strips': return <InstancesCard />
     case 'layout': return <LayoutSection />
     case 'capture': return <CaptureCard />
-    case 'picture': return <SmoothingCard />
+    case 'picture': return <PictureSection />
     case 'calibration': return <CalibrationCard />
     case 'profiles': return <ProfilesSection />
     case 'effects': return <EffectsCard />
@@ -105,6 +106,23 @@ function OverviewSection () {
     <div className="flex flex-col gap-6">
       <OverviewCard />
       <LayersCard />
+    </div>
+  )
+}
+
+/**
+ * The picture page: everything between the captured frame and the strip.
+ *
+ * Smoothing and colour correction sit together because they are the same kind
+ * of decision - how the picture is TREATED, rather than where it comes from or
+ * where it goes - and because anyone tuning one is usually about to tune the
+ * other. The border-detection modes will join them here.
+ */
+function PictureSection () {
+  return (
+    <div className="flex flex-col gap-6">
+      <SmoothingCard />
+      <ColourAdjustCard />
     </div>
   )
 }

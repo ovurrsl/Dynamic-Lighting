@@ -335,7 +335,11 @@ export function createEngine (host: EngineHost): Engine {
       canvas,
       ctx,
       sampler: createSampler({ layout, width: gridWidth, height: gridHeight }),
-      adjustment: createAdjustment([{ leds: '*' }], leds),
+      // One profile over every LED. The engine supports several, selected by
+      // LED range, and the eight-corner colour cube underneath them - but those
+      // belong to the calibration wizard rather than to eight more sliders on a
+      // settings page nobody can interpret.
+      adjustment: createAdjustment([{ leds: '*', ...config.color }], leds),
       order: createColorOrder(leds, {
         order: config.colorOrder.order,
         ...(config.colorOrder.overrides === undefined ? {} : { overrides: config.colorOrder.overrides })

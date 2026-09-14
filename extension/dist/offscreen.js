@@ -315,6 +315,306 @@ function requireOrder(order) {
   if (!COLOR_ORDERS.includes(order)) throw new RangeError(`order: unknown colour order ${String(order)}`);
 }
 
+// lib/light.ts
+function srgbToLinear(channel5) {
+  return channel5 <= 0.04045 ? channel5 / 12.92 : ((channel5 + 0.055) / 1.055) ** 2.4;
+}
+function buildSrgbToLinearLut() {
+  const lut = new Float32Array(256);
+  for (let i = 0; i < 256; i++) lut[i] = srgbToLinear(i / 255);
+  return lut;
+}
+function clamp01(v) {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+function encodeLinear16(colors, out) {
+  const bytes = out ?? new Uint8Array(colors.length * 2);
+  for (let i = 0; i < colors.length; i++) {
+    const v = Math.round(clamp01(colors[i] ?? 0) * 65535);
+    bytes[i * 2] = v >> 8;
+    bytes[i * 2 + 1] = v & 255;
+  }
+  return bytes;
+}
+function encodeLinear8(colors, out) {
+  const bytes = out ?? new Uint8Array(colors.length);
+  for (let i = 0; i < colors.length; i++) {
+    bytes[i] = Math.round(clamp01(colors[i] ?? 0) * 255);
+  }
+  return bytes;
+}
+
+// lib/engine/adjust.ts
+var CUBE_CORNERS = Object.freeze(
+  ["black", "red", "green", "blue", "cyan", "magenta", "yellow", "white"]
+);
+var IDENTITY_CORNERS = Object.freeze({
+  black: Object.freeze({ r: 0, g: 0, b: 0 }),
+  red: Object.freeze({ r: 1, g: 0, b: 0 }),
+  green: Object.freeze({ r: 0, g: 1, b: 0 }),
+  blue: Object.freeze({ r: 0, g: 0, b: 1 }),
+  cyan: Object.freeze({ r: 0, g: 1, b: 1 }),
+  magenta: Object.freeze({ r: 1, g: 0, b: 1 }),
+  yellow: Object.freeze({ r: 1, g: 1, b: 0 }),
+  white: Object.freeze({ r: 1, g: 1, b: 1 })
+});
+var ADJUSTMENT_DEFAULTS = Object.freeze({
+  saturationGain: 1,
+  brightnessGain: 1,
+  taper: 1,
+  brightness: 100,
+  brightnessCompensation: 0,
+  temperature: 6600,
+  backlightThreshold: 0,
+  backlightColored: false
+});
+function linearToOklabInto(r, g, b, out) {
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  out[0] = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
+  out[1] = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+  out[2] = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+}
+function oklabToLinearInto(L, a, b, out) {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  out[0] = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+  out[1] = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+  out[2] = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+}
+function oklabGain(r, g, b, saturationGain, brightnessGain, out) {
+  linearToOklabInto(r, g, b, out);
+  const L = (out[0] ?? 0) * brightnessGain;
+  const a = (out[1] ?? 0) * saturationGain * brightnessGain;
+  const bb = (out[2] ?? 0) * saturationGain * brightnessGain;
+  oklabToLinearInto(L, a, bb, out);
+  out[0] = clamp01(out[0] ?? 0);
+  out[1] = clamp01(out[1] ?? 0);
+  out[2] = clamp01(out[2] ?? 0);
+}
+function brightnessScalars(brightness, compensation) {
+  if (brightness <= 0) return { rgb: 0, cmy: 0, w: 0 };
+  const bIn = brightness < 50 ? -0.09 * brightness + 7.5 : -0.04 * brightness + 5;
+  const fCmy = compensation / 100 + 1;
+  const fW = compensation * 2 / 100 + 1;
+  return {
+    rgb: Math.min(1, 1 / bIn),
+    cmy: Math.min(1, 1 / (bIn * fCmy)),
+    w: Math.min(1, 1 / (bIn * fW))
+  };
+}
+function cornerWeights(r, g, b, out = new Float64Array(8)) {
+  const nr = 1 - r;
+  const ng = 1 - g;
+  const nb = 1 - b;
+  out[0] = nr * ng * nb;
+  out[1] = r * ng * nb;
+  out[2] = nr * g * nb;
+  out[3] = nr * ng * b;
+  out[4] = nr * g * b;
+  out[5] = r * ng * b;
+  out[6] = r * g * nb;
+  out[7] = r * g * b;
+  return out;
+}
+var TEMPERATURE_MIN = 1e3;
+var TEMPERATURE_MAX = 4e4;
+function kelvinToSrgb(kelvin) {
+  if (!Number.isFinite(kelvin)) throw new RangeError(`adjust: temperature must be a finite Kelvin value, got ${kelvin}`);
+  const t = Math.floor(Math.min(TEMPERATURE_MAX, Math.max(TEMPERATURE_MIN, kelvin)) / 100);
+  const red = t <= 66 ? 255 : 329.698727446 * Math.pow(t - 60, -0.1332047592);
+  const green = t <= 66 ? 99.4708025861 * Math.log(t) - 161.1195681661 : 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+  const blue = t >= 66 ? 255 : t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+  return { r: clamp01(red / 255), g: clamp01(green / 255), b: clamp01(blue / 255) };
+}
+function kelvinToLinearRgb(kelvin) {
+  const m = kelvinToSrgb(kelvin);
+  return { r: srgbToLinear(m.r), g: srgbToLinear(m.g), b: srgbToLinear(m.b) };
+}
+function backlightFloor(threshold) {
+  const t = Math.min(100, Math.max(0, threshold)) / 100;
+  const shaped = (Math.pow(2, 2 * t) - 1) / 3;
+  return srgbToLinear(shaped);
+}
+function parseLedSelector(selector, count) {
+  const text = selector.trim();
+  if (text === "*") return Array.from({ length: count }, (_, i) => i);
+  const picked = /* @__PURE__ */ new Set();
+  for (const token of text.split(",")) {
+    const item = token.trim();
+    const match = /^(\d+)(?:-(\d+))?$/.exec(item);
+    if (match === null) throw new SyntaxError(`adjust: bad LED selector "${item}" in "${selector}"`);
+    const start = Number(match[1]);
+    const end = match[2] === void 0 ? start : Number(match[2]);
+    if (start > end) throw new RangeError(`adjust: descending LED range "${item}"`);
+    if (end >= count) throw new RangeError(`adjust: LED ${end} is outside the strip of ${count}`);
+    for (let i = start; i <= end; i++) picked.add(i);
+  }
+  return [...picked];
+}
+var LAB_SCRATCH = new Float64Array(3);
+var WEIGHT_SCRATCH = new Float64Array(8);
+var CompiledProfile = class {
+  saturationGain;
+  brightnessGain;
+  gainIsIdentity;
+  taper;
+  taperIsIdentity;
+  /** Eight corner colours in `CUBE_CORNERS` order, each premultiplied by its scalar. */
+  corners = new Float64Array(24);
+  cornersAreIdentity;
+  tempR;
+  tempG;
+  tempB;
+  tempIsIdentity;
+  floor;
+  backlightColored;
+  constructor(profile) {
+    const d = ADJUSTMENT_DEFAULTS;
+    this.saturationGain = finite("saturationGain", profile.saturationGain ?? d.saturationGain, 0, MAX_GAIN);
+    this.brightnessGain = finite("brightnessGain", profile.brightnessGain ?? d.brightnessGain, 0, MAX_GAIN);
+    this.gainIsIdentity = this.saturationGain === 1 && this.brightnessGain === 1;
+    this.taper = finite("taper", profile.taper ?? d.taper, 0);
+    if (this.taper === 0) throw new RangeError("adjust: taper must be positive; 0 would send every colour to full scale");
+    this.taperIsIdentity = this.taper === 1;
+    const brightness = finite("brightness", profile.brightness ?? d.brightness, 0, 100);
+    const compensation = finite("brightnessCompensation", profile.brightnessCompensation ?? d.brightnessCompensation, 0, 100);
+    const scalars = brightnessScalars(brightness, compensation);
+    const scalarFor = {
+      black: 1,
+      red: scalars.rgb,
+      green: scalars.rgb,
+      blue: scalars.rgb,
+      cyan: scalars.cmy,
+      magenta: scalars.cmy,
+      yellow: scalars.cmy,
+      white: scalars.w
+    };
+    let identity = true;
+    CUBE_CORNERS.forEach((name, k) => {
+      const colour = profile[name] ?? IDENTITY_CORNERS[name];
+      const ident = IDENTITY_CORNERS[name];
+      const scale = scalarFor[name];
+      const r = finite(`${name}.r`, colour.r, 0);
+      const g = finite(`${name}.g`, colour.g, 0);
+      const b = finite(`${name}.b`, colour.b, 0);
+      if (scale !== 1 || r !== ident.r || g !== ident.g || b !== ident.b) identity = false;
+      this.corners[k * 3] = r * scale;
+      this.corners[k * 3 + 1] = g * scale;
+      this.corners[k * 3 + 2] = b * scale;
+    });
+    this.cornersAreIdentity = identity;
+    const temperature = kelvinToLinearRgb(profile.temperature ?? d.temperature);
+    this.tempR = temperature.r;
+    this.tempG = temperature.g;
+    this.tempB = temperature.b;
+    this.tempIsIdentity = this.tempR === 1 && this.tempG === 1 && this.tempB === 1;
+    const threshold = finite("backlightThreshold", profile.backlightThreshold ?? d.backlightThreshold, 0, 100);
+    this.floor = backlightFloor(threshold);
+    const colored = profile.backlightColored ?? d.backlightColored;
+    if (typeof colored !== "boolean") throw new TypeError(`adjust: backlightColored must be a boolean, got ${String(colored)}`);
+    this.backlightColored = colored;
+  }
+  /** Runs the eight stages on the triple at `colors[i..i+2]`, in place. */
+  adjust(colors, i, backlightEnabled) {
+    let r = clampChannel(colors[i] ?? 0);
+    let g = clampChannel(colors[i + 1] ?? 0);
+    let b = clampChannel(colors[i + 2] ?? 0);
+    if (!this.gainIsIdentity) {
+      oklabGain(r, g, b, this.saturationGain, this.brightnessGain, LAB_SCRATCH);
+      r = LAB_SCRATCH[0] ?? 0;
+      g = LAB_SCRATCH[1] ?? 0;
+      b = LAB_SCRATCH[2] ?? 0;
+    }
+    if (!this.taperIsIdentity) {
+      r = Math.pow(r, this.taper);
+      g = Math.pow(g, this.taper);
+      b = Math.pow(b, this.taper);
+    }
+    if (!this.cornersAreIdentity) {
+      const w = cornerWeights(r, g, b, WEIGHT_SCRATCH);
+      const c = this.corners;
+      let sr = 0;
+      let sg = 0;
+      let sb = 0;
+      for (let k = 0; k < 8; k++) {
+        const wk = w[k] ?? 0;
+        sr += wk * (c[k * 3] ?? 0);
+        sg += wk * (c[k * 3 + 1] ?? 0);
+        sb += wk * (c[k * 3 + 2] ?? 0);
+      }
+      r = clamp01(sr);
+      g = clamp01(sg);
+      b = clamp01(sb);
+    }
+    if (!this.tempIsIdentity) {
+      r *= this.tempR;
+      g *= this.tempG;
+      b *= this.tempB;
+    }
+    if (backlightEnabled && this.floor > 0 && r + g + b < 3 * this.floor) {
+      const f = this.floor;
+      if (this.backlightColored) {
+        r = Math.max(r, f);
+        g = Math.max(g, f);
+        b = Math.max(b, f);
+      } else {
+        r = f;
+        g = f;
+        b = f;
+      }
+    }
+    colors[i] = r;
+    colors[i + 1] = g;
+    colors[i + 2] = b;
+  }
+};
+function finite(name, value, min, max = Number.POSITIVE_INFINITY) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+    throw new RangeError(`adjust: ${name} must be a number in [${min}, ${max}], got ${value}`);
+  }
+  return value;
+}
+var MAX_GAIN = 16;
+function clampChannel(v) {
+  return !(v >= 0) ? 0 : v > 1 ? 1 : v;
+}
+function createAdjustment(profiles, count) {
+  if (!Number.isInteger(count) || count < 1) throw new RangeError(`adjust: count must be a positive integer, got ${count}`);
+  const table = new Array(count).fill(null);
+  for (const profile of profiles) {
+    if (typeof profile.leds !== "string") throw new TypeError(`adjust: leds must be a selector string, got ${String(profile.leds)}`);
+    const compiled = new CompiledProfile(profile);
+    for (const led of parseLedSelector(profile.leds, count)) table[led] = compiled;
+  }
+  const unassigned = [];
+  table.forEach((entry, led) => {
+    if (entry === null) unassigned.push(led);
+  });
+  let backlight = true;
+  return {
+    count,
+    unassigned: Object.freeze(unassigned),
+    apply(colors) {
+      const n = Math.min(count, Math.floor(colors.length / 3));
+      for (let led = 0; led < n; led++) {
+        const profile = table[led];
+        if (profile == null) continue;
+        profile.adjust(colors, led * 3, backlight);
+      }
+      return colors;
+    },
+    setBacklightEnabled(enabled) {
+      backlight = enabled;
+    },
+    backlightEnabled() {
+      return backlight;
+    }
+  };
+}
+
 // lib/engine/types.ts
 var NO_BORDER = Object.freeze({ unknown: false, topBottom: 0, leftRight: 0 });
 function allocLedColors(count) {
@@ -662,6 +962,16 @@ var DEFAULT_CAPTURE = Object.freeze({
   crop: Object.freeze({ left: 0, right: 0, top: 0, bottom: 0 })
 });
 var DEFAULT_SMOOTHING = Object.freeze({ ...SMOOTHING_PROFILES.balanced });
+var DEFAULT_COLOR = Object.freeze({
+  brightness: ADJUSTMENT_DEFAULTS.brightness,
+  saturationGain: ADJUSTMENT_DEFAULTS.saturationGain,
+  temperature: ADJUSTMENT_DEFAULTS.temperature,
+  taper: ADJUSTMENT_DEFAULTS.taper,
+  backlightThreshold: ADJUSTMENT_DEFAULTS.backlightThreshold,
+  backlightColored: ADJUSTMENT_DEFAULTS.backlightColored
+});
+var SATURATION_MAX = 2;
+var TAPER_MAX = 1.6;
 var SMOOTHING_MS_MIN = 0;
 var SMOOTHING_MS_MAX = 2e3;
 var GRID_MIN = 16;
@@ -675,7 +985,8 @@ var DEFAULT_ENGINE_CONFIG = Object.freeze({
   colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE,
-  smoothing: DEFAULT_SMOOTHING
+  smoothing: DEFAULT_SMOOTHING,
+  color: DEFAULT_COLOR
 });
 function resolveLayout(config) {
   const layout = config.layout;
@@ -933,7 +1244,16 @@ function parseEngineConfig(value) {
     releaseMs: boundedFraction(smoothingRaw.releaseMs, "smoothing.releaseMs", SMOOTHING_MS_MIN, SMOOTHING_MS_MAX, DEFAULT_SMOOTHING.releaseMs),
     cutThreshold: boundedFraction(smoothingRaw.cutThreshold, "smoothing.cutThreshold", 0, 1, DEFAULT_SMOOTHING.cutThreshold)
   };
-  const config = { layout, blacklist, colorOrder, output, capture, smoothing };
+  const colorRaw = raw.color === void 0 ? {} : object(raw.color, "config.color");
+  const color = {
+    brightness: boundedFraction(colorRaw.brightness, "color.brightness", 0, 100, DEFAULT_COLOR.brightness),
+    saturationGain: boundedFraction(colorRaw.saturationGain, "color.saturationGain", 0, SATURATION_MAX, DEFAULT_COLOR.saturationGain),
+    temperature: boundedFraction(colorRaw.temperature, "color.temperature", TEMPERATURE_MIN, TEMPERATURE_MAX, DEFAULT_COLOR.temperature),
+    taper: boundedFraction(colorRaw.taper, "color.taper", 1, TAPER_MAX, DEFAULT_COLOR.taper),
+    backlightThreshold: boundedFraction(colorRaw.backlightThreshold, "color.backlightThreshold", 0, 100, DEFAULT_COLOR.backlightThreshold),
+    backlightColored: colorRaw.backlightColored === void 0 ? DEFAULT_COLOR.backlightColored : boolean(colorRaw.backlightColored, "color.backlightColored")
+  };
+  const config = { layout, blacklist, colorOrder, output, capture, smoothing, color };
   let rects;
   try {
     rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
@@ -958,7 +1278,8 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE,
-  smoothing: DEFAULT_SMOOTHING
+  smoothing: DEFAULT_SMOOTHING,
+  color: DEFAULT_COLOR
 });
 
 // lib/engine/instances.ts
@@ -1099,306 +1420,6 @@ function createFanout(upstream) {
       for (const consumer of consumers) consumer.started = false;
       consumers.clear();
       if (wasStarted) await upstream.stop();
-    }
-  };
-}
-
-// lib/light.ts
-function srgbToLinear(channel5) {
-  return channel5 <= 0.04045 ? channel5 / 12.92 : ((channel5 + 0.055) / 1.055) ** 2.4;
-}
-function buildSrgbToLinearLut() {
-  const lut = new Float32Array(256);
-  for (let i = 0; i < 256; i++) lut[i] = srgbToLinear(i / 255);
-  return lut;
-}
-function clamp01(v) {
-  return v < 0 ? 0 : v > 1 ? 1 : v;
-}
-function encodeLinear16(colors, out) {
-  const bytes = out ?? new Uint8Array(colors.length * 2);
-  for (let i = 0; i < colors.length; i++) {
-    const v = Math.round(clamp01(colors[i] ?? 0) * 65535);
-    bytes[i * 2] = v >> 8;
-    bytes[i * 2 + 1] = v & 255;
-  }
-  return bytes;
-}
-function encodeLinear8(colors, out) {
-  const bytes = out ?? new Uint8Array(colors.length);
-  for (let i = 0; i < colors.length; i++) {
-    bytes[i] = Math.round(clamp01(colors[i] ?? 0) * 255);
-  }
-  return bytes;
-}
-
-// lib/engine/adjust.ts
-var CUBE_CORNERS = Object.freeze(
-  ["black", "red", "green", "blue", "cyan", "magenta", "yellow", "white"]
-);
-var IDENTITY_CORNERS = Object.freeze({
-  black: Object.freeze({ r: 0, g: 0, b: 0 }),
-  red: Object.freeze({ r: 1, g: 0, b: 0 }),
-  green: Object.freeze({ r: 0, g: 1, b: 0 }),
-  blue: Object.freeze({ r: 0, g: 0, b: 1 }),
-  cyan: Object.freeze({ r: 0, g: 1, b: 1 }),
-  magenta: Object.freeze({ r: 1, g: 0, b: 1 }),
-  yellow: Object.freeze({ r: 1, g: 1, b: 0 }),
-  white: Object.freeze({ r: 1, g: 1, b: 1 })
-});
-var ADJUSTMENT_DEFAULTS = Object.freeze({
-  saturationGain: 1,
-  brightnessGain: 1,
-  taper: 1,
-  brightness: 100,
-  brightnessCompensation: 0,
-  temperature: 6600,
-  backlightThreshold: 0,
-  backlightColored: false
-});
-function linearToOklabInto(r, g, b, out) {
-  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
-  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
-  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
-  out[0] = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
-  out[1] = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
-  out[2] = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
-}
-function oklabToLinearInto(L, a, b, out) {
-  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
-  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
-  const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
-  out[0] = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
-  out[1] = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
-  out[2] = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
-}
-function oklabGain(r, g, b, saturationGain, brightnessGain, out) {
-  linearToOklabInto(r, g, b, out);
-  const L = (out[0] ?? 0) * brightnessGain;
-  const a = (out[1] ?? 0) * saturationGain * brightnessGain;
-  const bb = (out[2] ?? 0) * saturationGain * brightnessGain;
-  oklabToLinearInto(L, a, bb, out);
-  out[0] = clamp01(out[0] ?? 0);
-  out[1] = clamp01(out[1] ?? 0);
-  out[2] = clamp01(out[2] ?? 0);
-}
-function brightnessScalars(brightness, compensation) {
-  if (brightness <= 0) return { rgb: 0, cmy: 0, w: 0 };
-  const bIn = brightness < 50 ? -0.09 * brightness + 7.5 : -0.04 * brightness + 5;
-  const fCmy = compensation / 100 + 1;
-  const fW = compensation * 2 / 100 + 1;
-  return {
-    rgb: Math.min(1, 1 / bIn),
-    cmy: Math.min(1, 1 / (bIn * fCmy)),
-    w: Math.min(1, 1 / (bIn * fW))
-  };
-}
-function cornerWeights(r, g, b, out = new Float64Array(8)) {
-  const nr = 1 - r;
-  const ng = 1 - g;
-  const nb = 1 - b;
-  out[0] = nr * ng * nb;
-  out[1] = r * ng * nb;
-  out[2] = nr * g * nb;
-  out[3] = nr * ng * b;
-  out[4] = nr * g * b;
-  out[5] = r * ng * b;
-  out[6] = r * g * nb;
-  out[7] = r * g * b;
-  return out;
-}
-var TEMPERATURE_MIN = 1e3;
-var TEMPERATURE_MAX = 4e4;
-function kelvinToSrgb(kelvin) {
-  if (!Number.isFinite(kelvin)) throw new RangeError(`adjust: temperature must be a finite Kelvin value, got ${kelvin}`);
-  const t = Math.floor(Math.min(TEMPERATURE_MAX, Math.max(TEMPERATURE_MIN, kelvin)) / 100);
-  const red = t <= 66 ? 255 : 329.698727446 * Math.pow(t - 60, -0.1332047592);
-  const green = t <= 66 ? 99.4708025861 * Math.log(t) - 161.1195681661 : 288.1221695283 * Math.pow(t - 60, -0.0755148492);
-  const blue = t >= 66 ? 255 : t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
-  return { r: clamp01(red / 255), g: clamp01(green / 255), b: clamp01(blue / 255) };
-}
-function kelvinToLinearRgb(kelvin) {
-  const m = kelvinToSrgb(kelvin);
-  return { r: srgbToLinear(m.r), g: srgbToLinear(m.g), b: srgbToLinear(m.b) };
-}
-function backlightFloor(threshold) {
-  const t = Math.min(100, Math.max(0, threshold)) / 100;
-  const shaped = (Math.pow(2, 2 * t) - 1) / 3;
-  return srgbToLinear(shaped);
-}
-function parseLedSelector(selector, count) {
-  const text = selector.trim();
-  if (text === "*") return Array.from({ length: count }, (_, i) => i);
-  const picked = /* @__PURE__ */ new Set();
-  for (const token of text.split(",")) {
-    const item = token.trim();
-    const match = /^(\d+)(?:-(\d+))?$/.exec(item);
-    if (match === null) throw new SyntaxError(`adjust: bad LED selector "${item}" in "${selector}"`);
-    const start = Number(match[1]);
-    const end = match[2] === void 0 ? start : Number(match[2]);
-    if (start > end) throw new RangeError(`adjust: descending LED range "${item}"`);
-    if (end >= count) throw new RangeError(`adjust: LED ${end} is outside the strip of ${count}`);
-    for (let i = start; i <= end; i++) picked.add(i);
-  }
-  return [...picked];
-}
-var LAB_SCRATCH = new Float64Array(3);
-var WEIGHT_SCRATCH = new Float64Array(8);
-var CompiledProfile = class {
-  saturationGain;
-  brightnessGain;
-  gainIsIdentity;
-  taper;
-  taperIsIdentity;
-  /** Eight corner colours in `CUBE_CORNERS` order, each premultiplied by its scalar. */
-  corners = new Float64Array(24);
-  cornersAreIdentity;
-  tempR;
-  tempG;
-  tempB;
-  tempIsIdentity;
-  floor;
-  backlightColored;
-  constructor(profile) {
-    const d = ADJUSTMENT_DEFAULTS;
-    this.saturationGain = finite("saturationGain", profile.saturationGain ?? d.saturationGain, 0, MAX_GAIN);
-    this.brightnessGain = finite("brightnessGain", profile.brightnessGain ?? d.brightnessGain, 0, MAX_GAIN);
-    this.gainIsIdentity = this.saturationGain === 1 && this.brightnessGain === 1;
-    this.taper = finite("taper", profile.taper ?? d.taper, 0);
-    if (this.taper === 0) throw new RangeError("adjust: taper must be positive; 0 would send every colour to full scale");
-    this.taperIsIdentity = this.taper === 1;
-    const brightness = finite("brightness", profile.brightness ?? d.brightness, 0, 100);
-    const compensation = finite("brightnessCompensation", profile.brightnessCompensation ?? d.brightnessCompensation, 0, 100);
-    const scalars = brightnessScalars(brightness, compensation);
-    const scalarFor = {
-      black: 1,
-      red: scalars.rgb,
-      green: scalars.rgb,
-      blue: scalars.rgb,
-      cyan: scalars.cmy,
-      magenta: scalars.cmy,
-      yellow: scalars.cmy,
-      white: scalars.w
-    };
-    let identity = true;
-    CUBE_CORNERS.forEach((name, k) => {
-      const colour = profile[name] ?? IDENTITY_CORNERS[name];
-      const ident = IDENTITY_CORNERS[name];
-      const scale = scalarFor[name];
-      const r = finite(`${name}.r`, colour.r, 0);
-      const g = finite(`${name}.g`, colour.g, 0);
-      const b = finite(`${name}.b`, colour.b, 0);
-      if (scale !== 1 || r !== ident.r || g !== ident.g || b !== ident.b) identity = false;
-      this.corners[k * 3] = r * scale;
-      this.corners[k * 3 + 1] = g * scale;
-      this.corners[k * 3 + 2] = b * scale;
-    });
-    this.cornersAreIdentity = identity;
-    const temperature = kelvinToLinearRgb(profile.temperature ?? d.temperature);
-    this.tempR = temperature.r;
-    this.tempG = temperature.g;
-    this.tempB = temperature.b;
-    this.tempIsIdentity = this.tempR === 1 && this.tempG === 1 && this.tempB === 1;
-    const threshold = finite("backlightThreshold", profile.backlightThreshold ?? d.backlightThreshold, 0, 100);
-    this.floor = backlightFloor(threshold);
-    const colored = profile.backlightColored ?? d.backlightColored;
-    if (typeof colored !== "boolean") throw new TypeError(`adjust: backlightColored must be a boolean, got ${String(colored)}`);
-    this.backlightColored = colored;
-  }
-  /** Runs the eight stages on the triple at `colors[i..i+2]`, in place. */
-  adjust(colors, i, backlightEnabled) {
-    let r = clampChannel(colors[i] ?? 0);
-    let g = clampChannel(colors[i + 1] ?? 0);
-    let b = clampChannel(colors[i + 2] ?? 0);
-    if (!this.gainIsIdentity) {
-      oklabGain(r, g, b, this.saturationGain, this.brightnessGain, LAB_SCRATCH);
-      r = LAB_SCRATCH[0] ?? 0;
-      g = LAB_SCRATCH[1] ?? 0;
-      b = LAB_SCRATCH[2] ?? 0;
-    }
-    if (!this.taperIsIdentity) {
-      r = Math.pow(r, this.taper);
-      g = Math.pow(g, this.taper);
-      b = Math.pow(b, this.taper);
-    }
-    if (!this.cornersAreIdentity) {
-      const w = cornerWeights(r, g, b, WEIGHT_SCRATCH);
-      const c = this.corners;
-      let sr = 0;
-      let sg = 0;
-      let sb = 0;
-      for (let k = 0; k < 8; k++) {
-        const wk = w[k] ?? 0;
-        sr += wk * (c[k * 3] ?? 0);
-        sg += wk * (c[k * 3 + 1] ?? 0);
-        sb += wk * (c[k * 3 + 2] ?? 0);
-      }
-      r = clamp01(sr);
-      g = clamp01(sg);
-      b = clamp01(sb);
-    }
-    if (!this.tempIsIdentity) {
-      r *= this.tempR;
-      g *= this.tempG;
-      b *= this.tempB;
-    }
-    if (backlightEnabled && this.floor > 0 && r + g + b < 3 * this.floor) {
-      const f = this.floor;
-      if (this.backlightColored) {
-        r = Math.max(r, f);
-        g = Math.max(g, f);
-        b = Math.max(b, f);
-      } else {
-        r = f;
-        g = f;
-        b = f;
-      }
-    }
-    colors[i] = r;
-    colors[i + 1] = g;
-    colors[i + 2] = b;
-  }
-};
-function finite(name, value, min, max = Number.POSITIVE_INFINITY) {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
-    throw new RangeError(`adjust: ${name} must be a number in [${min}, ${max}], got ${value}`);
-  }
-  return value;
-}
-var MAX_GAIN = 16;
-function clampChannel(v) {
-  return !(v >= 0) ? 0 : v > 1 ? 1 : v;
-}
-function createAdjustment(profiles, count) {
-  if (!Number.isInteger(count) || count < 1) throw new RangeError(`adjust: count must be a positive integer, got ${count}`);
-  const table = new Array(count).fill(null);
-  for (const profile of profiles) {
-    if (typeof profile.leds !== "string") throw new TypeError(`adjust: leds must be a selector string, got ${String(profile.leds)}`);
-    const compiled = new CompiledProfile(profile);
-    for (const led of parseLedSelector(profile.leds, count)) table[led] = compiled;
-  }
-  const unassigned = [];
-  table.forEach((entry, led) => {
-    if (entry === null) unassigned.push(led);
-  });
-  let backlight = true;
-  return {
-    count,
-    unassigned: Object.freeze(unassigned),
-    apply(colors) {
-      const n = Math.min(count, Math.floor(colors.length / 3));
-      for (let led = 0; led < n; led++) {
-        const profile = table[led];
-        if (profile == null) continue;
-        profile.adjust(colors, led * 3, backlight);
-      }
-      return colors;
-    },
-    setBacklightEnabled(enabled) {
-      backlight = enabled;
-    },
-    backlightEnabled() {
-      return backlight;
     }
   };
 }
@@ -4116,7 +4137,11 @@ function createEngine(host) {
       canvas,
       ctx,
       sampler: createSampler({ layout, width: gridWidth, height: gridHeight }),
-      adjustment: createAdjustment([{ leds: "*" }], leds),
+      // One profile over every LED. The engine supports several, selected by
+      // LED range, and the eight-corner colour cube underneath them - but those
+      // belong to the calibration wizard rather than to eight more sliders on a
+      // settings page nobody can interpret.
+      adjustment: createAdjustment([{ leds: "*", ...config.color }], leds),
       order: createColorOrder(leds, {
         order: config.colorOrder.order,
         ...config.colorOrder.overrides === void 0 ? {} : { overrides: config.colorOrder.overrides }

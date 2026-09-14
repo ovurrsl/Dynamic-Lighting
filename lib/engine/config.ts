@@ -14,6 +14,7 @@ import {
   type MatrixLayoutSpec
 } from '#lib/engine/layout'
 import { COLOR_ORDERS, DEFAULT_COLOR_ORDER, type ColorOrder } from '#lib/engine/order'
+import { ADJUSTMENT_DEFAULTS, TEMPERATURE_MAX, TEMPERATURE_MIN } from '#lib/engine/adjust'
 import { SMOOTHING_PROFILES } from '#lib/engine/smooth'
 import type { Calibration } from '#lib/engine/protocol'
 import type { LedRect } from '#lib/engine/types'
@@ -199,6 +200,46 @@ export interface SmoothingConfig {
   cutThreshold: number
 }
 
+/**
+ * Colour correction, in linear light, before the frame leaves the engine.
+ *
+ * The chain behind these has been written and tested since the adjustment
+ * module landed - saturation and lightness in Oklab, a white-balance shift, an
+ * artistic taper, a backlight floor - and every knob has been pinned to its
+ * identity value because nothing could set them. These are the ones a person
+ * actually reaches for; the eight-corner colour cube and per-LED profiles stay
+ * in the engine for the calibration wizard rather than becoming eight more
+ * sliders nobody can interpret.
+ *
+ * Two of them exist because of what a strip IS rather than as taste:
+ *
+ * - `temperature`, because WS2812B reels are green-weighted and two reels from
+ *   different batches are not the same white.
+ * - `backlightThreshold`, because a strip that goes completely dark in a dark
+ *   scene reads as "it broke" rather than as "the scene is dark".
+ */
+export interface ColorConfig {
+  /** 0..100. Overall ceiling, hinged at 50 exactly as Hyperion's is. */
+  brightness: number
+  /** Oklab chroma multiplier. 1 is untouched. */
+  saturationGain: number
+  /** White balance in kelvin. 6600 is the identity, lower is warmer. */
+  temperature: number
+  /**
+   * Per-channel exponent in linear light. 1 is off.
+   *
+   * An ARTISTIC knob whose useful range is about 1.0-1.3, and deliberately not
+   * Hyperion's 2.2: the pipeline already averages in linear light, so a 2.2
+   * here applies the transfer function a second time and roughly squares the
+   * output. If 1.0 looks wrong the answer is the brightness ceiling, not this.
+   */
+  taper: number
+  /** 0..100. Lowest level the strip will show; 0 is off. */
+  backlightThreshold: number
+  /** Keep the hue when lifting to the floor, rather than snapping to grey. */
+  backlightColored: boolean
+}
+
 export interface EngineConfig {
   layout: LayoutConfig
   /** LEDs that are wired but must never light. */
@@ -207,6 +248,7 @@ export interface EngineConfig {
   output: OutputConfig
   capture: CaptureConfig
   smoothing: SmoothingConfig
+  color: ColorConfig
 }
 
 export const DEFAULT_OUTPUT: Readonly<OutputConfig> = Object.freeze({
@@ -253,6 +295,27 @@ export const DEFAULT_CAPTURE: Readonly<CaptureConfig> = Object.freeze({
 
 export const DEFAULT_SMOOTHING: Readonly<SmoothingConfig> = Object.freeze({ ...SMOOTHING_PROFILES.balanced })
 
+/** Every knob at its identity: exactly what the strip did before they existed. */
+export const DEFAULT_COLOR: Readonly<ColorConfig> = Object.freeze({
+  brightness: ADJUSTMENT_DEFAULTS.brightness,
+  saturationGain: ADJUSTMENT_DEFAULTS.saturationGain,
+  temperature: ADJUSTMENT_DEFAULTS.temperature,
+  taper: ADJUSTMENT_DEFAULTS.taper,
+  backlightThreshold: ADJUSTMENT_DEFAULTS.backlightThreshold,
+  backlightColored: ADJUSTMENT_DEFAULTS.backlightColored
+})
+
+/**
+ * Saturation ceiling.
+ *
+ * Well below the engine's `MAX_GAIN`: past about 2 every mid-tone is already
+ * clipped to a primary, so the slider would spend most of its travel choosing
+ * between shades of "fully saturated".
+ */
+export const SATURATION_MAX = 2
+/** The taper's useful range. Above this it is a gamma curve masking a brightness problem. */
+export const TAPER_MAX = 1.6
+
 /**
  * Time-constant bounds.
  *
@@ -279,7 +342,8 @@ export const DEFAULT_ENGINE_CONFIG: Readonly<EngineConfig> = Object.freeze({
   colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE,
-  smoothing: DEFAULT_SMOOTHING
+  smoothing: DEFAULT_SMOOTHING,
+  color: DEFAULT_COLOR
 })
 
 /** Number of LEDs the layout describes, before the blacklist (which keeps the count). */
@@ -614,7 +678,19 @@ export function parseEngineConfig (value: unknown): EngineConfig {
     cutThreshold: boundedFraction(smoothingRaw.cutThreshold, 'smoothing.cutThreshold', 0, 1, DEFAULT_SMOOTHING.cutThreshold)
   }
 
-  const config: EngineConfig = { layout, blacklist, colorOrder, output, capture, smoothing }
+  const colorRaw = raw.color === undefined ? {} : object(raw.color, 'config.color')
+  const color: ColorConfig = {
+    brightness: boundedFraction(colorRaw.brightness, 'color.brightness', 0, 100, DEFAULT_COLOR.brightness),
+    saturationGain: boundedFraction(colorRaw.saturationGain, 'color.saturationGain', 0, SATURATION_MAX, DEFAULT_COLOR.saturationGain),
+    temperature: boundedFraction(colorRaw.temperature, 'color.temperature', TEMPERATURE_MIN, TEMPERATURE_MAX, DEFAULT_COLOR.temperature),
+    taper: boundedFraction(colorRaw.taper, 'color.taper', 1, TAPER_MAX, DEFAULT_COLOR.taper),
+    backlightThreshold: boundedFraction(colorRaw.backlightThreshold, 'color.backlightThreshold', 0, 100, DEFAULT_COLOR.backlightThreshold),
+    backlightColored: colorRaw.backlightColored === undefined
+      ? DEFAULT_COLOR.backlightColored
+      : boolean(colorRaw.backlightColored, 'color.backlightColored')
+  }
+
+  const config: EngineConfig = { layout, blacklist, colorOrder, output, capture, smoothing, color }
 
   // The generators own their rules; ask them. A layout that cannot be built is
   // a config error with the generator's own message, which names the knob.
@@ -660,5 +736,6 @@ export const MATRIX_ENGINE_CONFIG: Readonly<EngineConfig> = Object.freeze({
   colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE,
-  smoothing: DEFAULT_SMOOTHING
+  smoothing: DEFAULT_SMOOTHING,
+  color: DEFAULT_COLOR
 })

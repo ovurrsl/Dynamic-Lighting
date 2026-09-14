@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ConfigError, DEFAULT_CAPTURE, DEFAULT_ENGINE_CONFIG, DEFAULT_SMOOTHING, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, switchTransport, type EngineConfig } from '#lib/engine/config'
+import { ConfigError, DEFAULT_CAPTURE, DEFAULT_COLOR, DEFAULT_ENGINE_CONFIG, DEFAULT_SMOOTHING, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, switchTransport, type EngineConfig } from '#lib/engine/config'
 import { DARK_RECT, REFERENCE_LAYOUT, classicLayout, matrixLayout } from '#lib/engine/layout'
 import { SMOOTHING_PROFILES, profileOf } from '#lib/engine/smooth'
 
@@ -398,4 +398,46 @@ test('a config written before smoothing was a setting still loads', () => {
   const older = JSON.parse(serialiseEngineConfig(DEFAULT_ENGINE_CONFIG)) as Record<string, unknown>
   delete older.smoothing
   assert.deepEqual(parseEngineConfig(older).smoothing, DEFAULT_SMOOTHING)
+})
+
+// ---------------------------------------------------------------------------
+// Colour correction.
+// ---------------------------------------------------------------------------
+
+test('colour correction defaults to identity, so nothing changes until asked', () => {
+  // The chain has been in the engine and pinned to identity since it was
+  // written. Making it a setting must not move anybody's strip on its own.
+  const config = parseEngineConfig({ layout: { kind: 'classic', ...REFERENCE_LAYOUT } })
+  assert.deepEqual(config.color, {
+    brightness: 100,
+    saturationGain: 1,
+    temperature: 6600,
+    taper: 1,
+    backlightThreshold: 0,
+    backlightColored: false
+  })
+})
+
+test('the taper is bounded well below Hyperion’s 2.2, on purpose', () => {
+  // The pipeline already averages in linear light, so a 2.2 here applies the
+  // transfer function a second time and roughly squares the output.
+  const base = { layout: { kind: 'classic', ...REFERENCE_LAYOUT } }
+  assert.equal(parseEngineConfig({ ...base, color: { taper: 1.3 } }).color.taper, 1.3)
+  assert.throws(() => parseEngineConfig({ ...base, color: { taper: 2.2 } }), /color\.taper/)
+  assert.throws(() => parseEngineConfig({ ...base, color: { taper: 0.9 } }), /color\.taper/)
+})
+
+test('each colour knob is refused by name when it is out of range', () => {
+  const base = { layout: { kind: 'classic', ...REFERENCE_LAYOUT } }
+  assert.throws(() => parseEngineConfig({ ...base, color: { brightness: 101 } }), /color\.brightness/)
+  assert.throws(() => parseEngineConfig({ ...base, color: { saturationGain: 3 } }), /color\.saturationGain/)
+  assert.throws(() => parseEngineConfig({ ...base, color: { temperature: 500 } }), /color\.temperature/)
+  assert.throws(() => parseEngineConfig({ ...base, color: { backlightThreshold: -1 } }), /color\.backlightThreshold/)
+  assert.throws(() => parseEngineConfig({ ...base, color: { backlightColored: 'evet' } }), /color\.backlightColored/)
+})
+
+test('a config written before colour correction was a setting still loads', () => {
+  const older = JSON.parse(serialiseEngineConfig(DEFAULT_ENGINE_CONFIG)) as Record<string, unknown>
+  delete older.color
+  assert.deepEqual(parseEngineConfig(older).color, DEFAULT_COLOR)
 })

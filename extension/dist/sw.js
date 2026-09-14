@@ -269,6 +269,35 @@ var PERMUTATIONS = Object.freeze({
   bgr: Object.freeze([2, 1, 0])
 });
 
+// lib/engine/adjust.ts
+var CUBE_CORNERS = Object.freeze(
+  ["black", "red", "green", "blue", "cyan", "magenta", "yellow", "white"]
+);
+var IDENTITY_CORNERS = Object.freeze({
+  black: Object.freeze({ r: 0, g: 0, b: 0 }),
+  red: Object.freeze({ r: 1, g: 0, b: 0 }),
+  green: Object.freeze({ r: 0, g: 1, b: 0 }),
+  blue: Object.freeze({ r: 0, g: 0, b: 1 }),
+  cyan: Object.freeze({ r: 0, g: 1, b: 1 }),
+  magenta: Object.freeze({ r: 1, g: 0, b: 1 }),
+  yellow: Object.freeze({ r: 1, g: 1, b: 0 }),
+  white: Object.freeze({ r: 1, g: 1, b: 1 })
+});
+var ADJUSTMENT_DEFAULTS = Object.freeze({
+  saturationGain: 1,
+  brightnessGain: 1,
+  taper: 1,
+  brightness: 100,
+  brightnessCompensation: 0,
+  temperature: 6600,
+  backlightThreshold: 0,
+  backlightColored: false
+});
+var TEMPERATURE_MIN = 1e3;
+var TEMPERATURE_MAX = 4e4;
+var LAB_SCRATCH = new Float64Array(3);
+var WEIGHT_SCRATCH = new Float64Array(8);
+
 // lib/engine/types.ts
 var NO_BORDER = Object.freeze({ unknown: false, topBottom: 0, leftRight: 0 });
 
@@ -310,6 +339,16 @@ var DEFAULT_CAPTURE = Object.freeze({
   crop: Object.freeze({ left: 0, right: 0, top: 0, bottom: 0 })
 });
 var DEFAULT_SMOOTHING = Object.freeze({ ...SMOOTHING_PROFILES.balanced });
+var DEFAULT_COLOR = Object.freeze({
+  brightness: ADJUSTMENT_DEFAULTS.brightness,
+  saturationGain: ADJUSTMENT_DEFAULTS.saturationGain,
+  temperature: ADJUSTMENT_DEFAULTS.temperature,
+  taper: ADJUSTMENT_DEFAULTS.taper,
+  backlightThreshold: ADJUSTMENT_DEFAULTS.backlightThreshold,
+  backlightColored: ADJUSTMENT_DEFAULTS.backlightColored
+});
+var SATURATION_MAX = 2;
+var TAPER_MAX = 1.6;
 var SMOOTHING_MS_MIN = 0;
 var SMOOTHING_MS_MAX = 2e3;
 var GRID_MIN = 16;
@@ -323,7 +362,8 @@ var DEFAULT_ENGINE_CONFIG = Object.freeze({
   colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE,
-  smoothing: DEFAULT_SMOOTHING
+  smoothing: DEFAULT_SMOOTHING,
+  color: DEFAULT_COLOR
 });
 var ConfigError = class extends Error {
   path;
@@ -576,7 +616,16 @@ function parseEngineConfig(value) {
     releaseMs: boundedFraction(smoothingRaw.releaseMs, "smoothing.releaseMs", SMOOTHING_MS_MIN, SMOOTHING_MS_MAX, DEFAULT_SMOOTHING.releaseMs),
     cutThreshold: boundedFraction(smoothingRaw.cutThreshold, "smoothing.cutThreshold", 0, 1, DEFAULT_SMOOTHING.cutThreshold)
   };
-  const config = { layout, blacklist, colorOrder, output, capture, smoothing };
+  const colorRaw = raw.color === void 0 ? {} : object(raw.color, "config.color");
+  const color = {
+    brightness: boundedFraction(colorRaw.brightness, "color.brightness", 0, 100, DEFAULT_COLOR.brightness),
+    saturationGain: boundedFraction(colorRaw.saturationGain, "color.saturationGain", 0, SATURATION_MAX, DEFAULT_COLOR.saturationGain),
+    temperature: boundedFraction(colorRaw.temperature, "color.temperature", TEMPERATURE_MIN, TEMPERATURE_MAX, DEFAULT_COLOR.temperature),
+    taper: boundedFraction(colorRaw.taper, "color.taper", 1, TAPER_MAX, DEFAULT_COLOR.taper),
+    backlightThreshold: boundedFraction(colorRaw.backlightThreshold, "color.backlightThreshold", 0, 100, DEFAULT_COLOR.backlightThreshold),
+    backlightColored: colorRaw.backlightColored === void 0 ? DEFAULT_COLOR.backlightColored : boolean(colorRaw.backlightColored, "color.backlightColored")
+  };
+  const config = { layout, blacklist, colorOrder, output, capture, smoothing, color };
   let rects;
   try {
     rects = layout.kind === "matrix" ? matrixLayout(layout) : classicLayout(layout);
@@ -601,7 +650,8 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   colorOrder: Object.freeze({ order: DEFAULT_COLOR_ORDER }),
   output: DEFAULT_OUTPUT,
   capture: DEFAULT_CAPTURE,
-  smoothing: DEFAULT_SMOOTHING
+  smoothing: DEFAULT_SMOOTHING,
+  color: DEFAULT_COLOR
 });
 
 // lib/engine/instances.ts
@@ -680,7 +730,7 @@ function isEffectKind(value) {
 var SPEED_MIN = 0.05;
 var SPEED_MAX = 8;
 var DEFAULT_SPEED = 1;
-var clamp01 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
+var clamp012 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
 function clampSpeed(value) {
   if (!Number.isFinite(value)) return DEFAULT_SPEED;
   return Math.min(SPEED_MAX, Math.max(SPEED_MIN, value));
@@ -704,7 +754,7 @@ function parseEffectSpec(value) {
     if (typeof raw.brightness !== "number" || !Number.isFinite(raw.brightness)) {
       throw new TypeError("effects: brightness must be a finite number");
     }
-    spec.brightness = clamp01(raw.brightness);
+    spec.brightness = clamp012(raw.brightness);
   }
   if (raw.color !== void 0) {
     const color = raw.color;

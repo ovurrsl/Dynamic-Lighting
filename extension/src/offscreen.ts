@@ -200,6 +200,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ type: 'ambiflux/instances-reply', instances: pool.instances() } satisfies Message)
       return false
 
+    // Pool-wide, because a rule may name any strip or none: the pool owns the
+    // master list and hands each engine only the rules that apply to it.
+    case 'ambiflux/schedule':
+      try {
+        sendResponse({ type: 'ambiflux/schedule-reply', rules: pool.setSchedule(message.rules) } satisfies Message)
+      } catch (error) {
+        sendResponse({
+          type: 'ambiflux/schedule-reply', rules: pool.schedule(), error: describe(error)
+        } satisfies Message)
+      }
+      return false
+    case 'ambiflux/schedule-get':
+      sendResponse({ type: 'ambiflux/schedule-reply', rules: pool.schedule() } satisfies Message)
+      return false
+
     default:
       break
   }
@@ -245,23 +260,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ state: engine.state() })
       return false
 
-    // The rules reach every strip, because an action that only some of them
-    // obeyed would need a rule to say which - and until a rule can, applying
-    // one to half a room is worse than applying it to all of it.
-    case 'ambiflux/schedule':
-      try {
-        const rules = engine.setSchedule(message.rules)
-        for (const other of pool.engines()) if (other !== engine) other.setSchedule(rules)
-        sendResponse({ type: 'ambiflux/schedule-reply', rules } satisfies Message)
-      } catch (error) {
-        sendResponse({
-          type: 'ambiflux/schedule-reply', rules: engine.schedule(), error: describe(error)
-        } satisfies Message)
-      }
-      return false
-    case 'ambiflux/schedule-get':
-      sendResponse({ type: 'ambiflux/schedule-reply', rules: engine.schedule() } satisfies Message)
-      return false
 
     case 'ambiflux/serial': {
       const link = engine.link()
@@ -341,7 +339,7 @@ void chrome.runtime.sendMessage({ type: 'ambiflux/instances-get', target: 'sw' }
 void chrome.runtime.sendMessage({ type: 'ambiflux/schedule-get', target: 'sw' } satisfies Message)
   .then((reply: unknown) => {
     const rules = reading(reply, 'ambiflux/schedule-reply', 'rules')
-    if (Array.isArray(rules) && rules.length > 0) for (const engine of pool.engines()) engine.setSchedule(rules)
+    if (Array.isArray(rules) && rules.length > 0) pool.setSchedule(rules)
   })
   .catch(() => { /* no stored rules yet; an empty schedule stands */ })
 

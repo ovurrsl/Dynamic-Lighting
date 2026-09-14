@@ -189,13 +189,11 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
       // watching it is not a schedule.
       const rules = loadStoredSchedule().rules
       if (rules.length > 0) {
-        for (const engine of built.pool.engines()) {
-          try {
-            engine.setSchedule(rules)
-          } catch {
-            // Written by an older version and no longer valid. The engines run
-            // without them; the card shows what they actually have.
-          }
+        try {
+          built.pool.setSchedule(rules)
+        } catch {
+          // Written by an older version and no longer valid. The engines run
+          // without them; the card shows what they actually have.
         }
       }
       pageRef.current = built
@@ -243,7 +241,7 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
       // otherwise they would fire only once something else happened to start
       // the engine - which on a quiet evening is never.
       const wanted = pageRef.current !== null || loadStoredSchedule().rules.length > 0
-      setSchedule(wanted ? pageEngine().pool.engines()[0]?.schedule() ?? [] : [])
+      setSchedule(wanted ? pageEngine().pool.schedule() : [])
       return
     }
     if (probe?.available !== true) return
@@ -439,9 +437,8 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
    * The rules live in the ENGINE, not in the panel.
    *
    * They have to fire with no panel open - that is most of what a schedule is
-   * for - so the panel reads them back rather than owning them. They reach
-   * every strip: an action only some of them obeyed would need the rule to say
-   * which, and until it can, half a room is worse than all of it.
+   * for - so the panel reads them back rather than owning them. A rule reaches
+   * every strip unless it names one.
    */
   const saveScheduleRules = useCallback(async (rules: ScheduleRule[]): Promise<SaveResult> => {
     if (hostRef.current !== 'page') {
@@ -453,8 +450,7 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
       return reply.error === undefined ? {} : { error: reply.error }
     }
     try {
-      let applied: ScheduleRule[] = []
-      for (const engine of pageEngine().pool.engines()) applied = engine.setSchedule(rules)
+      const applied = pageEngine().pool.setSchedule(rules)
       setSchedule(applied)
       const problem = storeSchedule(applied)
       return problem === null ? {} : { notStored: problem }

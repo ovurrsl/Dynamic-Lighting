@@ -6,6 +6,7 @@ import {
   type Instance
 } from '#lib/engine/instances'
 import { createEngine, type Engine, type EngineHost, type StopReason } from '#lib/engine/runtime'
+import { parseRules, rulesFor, type ScheduleRule } from '#lib/engine/schedule'
 import type { EngineState, EngineStats } from '#lib/extension/messages'
 
 /**
@@ -66,6 +67,16 @@ export interface EnginePool {
   engine: (id: string) => Engine | null
   /** Every engine, in instance order. */
   engines: () => Engine[]
+  /**
+   * Replaces the time-of-day rules for every strip at once.
+   *
+   * The pool owns the MASTER list and each engine holds only its own slice, so
+   * this is where a rule that names a strip is routed and where a strip added
+   * later picks up the rules that were waiting for it.
+   */
+  setSchedule: (rules: unknown) => ScheduleRule[]
+  /** The master list, which is what a panel edits. */
+  schedule: () => ScheduleRule[]
   /** Starts the capture on every enabled instance. One picker per distinct source. */
   start: () => Promise<void>
   /** Runs the generated self-test picture on every enabled instance. */
@@ -119,6 +130,15 @@ export function createEnginePool (
    * race is the normal case, not an edge one.
    */
   const opening = new Map<string, Promise<Fanout>>()
+
+  /**
+   * The master rule list.
+   *
+   * Held here rather than in the engines because each of them holds only the
+   * rules that apply to IT, and a panel asking one engine what the schedule is
+   * would get a list with the other strips' rules missing.
+   */
+  let rules: ScheduleRule[] = []
 
   function report (): void {
     options.onReport?.(stats())
@@ -198,6 +218,10 @@ export function createEnginePool (
   function build (instance: Instance): Slot {
     const engine = createEngine(hostFor(instance.id))
     engine.applyConfig(instance.config)
+    // A strip added while rules are already in force starts with the ones that
+    // name it, rather than waiting for the next time somebody opens the
+    // schedule page.
+    if (rules.length > 0) engine.setSchedule(rulesFor(rules, instance.id))
     return { instance, engine, state: 'idle', stats: null }
   }
 
@@ -220,6 +244,9 @@ export function createEnginePool (
       const slot = slots[found] as Slot
       const wasEnabled = slot.instance.enabled
       slot.instance = instance
+      // Its rules are re-routed too: a rule can name a strip that has just been
+      // switched on, or stop naming one that has just been renamed away.
+      if (rules.length > 0) slot.engine.setSchedule(rulesFor(rules, instance.id))
       // Applied rather than rebuilt: an engine that is running keeps running,
       // and a layout edit on one strip must not black out the other.
       slot.engine.applyConfig(instance.config)
@@ -257,6 +284,18 @@ export function createEnginePool (
       return apply(parseInstances(value))
     },
 
+    setSchedule (value: unknown): ScheduleRule[] {
+      // Parsed ONCE here rather than once per engine: eight engines each
+      // rejecting the same bad rule is eight different error messages for one
+      // mistake, and only the first would ever be shown.
+      const parsed = parseRules(value)
+      rules = parsed
+      for (const slot of slots) slot.engine.setSchedule(rulesFor(parsed, slot.instance.id))
+      return parsed.map((rule) => ({ ...rule, days: [...rule.days] }))
+    },
+
+    schedule: () => rules.map((rule) => ({ ...rule, days: [...rule.days] })),
+
     async start (): Promise<void> {
       await startEach(async (engine) => { await engine.start() })
     },
@@ -271,6 +310,14 @@ export function createEnginePool (
     },
 
     async dispose (): Promise<void> {
+      // The rules go before the engines do, and this is not tidiness: the
+      // scheduler deliberately ticks whether or not anything is showing, so
+      // that "start the capture at eight" works on a strip that is idle. That
+      // means `stop` does NOT stop it, and a disposed pool would otherwise
+      // leave one 1 Hz timer per strip firing rules at engines nobody can see -
+      // in the page host, for the rest of the tab's life.
+      rules = []
+      for (const slot of slots) slot.engine.setSchedule([])
       for (const slot of slots) slot.engine.stop('user')
       const open = [...fanouts.values()]
       fanouts.clear()

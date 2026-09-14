@@ -42,6 +42,15 @@ const DAY_KEYS: MessageKey[] = [
   'schedule.day.4', 'schedule.day.5', 'schedule.day.6'
 ]
 
+/**
+ * "Every strip" as a value a dropdown can hold.
+ *
+ * A rule with no `instanceId` applies everywhere, and `undefined` is not
+ * something a select can carry - so it is spelled here, once, rather than in
+ * each of the four places that would otherwise invent their own sentinel.
+ */
+const ALL_STRIPS = '*'
+
 /** A local draft: the time is text while it is being typed, not a number. */
 interface Draft {
   id: string
@@ -49,6 +58,8 @@ interface Draft {
   time: string
   days: number[]
   action: ScheduleAction
+  /** `ALL_STRIPS`, or one strip's id. */
+  instanceId: string
 }
 
 const toDraft = (rule: ScheduleRule): Draft => ({
@@ -56,14 +67,15 @@ const toDraft = (rule: ScheduleRule): Draft => ({
   enabled: rule.enabled,
   time: formatMinute(rule.atMinute),
   days: [...rule.days],
-  action: rule.action
+  action: rule.action,
+  instanceId: rule.instanceId ?? ALL_STRIPS
 })
 
 let nextId = 0
 
 export function ScheduleCard () {
   const t = useTranslate()
-  const { probe, host, pageCapable, schedule, saveSchedule } = useEngine()
+  const { probe, host, pageCapable, schedule, saveSchedule, instances } = useEngine()
   const [drafts, setDrafts] = useState<Draft[] | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -90,7 +102,11 @@ export function ScheduleCard () {
         enabled: d.enabled,
         atMinute: parseMinute(d.time),
         days: d.days,
-        action: d.action
+        action: d.action,
+        // Dropped rather than sent as the sentinel: "applies everywhere" is the
+        // ABSENCE of a strip, and storing a magic string for it would put a
+        // strip called "*" one typo away from being addressable.
+        ...(d.instanceId === ALL_STRIPS ? {} : { instanceId: d.instanceId })
       }))
       const result = await saveSchedule(rules)
       setNotice(
@@ -206,6 +222,39 @@ export function ScheduleCard () {
                 </TextField>
               )}
 
+              {/*
+                Only with more than one strip. A dropdown whose every option but
+                one is "all strips" is a control that cannot be used, and every
+                installation starts with one strip.
+              */}
+              {instances.length > 1 && (
+                <Select
+                  className="w-44"
+                  value={draft.instanceId}
+                  onChange={(value) => { patch(draft.id, { instanceId: String(value) }) }}
+                >
+                  <Label>{t('schedule.strip')}</Label>
+                  <Select.Trigger>
+                    <Select.Value />
+                    <Select.Indicator />
+                  </Select.Trigger>
+                  <Select.Popover>
+                    <ListBox>
+                      <ListBox.Item id={ALL_STRIPS} textValue={t('schedule.strip.all')}>
+                        {t('schedule.strip.all')}
+                        <ListBox.ItemIndicator />
+                      </ListBox.Item>
+                      {instances.map((instance) => (
+                        <ListBox.Item id={instance.id} key={instance.id} textValue={instance.name}>
+                          {instance.name}
+                          <ListBox.ItemIndicator />
+                        </ListBox.Item>
+                      ))}
+                    </ListBox>
+                  </Select.Popover>
+                </Select>
+              )}
+
               <Switch
                 isSelected={draft.enabled}
                 size="sm"
@@ -269,7 +318,8 @@ export function ScheduleCard () {
                 enabled: true,
                 time: '22:00',
                 days: [],
-                action: { kind: 'stop' }
+                action: { kind: 'stop' },
+                instanceId: ALL_STRIPS
               }])
             }}
           >

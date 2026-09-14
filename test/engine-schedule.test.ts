@@ -8,6 +8,7 @@ import {
   momentFrom,
   parseMinute,
   parseRules,
+  rulesFor,
   type Moment,
   type ScheduleRule
 } from '#lib/engine/schedule'
@@ -171,4 +172,44 @@ test('the moment is read from a Date in LOCAL time, because a user thinks local'
   assert.equal(moment.minute, 22 * 60 + 5)
   assert.equal(moment.weekday, date.getDay())
   assert.equal(moment.atMs, 1234)
+})
+
+// ---------------------------------------------------------------------------
+// Which strip.
+// ---------------------------------------------------------------------------
+
+test('a rule with no strip applies to all of them', () => {
+  // The default, and it has to stay the default: every rule written before
+  // there were strips means exactly what it meant then.
+  const rules = parseRules([{ atMinute: 600, action: { kind: 'stop' } }])
+  assert.equal(rules[0]?.instanceId, undefined)
+  assert.equal(rulesFor(rules, 'instance-1').length, 1)
+  assert.equal(rulesFor(rules, 'instance-2').length, 1)
+})
+
+test('a rule that names a strip reaches only that strip', () => {
+  const rules = parseRules([
+    { id: 'both', atMinute: 600, action: { kind: 'stop' } },
+    { id: 'tv', atMinute: 1320, instanceId: 'instance-2', action: { kind: 'capture' } }
+  ])
+  assert.deepEqual(rulesFor(rules, 'instance-1').map((rule) => rule.id), ['both'])
+  assert.deepEqual(rulesFor(rules, 'instance-2').map((rule) => rule.id), ['both', 'tv'])
+  // A strip that no longer exists simply gets nothing extra; it is not an error
+  // here, because the strip list can change without the rules being reopened.
+  assert.deepEqual(rulesFor(rules, 'instance-9').map((rule) => rule.id), ['both'])
+})
+
+test('an empty or blank strip name is the same as naming none', () => {
+  // Otherwise a rule could be addressed to a strip that can never exist, and it
+  // would simply never fire with nothing saying why.
+  assert.equal(parseRules([{ atMinute: 0, instanceId: '   ', action: { kind: 'stop' } }])[0]?.instanceId, undefined)
+  assert.equal(parseRules([{ atMinute: 0, instanceId: '', action: { kind: 'stop' } }])[0]?.instanceId, undefined)
+  assert.equal(parseRules([{ atMinute: 0, instanceId: ' tv ', action: { kind: 'stop' } }])[0]?.instanceId, 'tv')
+})
+
+test('the rules handed to one strip are copies', () => {
+  const rules = parseRules([{ atMinute: 600, days: [1, 2], action: { kind: 'stop' } }])
+  const mine = rulesFor(rules, 'instance-1')
+  mine[0]!.days.push(6)
+  assert.deepEqual(rules[0]?.days, [1, 2])
 })

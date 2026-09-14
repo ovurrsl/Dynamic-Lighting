@@ -218,3 +218,72 @@ test('stopping everything really does let go of the screen', async () => {
   assert.deepEqual(stopped, ['screen:60'], 'one capture opened, one capture released')
   assert.equal(pool.stats().captures, 0)
 })
+
+test('a rule that names a strip reaches only that strip', async () => {
+  const { host } = fakeHost()
+  const pool = createEnginePool(host, addInstance(defaultInstances()))
+  const applied = pool.setSchedule([
+    { id: 'both', atMinute: 600, action: { kind: 'stop' } },
+    { id: 'tv', atMinute: 1320, instanceId: 'instance-2', action: { kind: 'capture' } }
+  ])
+  assert.equal(applied.length, 2, 'the master list is whole, whatever each strip holds')
+  assert.deepEqual(pool.engine('instance-1')?.schedule().map((rule) => rule.id), ['both'])
+  assert.deepEqual(pool.engine('instance-2')?.schedule().map((rule) => rule.id), ['both', 'tv'])
+  await pool.dispose()
+})
+
+test('a strip added later picks up the rules that were waiting for it', async () => {
+  // The alternative is a rule that only takes effect the next time somebody
+  // happens to open the schedule page, which for a schedule is no effect.
+  const { host } = fakeHost()
+  const pool = createEnginePool(host, defaultInstances())
+  pool.setSchedule([
+    { id: 'both', atMinute: 600, action: { kind: 'stop' } },
+    { id: 'second', atMinute: 700, instanceId: 'instance-2', action: { kind: 'capture' } }
+  ])
+  assert.equal(pool.engine('instance-2'), null)
+
+  pool.setInstances(addInstance(pool.instances()))
+  assert.deepEqual(pool.engine('instance-2')?.schedule().map((rule) => rule.id), ['both', 'second'])
+  await pool.dispose()
+})
+
+test('a bad rule is rejected once, not once per strip', async () => {
+  // Eight engines each refusing the same rule is eight messages for one
+  // mistake, and only the first would ever be shown.
+  const { host } = fakeHost()
+  const pool = createEnginePool(host, addInstance(defaultInstances()))
+  pool.setSchedule([{ id: 'ok', atMinute: 600, action: { kind: 'stop' } }])
+  assert.throws(() => pool.setSchedule([{ atMinute: 9999, action: { kind: 'stop' } }]), /0\.\.1439/)
+  assert.deepEqual(pool.schedule().map((rule) => rule.id), ['ok'], 'the rules in force are untouched')
+  assert.equal(pool.engine('instance-1')?.schedule().length, 1)
+  await pool.dispose()
+})
+
+test('the master list is what a panel edits, not one strip’s slice', async () => {
+  const { host } = fakeHost()
+  const pool = createEnginePool(host, addInstance(defaultInstances()))
+  pool.setSchedule([{ id: 'tv', atMinute: 600, instanceId: 'instance-2', action: { kind: 'stop' } }])
+  // Asking the first engine would give an empty schedule and the panel would
+  // then save that back, deleting the rule nobody meant to delete.
+  assert.equal(pool.engine('instance-1')?.schedule().length, 0)
+  assert.deepEqual(pool.schedule().map((rule) => rule.id), ['tv'])
+  await pool.dispose()
+})
+
+test('disposing lets go of the schedulers, not just the engines', async () => {
+  // The scheduler ticks whether or not anything is showing - that is what makes
+  // "start the capture at eight" work on an idle strip - so `stop` does not
+  // stop it. Without this, a disposed pool leaves one 1 Hz timer per strip
+  // running for the life of the page. It showed up as a test run that passed
+  // every assertion and then never exited.
+  const { host } = fakeHost()
+  const pool = createEnginePool(host, addInstance(defaultInstances()))
+  pool.setSchedule([{ id: 'evening', atMinute: 1320, action: { kind: 'stop' } }])
+  assert.equal(pool.engine('instance-1')?.schedule().length, 1)
+
+  const engines = pool.engines()
+  await pool.dispose()
+  assert.deepEqual(pool.schedule(), [])
+  for (const engine of engines) assert.deepEqual(engine.schedule(), [], 'every strip let go of its rules')
+})

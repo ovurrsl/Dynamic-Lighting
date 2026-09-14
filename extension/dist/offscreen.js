@@ -3439,12 +3439,14 @@ function parseRule(value, index = 0) {
     throw new RangeError(`schedule: rule ${index} atMinute must be an integer 0..1439, got ${String(raw.atMinute)}`);
   }
   const days = raw.days === void 0 ? [] : parseDays(raw.days, index);
+  const instanceId = typeof raw.instanceId === "string" && raw.instanceId.trim() !== "" ? raw.instanceId.trim() : void 0;
   return {
     id,
     enabled: raw.enabled !== false,
     atMinute: raw.atMinute,
     days,
-    action: parseAction(raw.action, index)
+    action: parseAction(raw.action, index),
+    ...instanceId === void 0 ? {} : { instanceId }
   };
 }
 function parseDays(value, index) {
@@ -3485,6 +3487,9 @@ function channel4(value, index) {
     throw new RangeError(`schedule: rule ${index} colour channel must be an integer 0..255, got ${String(value)}`);
   }
   return value;
+}
+function rulesFor(rules, instanceId) {
+  return rules.filter((rule) => rule.instanceId === void 0 || rule.instanceId === instanceId).map((rule) => ({ ...rule, days: [...rule.days] }));
 }
 
 // lib/engine/sink.ts
@@ -4810,6 +4815,7 @@ function createEnginePool(host, initial = defaultInstances(), options = {}) {
   const slots = [];
   const fanouts = /* @__PURE__ */ new Map();
   const opening = /* @__PURE__ */ new Map();
+  let rules = [];
   function report() {
     options.onReport?.(stats());
   }
@@ -4869,6 +4875,7 @@ function createEnginePool(host, initial = defaultInstances(), options = {}) {
   function build2(instance) {
     const engine = createEngine(hostFor(instance.id));
     engine.applyConfig(instance.config);
+    if (rules.length > 0) engine.setSchedule(rulesFor(rules, instance.id));
     return { instance, engine, state: "idle", stats: null };
   }
   function apply(next) {
@@ -4887,6 +4894,7 @@ function createEnginePool(host, initial = defaultInstances(), options = {}) {
       const slot = slots[found];
       const wasEnabled = slot.instance.enabled;
       slot.instance = instance;
+      if (rules.length > 0) slot.engine.setSchedule(rulesFor(rules, instance.id));
       slot.engine.applyConfig(instance.config);
       if (wasEnabled && !instance.enabled) slot.engine.stop("user");
       if (found !== index) slots.splice(index, 0, ...slots.splice(found, 1));
@@ -4912,6 +4920,13 @@ function createEnginePool(host, initial = defaultInstances(), options = {}) {
     setInstances(value) {
       return apply(parseInstances(value));
     },
+    setSchedule(value) {
+      const parsed = parseRules(value);
+      rules = parsed;
+      for (const slot of slots) slot.engine.setSchedule(rulesFor(parsed, slot.instance.id));
+      return parsed.map((rule) => ({ ...rule, days: [...rule.days] }));
+    },
+    schedule: () => rules.map((rule) => ({ ...rule, days: [...rule.days] })),
     async start() {
       await startEach(async (engine) => {
         await engine.start();
@@ -4927,6 +4942,8 @@ function createEnginePool(host, initial = defaultInstances(), options = {}) {
       report();
     },
     async dispose() {
+      rules = [];
+      for (const slot of slots) slot.engine.setSchedule([]);
       for (const slot of slots) slot.engine.stop("user");
       const open = [...fanouts.values()];
       fanouts.clear();
@@ -5195,6 +5212,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case "ambiflux/instances-get":
       sendResponse({ type: "ambiflux/instances-reply", instances: pool.instances() });
       return false;
+    // Pool-wide, because a rule may name any strip or none: the pool owns the
+    // master list and hands each engine only the rules that apply to it.
+    case "ambiflux/schedule":
+      try {
+        sendResponse({ type: "ambiflux/schedule-reply", rules: pool.setSchedule(message.rules) });
+      } catch (error) {
+        sendResponse({
+          type: "ambiflux/schedule-reply",
+          rules: pool.schedule(),
+          error: describe5(error)
+        });
+      }
+      return false;
+    case "ambiflux/schedule-get":
+      sendResponse({ type: "ambiflux/schedule-reply", rules: pool.schedule() });
+      return false;
     default:
       break;
   }
@@ -5233,25 +5266,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case "ambiflux/clear-layer":
       engine.clearLayer(message.priority);
       sendResponse({ state: engine.state() });
-      return false;
-    // The rules reach every strip, because an action that only some of them
-    // obeyed would need a rule to say which - and until a rule can, applying
-    // one to half a room is worse than applying it to all of it.
-    case "ambiflux/schedule":
-      try {
-        const rules = engine.setSchedule(message.rules);
-        for (const other of pool.engines()) if (other !== engine) other.setSchedule(rules);
-        sendResponse({ type: "ambiflux/schedule-reply", rules });
-      } catch (error) {
-        sendResponse({
-          type: "ambiflux/schedule-reply",
-          rules: engine.schedule(),
-          error: describe5(error)
-        });
-      }
-      return false;
-    case "ambiflux/schedule-get":
-      sendResponse({ type: "ambiflux/schedule-reply", rules: engine.schedule() });
       return false;
     case "ambiflux/serial": {
       const link = engine.link();
@@ -5309,7 +5323,7 @@ void chrome.runtime.sendMessage({ type: "ambiflux/instances-get", target: "sw" }
 });
 void chrome.runtime.sendMessage({ type: "ambiflux/schedule-get", target: "sw" }).then((reply) => {
   const rules = reading(reply, "ambiflux/schedule-reply", "rules");
-  if (Array.isArray(rules) && rules.length > 0) for (const engine of pool.engines()) engine.setSchedule(rules);
+  if (Array.isArray(rules) && rules.length > 0) pool.setSchedule(rules);
 }).catch(() => {
 });
 function reading(reply, type, field) {

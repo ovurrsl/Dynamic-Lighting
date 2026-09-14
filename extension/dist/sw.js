@@ -702,12 +702,14 @@ function parseRule(value, index = 0) {
     throw new RangeError(`schedule: rule ${index} atMinute must be an integer 0..1439, got ${String(raw.atMinute)}`);
   }
   const days = raw.days === void 0 ? [] : parseDays(raw.days, index);
+  const instanceId = typeof raw.instanceId === "string" && raw.instanceId.trim() !== "" ? raw.instanceId.trim() : void 0;
   return {
     id,
     enabled: raw.enabled !== false,
     atMinute: raw.atMinute,
     days,
-    action: parseAction(raw.action, index)
+    action: parseAction(raw.action, index),
+    ...instanceId === void 0 ? {} : { instanceId }
   };
 }
 function parseDays(value, index) {

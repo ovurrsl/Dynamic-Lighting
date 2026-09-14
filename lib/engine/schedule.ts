@@ -37,6 +37,19 @@ export const ACTION_KINDS = ['stop', 'capture', 'effect', 'color'] as const
 export interface ScheduleRule {
   id: string
   enabled: boolean
+  /**
+   * Which strip this applies to. Absent means all of them.
+   *
+   * Absent is the default and stays the default: one strip is what almost
+   * every installation has, and a rule that had to name it would be a field
+   * nobody could leave blank. It also makes every rule written before there
+   * were strips mean exactly what it meant then.
+   *
+   * The strip is named rather than indexed, because a rule must survive
+   * someone reordering their strips - and a rule that quietly moved from the
+   * TV to the desk would be found at eight in the morning, by the desk.
+   */
+  instanceId?: string
   /** Minutes since local midnight, 0..1439. Local, because a user thinks local. */
   atMinute: number
   /**
@@ -197,12 +210,16 @@ export function parseRule (value: unknown, index = 0): ScheduleRule {
     throw new RangeError(`schedule: rule ${index} atMinute must be an integer 0..1439, got ${String(raw.atMinute)}`)
   }
   const days = raw.days === undefined ? [] : parseDays(raw.days, index)
+  const instanceId = typeof raw.instanceId === 'string' && raw.instanceId.trim() !== ''
+    ? raw.instanceId.trim()
+    : undefined
   return {
     id,
     enabled: raw.enabled !== false,
     atMinute: raw.atMinute,
     days,
-    action: parseAction(raw.action, index)
+    action: parseAction(raw.action, index),
+    ...(instanceId === undefined ? {} : { instanceId })
   }
 }
 
@@ -244,6 +261,20 @@ function channel (value: unknown, index: number): number {
     throw new RangeError(`schedule: rule ${index} colour channel must be an integer 0..255, got ${String(value)}`)
   }
   return value
+}
+
+/**
+ * The rules one strip should actually run.
+ *
+ * A strip is given only its own rules rather than all of them plus a test,
+ * because the scheduler's job is to fire what it holds: a filter inside it
+ * would be a second place for "does this apply" to be decided, and the two
+ * would disagree the first time a rule named a strip that had been deleted.
+ */
+export function rulesFor (rules: readonly ScheduleRule[], instanceId: string): ScheduleRule[] {
+  return rules
+    .filter((rule) => rule.instanceId === undefined || rule.instanceId === instanceId)
+    .map((rule) => ({ ...rule, days: [...rule.days] }))
 }
 
 /** `22:05` from 1325, for a panel that shows what it stored. */

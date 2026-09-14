@@ -53,7 +53,7 @@ yorumlayıcısı. Bizde efekt zaten JavaScript, çalışma zamanı zaten orada. 
 "Effect engine'i atla" notu Hyperion'u *linklemek* içindi; kendi efektlerimizi
 yazmak bambaşka bir maliyet.
 
-### (B) Ağ LED cihazları — **18 sürücü, bizde sıfır** ★ ikinci en büyük
+### (B) Ağ LED cihazları — kısmen: iki taşıma, ve geri kalanı UDP
 
 > **2026-09-14 denetimi.** Burada "ArtNet/E1.31/DDP ham UDP istiyor, imkânsız"
 > yazıyordu. İddianın kendisi doğru ama **eksikti**, ve eksik olan kısım
@@ -81,17 +81,25 @@ başına JSON ayrıştırma; **kaç fps olduğu ölçülmedi.**
 | Cololight, AtmoOrb, Yeelight, FadeCandy | UDP / ham TCP | ❌ |
 | ArtNet, E1.31, DDP, TPM2.net, UDP-RAW, H801 | UDP | ❌ |
 
+**Kayıtlı ama ölçülmemiş bir kısıt: karışık içerik.** Yukarıdaki "kısmen"lerin
+pratikte ulaşılabilir olup olmadığını bu belirliyor. Panel HTTPS'te barınıyor;
+bir Hue köprüsü kendi imzaladığı sertifikayla HTTPS, bir Nanoleaf ise düz HTTP.
+HTTPS bir sayfadan ikisine de istek atmak tarayıcı tarafından engelleniyor — API
+REST olsa bile. Eklentinin `chrome-extension://` sayfası host izinleriyle bunu
+aşabilir, ama **bu ölçülmedi ve cihaz olmadan ölçülemez**. Yani tablodaki
+"kısmen" satırları "API uygun" demek, "bugün çalışır" demek değil.
+
 **Ve asıl cevap:** tarayıcının UDP açamamasını çözmeye çalışmak yanlış soru.
 Firmware bizim. ESP32-S3 bir WebSocket sunucusu koşabiliyor ve **bugün seri
 porttan giden `Afx` karesinin aynısını** taşıyabiliyor — aynı ayrıştırıcı, aynı
 test takımı, üçüncü bir protokol maliyeti yok. iOS'u açan da bu: iPhone'da Web
 Serial, WebUSB, WebHID ve Web Bluetooth'un dördü de yok, tek yol ağ.
 
-### (C) Ses yakalama (müzik görselleştirici) — bizde yok
+### (C) Ses yakalama (müzik görselleştirici) — ✅ 2026-09-14
 
 `libsrc/grabber/audio`, `schema-grabberAudio.json`. **Tarayıcıda bedava**:
 `getUserMedia({audio:true})` + `AnalyserNode`. Hyperion'un Windows/Linux'a ayrı
-ayrı yazdığı şey bizde tek bir Web Audio çağrısı.
+ayrı yazdığı şey bizde tek bir Web Audio çağrısı. Ayrıntısı §4 madde 5'te.
 
 ### (D) Öncelik ve kaynak katmanları — ✅ 2026-09-14
 
@@ -151,11 +159,19 @@ Hyperion bir kurulumda birden fazla LED örneği sürebiliyor, her biri kendi
 yerleşimi ve cihazıyla. Masa + TV aynı anda. Artık bizde de var; ayrıntısı §4
 madde 9'da.
 
-### (F) Olaylar — bizde yok
+### (F) Olaylar — ✅ 2026-09-14, CEC hariç
 
-`schema-osEvents` (uyku/kilit), `schema-schedEvents` (zamanlanmış aç/kapat),
-`schema-cecEvents`. Tarayıcı karşılıkları: `visibilitychange`, `Page Lifecycle`,
-ve zamanlayıcı. CEC tarayıcıda imkânsız ve zaten monitör ambilight'ında alakasız.
+`schema-schedEvents` (zamanlanmış aç/kapat) yapıldı; ayrıntısı §4 madde 8'de,
+ve kurallar şerit başına adreslenebiliyor.
+
+`schema-osEvents` (uyku/kilit) ayrı bir özellik olarak YAPILMADI ve gerekmiyor:
+uyku, kilit ve ekran kapanması yakalama izini bitiriyor, motor da bunu
+kaybolmuş kaynak olarak bildiriyor (`lost`). Yani olay zaten işleniyor —
+Hyperion'un ayrı bir dinleyiciye ihtiyaç duymasının sebebi, onun yakalayıcısının
+böyle bir sinyali olmaması.
+
+`schema-cecEvents` tarayıcıda imkânsız ve zaten monitör ambilight'ında
+alakasız.
 
 ### (G) Eklentiyle mümkün olanlar — **önceki analizim burada yanlıştı**
 

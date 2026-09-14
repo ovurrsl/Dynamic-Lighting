@@ -106,10 +106,12 @@ lib/engine/              saf TypeScript motor, tarayıcı API'si yok, node --tes
   sample.ts    bölge → LED, 7 mod, tam ızgara adresleme
   adjust.ts    8 aşamalı renk düzeltme, Oklab
   smooth.ts    linear / decay / asimetrik yumuşatma
-  dither.ts    zamansal hata yayılımı (8-bit yol için)
+  dither.ts    zamansal hata yayılımı, Awa/Ada yolunda encode.ts'ten çağrılıyor
   priority.ts  kaynak arbitrajı
   protocol.ts  Ada / Awa / Afx çerçeveleme + akış ayrıştırıcı
-  serial.ts    latest-wins yazıcı + loopback
+  encode.ts    LED renkleri → tel baytları, format seçimi + 8-bit dither
+  sink.ts      FrameSink: latest-wins yazıcı, bayt taşıması, loopback
+  net.ts       WebSocket ve WLED sink'leri
   stats.ts     varış ölçer, p50/p99/max
 
 lib/extension/messages.ts   panel ↔ sw ↔ offscreen mesaj sözleşmesi (iki taraf da derler)

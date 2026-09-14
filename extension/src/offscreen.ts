@@ -147,6 +147,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ state: engine.state(), error: describe(error) })
       }
       return false
+    case 'ambiflux/effect':
+      try {
+        engine.runEffect(message.spec)
+        sendResponse({ state: engine.state(), effect: engine.stats().effect })
+      } catch (error) {
+        sendResponse({ state: engine.state(), error: describe(error) })
+      }
+      return false
     case 'ambiflux/stop':
       stopEngine()
       sendResponse({ state: engine.state() })

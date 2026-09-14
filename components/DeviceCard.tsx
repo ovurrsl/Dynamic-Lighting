@@ -123,6 +123,9 @@ export function DeviceCard () {
                   to be diagnosable.
                 */}
                 {detail !== null && <Stat className="col-span-2 sm:col-span-3" label={t('device.stat.detail')} value={detail} />}
+                {stats.effect !== undefined && (
+                  <Stat label={t('device.stat.effect')} value={stats.effect} />
+                )}
                 {stats.sourceKind !== undefined && (
                   <Stat
                     className="col-span-2 sm:col-span-3"

@@ -322,8 +322,35 @@ katmanını ve ağ sürücüsünü yukarı taşıdı — bir iPhone ekranı okuy
    sayfa host'u telefon, ikinci makine ya da eklentisiz tarayıcı için dürüst;
    tek monitörde tam ekran oyun için değil. Panelde Cihaz sayfasında bu
    cümlenin kendisi yazıyor.
-4. **Efekt motoru** — uygulamayı ekran yakalamasız kullanılır kılıyor, ve
-   tarayıcıda Hyperion'dakinden daha ucuz.
+4. **Efekt motoru — ✅ 2026-09-14.** `lib/engine/effects.ts`: yedi efekt
+   (gökkuşağı, renk lekeleri, nefes, mum, kuyruklu yıldız, polis, plazma),
+   kendi paneli, iki host'ta da çalışıyor.
+
+   **Hyperion'un yaptığını yapmadık.** Onun efekt motoru `Effect.cpp` içinde
+   **CPython 3 gömüyor** (`PyImport_ImportModule`), efektler Python betiği
+   olarak yazılabilsin diye. Bir avuç animasyon için devasa bir bağımlılık, ve
+   tarayıcıda bu WASM Python taşımak demek olurdu. Buradaki her efekt birkaç
+   satır aritmetik, deterministik ve test edilmiş (42 test).
+
+   Üç kural, üçü de karar:
+
+   - **İndeks değil geometri.** Efektlere her LED'in gerçekte nereye baktığı
+     veriliyor — örnekleyicinin kullandığı dikdörtgenlerin aynısı — böylece
+     gökkuşağı çerçevenin etrafında dönüyor ve kuyruklu yıldız şeridin
+     fiziksel olarak sarıldığı yönde koşuyor. `i / count` ile yazılmış bir
+     efekt yalnız yazıldığı rig'de doğru görünür.
+   - **Doğrusal ışık.** Renkler insanın seçtiği yerde (renk çemberi) sRGB'de
+     kuruluyor ve bir kez çözülüyor; başka yerde yapmak transfer fonksiyonunu
+     iki kez uygulardı.
+   - **`Math.random` hiç yok.** Titreşen efektler tohumlanmış bir üreteç
+     kullanıyor, yani bir mum testte kare kare tekrarlanabilir. Aksi hâlde
+     "ateş efekti fazla seğiriyor" ile "ateş efektinde hata var" ayırt
+     edilemezdi.
+
+   Bir de gerçek hata çıktı ve düzeltildi: `along` 0..1 dahil olduğu için ilk
+   ve son LED dikişte çakışıyordu — kapanış segmenti toplama katılmadan her
+   sarmalı olan efekt dikişte iki baş yakıyordu, ve gerçek bir çerçevede o iki
+   LED köşede yan yana.
 5. **Ses görselleştirici** — Web Audio, küçük iş, büyük görünürlük, her
    platformda çalışıyor.
 6. **Yakalama kartı girişi** — `enumerateDevices` + `getUserMedia`. Ekran

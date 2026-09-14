@@ -9,6 +9,7 @@ import { CaptureCard } from '#components/CaptureCard'
 import { ColourCard } from '#components/ColourCard'
 import { BoardNetworkCard } from '#components/BoardNetworkCard'
 import { DeviceCard } from '#components/DeviceCard'
+import { EffectsCard } from '#components/EffectsCard'
 import { HostCard } from '#components/HostCard'
 import { useEngine } from '#components/Engine'
 import { EngineConfigProvider, useEngineConfig } from '#components/EngineConfig'
@@ -29,7 +30,7 @@ import {
   sectionsInGroup,
   type SectionId
 } from '#lib/sections'
-import type { EngineState } from '#lib/extension/messages'
+import type { EngineState, EngineStats } from '#lib/extension/messages'
 import type { MessageKey } from '#lib/i18n/strings'
 
 /**
@@ -54,6 +55,7 @@ function sectionBody (id: SectionId, enabled: boolean) {
     case 'capture': return <CaptureCard />
     case 'calibration': return <CalibrationCard />
     case 'profiles': return <ProfilesSection />
+    case 'effects': return <EffectsCard />
     case 'device': return <DeviceSection />
     case 'guide': return <GuideCard />
     case 'roadmap': return <RoadmapCard />
@@ -100,6 +102,20 @@ function ProfilesSection () {
  * page; the cost is that the device page was where you could see whether
  * anything was running. This pays that back in one line.
  */
+/**
+ * What the badge says beside "running".
+ *
+ * An effect or a test pattern has NO CAPTURE, so `deliveredFps` is 0 for them -
+ * and "running · 0 fps" beside a strip that is visibly animating reads as a
+ * fault. What is running is the useful thing to say there; the capture rate is
+ * only meaningful when something is being captured.
+ */
+function describeRate (stats: EngineStats): string {
+  if (stats.effect !== undefined) return stats.effect
+  if (stats.pattern !== undefined) return stats.pattern
+  return `${stats.deliveredFps.toFixed(0)} fps`
+}
+
 /** One place for the four state words, so the badge and the device page agree. */
 const STATE_LABEL: Record<EngineState, MessageKey> = {
   idle: 'device.state.idle',
@@ -121,7 +137,7 @@ function EngineBadge () {
         <span aria-hidden className={`size-2 rounded-full ${running ? 'bg-success' : state === 'error' ? 'bg-danger' : 'bg-default'}`} />
         <span className="text-muted">
           {t(STATE_LABEL[state])}
-          {running && stats !== null && ` · ${stats.deliveredFps.toFixed(0)} fps`}
+          {running && stats !== null && ` · ${describeRate(stats)}`}
           {` · ${t('host.page')}`}
         </span>
       </span>
@@ -138,7 +154,6 @@ function EngineBadge () {
       </span>
     )
   }
-  const fps = stats === null ? null : stats.deliveredFps
   return (
     <span className="flex items-center gap-2 text-xs">
       <span
@@ -149,7 +164,7 @@ function EngineBadge () {
       />
       <span className="text-muted">
         {t(STATE_LABEL[state])}
-        {state === 'running' && fps !== null && ` · ${fps.toFixed(0)} fps`}
+        {state === 'running' && stats !== null && ` · ${describeRate(stats)}`}
       </span>
     </span>
   )

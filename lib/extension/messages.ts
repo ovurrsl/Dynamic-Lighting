@@ -58,6 +58,14 @@ export type Message =
    * engine parses it with `parsePatternSpec` and answers with the error.
    */
   | { type: 'ambiflux/pattern'; target: Target; spec: unknown }
+  /**
+   * Starts an effect: light with no screen behind it.
+   *
+   * A separate message from `pattern` because the two are different things. A
+   * pattern is diagnostic and bypasses smoothing and the channel order on
+   * purpose; an effect is content and goes through both.
+   */
+  | { type: 'ambiflux/effect'; target: Target; spec: unknown }
   /** Asks the worker for the engine's state and its latest statistics. */
   | { type: 'ambiflux/status'; target: Target }
   | { type: 'ambiflux/status-reply'; version: string; state: EngineState; stats: EngineStats | null }
@@ -199,6 +207,8 @@ export interface EngineStats {
    * panel claim a capture that is not happening.
    */
   pattern?: string
+  /** The effect running, if one is. Same distinction as `pattern` above. */
+  effect?: string
   /** The black-border inset currently applied, in grid pixels. */
   border: { unknown: boolean; topBottom: number; leftRight: number }
   /** Capture source size as the track reports it. */

@@ -21,6 +21,7 @@ import type { MessageKey } from '#lib/i18n/strings'
 export const SECTION_IDS = [
   'overview',
   'colour',
+  'effects',
   'layout',
   'capture',
   'calibration',
@@ -58,6 +59,7 @@ export interface Section {
 export const SECTIONS: readonly Section[] = [
   { id: 'overview', group: 'control', titleKey: 'nav.overview', descriptionKey: 'nav.overview.description', glyph: '◉' },
   { id: 'colour', group: 'control', titleKey: 'nav.colour', descriptionKey: 'nav.colour.description', glyph: '◆' },
+  { id: 'effects', group: 'control', titleKey: 'nav.effects', descriptionKey: 'nav.effects.description', glyph: '✦' },
   { id: 'layout', group: 'setup', titleKey: 'nav.layout', descriptionKey: 'nav.layout.description', glyph: '▦' },
   { id: 'capture', group: 'setup', titleKey: 'nav.capture', descriptionKey: 'nav.capture.description', glyph: '▣' },
   { id: 'calibration', group: 'setup', titleKey: 'nav.calibration', descriptionKey: 'nav.calibration.description', glyph: '◈' },

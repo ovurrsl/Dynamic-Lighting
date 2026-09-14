@@ -3,10 +3,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { EngineConfig } from '#lib/engine/config'
+import type { EffectSpec } from '#lib/engine/effects'
 import type { PatternSpec } from '#lib/engine/patterns'
 import {
   fetchStatus,
   probeExtension,
+  runEffect as runEffectInExtension,
   runPattern as runPatternInExtension,
   saveConfig as saveConfigInExtension,
   selfTestEngine,
@@ -59,6 +61,8 @@ export interface Engine {
   selfTest: () => Promise<StartOutcome>
   stop: () => Promise<void>
   runPattern: (spec: PatternSpec) => Promise<StartOutcome>
+  /** Starts an effect. Unlike a pattern this is content and is smoothed. */
+  runEffect: (spec: EffectSpec) => Promise<StartOutcome>
   /** Applies a configuration to whichever host is live. Null on success. */
   saveConfig: (config: EngineConfig) => Promise<string | null>
   /** One AxC control frame to the board. Null on success. */
@@ -219,6 +223,19 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
     }
   ), [run, pageEngine])
 
+  const runEffect = useCallback((spec: EffectSpec) => run(
+    async () => await runEffectInExtension(spec),
+    async () => {
+      const { engine } = pageEngine()
+      try {
+        engine.runEffect(spec)
+        return { state: engine.state() }
+      } catch (error) {
+        return { state: engine.state(), error: error instanceof Error ? error.message : String(error) }
+      }
+    }
+  ), [run, pageEngine])
+
   const stop = useCallback(async () => {
     if (hostRef.current === 'page') pageRef.current?.engine.stop()
     else await stopEngine()
@@ -248,10 +265,10 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
   const value = useMemo<Engine>(
     () => ({
       probe, host, pageCapable, setHost, state, stats, version, busy,
-      reprobe, start, selfTest, stop, runPattern, saveConfig, sendControl
+      reprobe, start, selfTest, stop, runPattern, runEffect, saveConfig, sendControl
     }),
     [probe, host, pageCapable, setHost, state, stats, version, busy,
-      reprobe, start, selfTest, stop, runPattern, saveConfig, sendControl]
+      reprobe, start, selfTest, stop, runPattern, runEffect, saveConfig, sendControl]
   )
 
   return <EngineContext value={value}>{children}</EngineContext>

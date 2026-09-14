@@ -1,6 +1,6 @@
 // lib/light.ts
-function srgbToLinear(channel2) {
-  return channel2 <= 0.04045 ? channel2 / 12.92 : ((channel2 + 0.055) / 1.055) ** 2.4;
+function srgbToLinear(channel3) {
+  return channel3 <= 0.04045 ? channel3 / 12.92 : ((channel3 + 0.055) / 1.055) ** 2.4;
 }
 function buildSrgbToLinearLut() {
   const lut = new Float32Array(256);
@@ -1820,6 +1820,261 @@ function createWledSink(options) {
   };
 }
 
+// lib/engine/effects.ts
+var EFFECT_KINDS = [
+  "rainbow",
+  "blobs",
+  "breathe",
+  "candle",
+  "comet",
+  "police",
+  "plasma"
+];
+function isEffectKind(value) {
+  return typeof value === "string" && EFFECT_KINDS.includes(value);
+}
+var SPEED_MIN = 0.05;
+var SPEED_MAX = 8;
+var DEFAULT_SPEED = 1;
+var DEFAULT_BRIGHTNESS = 1;
+function effectGeometry(layout) {
+  const count = layout.length;
+  const centres = new Float32Array(Math.max(1, count) * 2);
+  const along = new Float32Array(Math.max(1, count));
+  if (count === 0) return { count: 0, centres, along };
+  for (let i = 0; i < count; i++) {
+    const rect = layout[i];
+    centres[i * 2] = (rect.xMin + rect.xMax) / 2;
+    centres[i * 2 + 1] = (rect.yMin + rect.yMax) / 2;
+  }
+  let total = 0;
+  for (let i = 1; i < count; i++) {
+    const dx = centres[i * 2] - centres[(i - 1) * 2];
+    const dy = centres[i * 2 + 1] - centres[(i - 1) * 2 + 1];
+    total += Math.hypot(dx, dy);
+    along[i] = total;
+  }
+  const closing = count > 1 ? Math.hypot(
+    centres[0] - centres[(count - 1) * 2],
+    centres[1] - centres[(count - 1) * 2 + 1]
+  ) : 0;
+  const perimeter = total + closing;
+  if (perimeter > 0) {
+    for (let i = 0; i < count; i++) along[i] = along[i] / perimeter;
+  }
+  return { count, centres, along };
+}
+function hue(h, out, at, value = 1) {
+  const t = (h % 1 + 1) % 1;
+  const sector = t * 6;
+  const c = Math.floor(sector);
+  const f = sector - c;
+  const rising = f;
+  const falling = 1 - f;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  switch (c % 6) {
+    case 0:
+      r = 1;
+      g = rising;
+      break;
+    case 1:
+      r = falling;
+      g = 1;
+      break;
+    case 2:
+      g = 1;
+      b = rising;
+      break;
+    case 3:
+      g = falling;
+      b = 1;
+      break;
+    case 4:
+      r = rising;
+      b = 1;
+      break;
+    default:
+      r = 1;
+      b = falling;
+      break;
+  }
+  out[at] = srgbToLinear(r) * value;
+  out[at + 1] = srgbToLinear(g) * value;
+  out[at + 2] = srgbToLinear(b) * value;
+}
+function seeded(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = a + 1831565813 >>> 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+var clamp012 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
+function noiseTable(size, seed) {
+  const random = seeded(seed);
+  const table = new Float32Array(size);
+  for (let i = 0; i < size; i++) table[i] = random();
+  return table;
+}
+function noiseAt(table, t) {
+  const size = table.length;
+  const scaled = (t % size + size) % size;
+  const i = Math.floor(scaled);
+  const f = scaled - i;
+  const a = table[i];
+  const b = table[(i + 1) % size];
+  const w = f * f * (3 - 2 * f);
+  return a + (b - a) * w;
+}
+function createEffect(spec, geometry, clock2) {
+  const speed = clampSpeed(spec.speed ?? DEFAULT_SPEED);
+  const brightness = clamp012(spec.brightness ?? DEFAULT_BRIGHTNESS);
+  const { count, centres, along } = geometry;
+  const start = clock2();
+  const flicker = noiseTable(64, 2654435769);
+  const base = spec.color ?? { r: 255, g: 160, b: 60 };
+  const baseLinear = new Float32Array([
+    srgbToLinear(base.r / 255),
+    srgbToLinear(base.g / 255),
+    srgbToLinear(base.b / 255)
+  ]);
+  const scratch = new Float32Array(3);
+  const render = (out, nowMs) => {
+    const t = (nowMs - start) / 1e3 * speed;
+    switch (spec.kind) {
+      case "rainbow": {
+        for (let i = 0; i < count; i++) {
+          hue(along[i] - t * 0.1, out, i * 3, brightness);
+        }
+        break;
+      }
+      case "blobs": {
+        for (let i = 0; i < count; i++) {
+          const x = centres[i * 2];
+          const y = centres[i * 2 + 1];
+          let r = 0;
+          let g = 0;
+          let b = 0;
+          for (let blob = 0; blob < 3; blob++) {
+            const phase = t * 0.13 + blob * 2.1;
+            const bx = 0.5 + 0.45 * Math.sin(phase * 1.07 + blob);
+            const by = 0.5 + 0.45 * Math.cos(phase * 0.89 + blob * 1.7);
+            const d = Math.hypot(x - bx, y - by);
+            const weight = Math.exp(-(d * d) / 0.06);
+            hue(blob / 3 + t * 0.03, scratch, 0, 1);
+            r += scratch[0] * weight;
+            g += scratch[1] * weight;
+            b += scratch[2] * weight;
+          }
+          const at = i * 3;
+          out[at] = clamp012(r) * brightness;
+          out[at + 1] = clamp012(g) * brightness;
+          out[at + 2] = clamp012(b) * brightness;
+        }
+        break;
+      }
+      case "breathe": {
+        const level = (0.15 + 0.85 * (0.5 - 0.5 * Math.cos(t * 0.9))) * brightness;
+        for (let i = 0; i < count; i++) {
+          const at = i * 3;
+          out[at] = baseLinear[0] * level;
+          out[at + 1] = baseLinear[1] * level;
+          out[at + 2] = baseLinear[2] * level;
+        }
+        break;
+      }
+      case "candle": {
+        for (let i = 0; i < count; i++) {
+          const n = noiseAt(flicker, t * 3 + i * 0.7);
+          const level = (0.45 + 0.55 * n) * brightness;
+          const at = i * 3;
+          out[at] = baseLinear[0] * level;
+          out[at + 1] = baseLinear[1] * level * (0.75 + 0.25 * n);
+          out[at + 2] = baseLinear[2] * level * (0.4 + 0.6 * n * n);
+        }
+        break;
+      }
+      case "comet": {
+        const head = (t * 0.35 % 1 + 1) % 1;
+        for (let i = 0; i < count; i++) {
+          let d = head - along[i];
+          if (d < 0) d += 1;
+          const level = Math.exp(-d / 0.12) * brightness;
+          const at = i * 3;
+          out[at] = baseLinear[0] * level;
+          out[at + 1] = baseLinear[1] * level;
+          out[at + 2] = baseLinear[2] * level;
+        }
+        break;
+      }
+      case "police": {
+        const phase = Math.floor(t * 2) % 2 === 0;
+        for (let i = 0; i < count; i++) {
+          const left = centres[i * 2] < 0.5;
+          const on = left === phase;
+          const at = i * 3;
+          out[at] = on && left ? brightness : 0;
+          out[at + 1] = 0;
+          out[at + 2] = on && !left ? brightness : 0;
+        }
+        break;
+      }
+      default: {
+        for (let i = 0; i < count; i++) {
+          const x = centres[i * 2];
+          const y = centres[i * 2 + 1];
+          const v = Math.sin(x * 6 + t * 0.7) + Math.sin(y * 5 - t * 0.53) + Math.sin((x + y) * 4 + t * 0.31);
+          hue(v / 6 + 0.5, out, i * 3, brightness);
+        }
+        break;
+      }
+    }
+  };
+  return { kind: spec.kind, render };
+}
+function clampSpeed(value) {
+  if (!Number.isFinite(value)) return DEFAULT_SPEED;
+  return Math.min(SPEED_MAX, Math.max(SPEED_MIN, value));
+}
+function parseEffectSpec(value) {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError("effects: a spec must be an object");
+  }
+  const raw = value;
+  if (!isEffectKind(raw.kind)) {
+    throw new RangeError(`effects: kind must be one of ${EFFECT_KINDS.join(", ")}, got ${String(raw.kind)}`);
+  }
+  const spec = { kind: raw.kind };
+  if (raw.speed !== void 0) {
+    if (typeof raw.speed !== "number" || !Number.isFinite(raw.speed)) {
+      throw new TypeError("effects: speed must be a finite number");
+    }
+    spec.speed = clampSpeed(raw.speed);
+  }
+  if (raw.brightness !== void 0) {
+    if (typeof raw.brightness !== "number" || !Number.isFinite(raw.brightness)) {
+      throw new TypeError("effects: brightness must be a finite number");
+    }
+    spec.brightness = clamp012(raw.brightness);
+  }
+  if (raw.color !== void 0) {
+    const color = raw.color;
+    if (typeof color !== "object" || color === null) throw new TypeError("effects: color must be an object");
+    spec.color = { r: channel2(color.r), g: channel2(color.g), b: channel2(color.b) };
+  }
+  return spec;
+}
+function channel2(value) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
+    throw new RangeError(`effects: a colour channel is an integer 0..255, got ${String(value)}`);
+  }
+  return value;
+}
+
 // lib/engine/patterns.ts
 var PATTERN_KINDS = ["walk", "solid", "ramp", "flash", "off"];
 function isPatternKind(value) {
@@ -1908,12 +2163,12 @@ function parsePatternSpec(value) {
     if (typeof colour !== "object" || colour === null) throw new TypeError("patterns: color must be an object");
     const channels = ["r", "g", "b"];
     const parsed = { r: 0, g: 0, b: 0 };
-    for (const channel2 of channels) {
-      const v = colour[channel2];
+    for (const channel3 of channels) {
+      const v = colour[channel3];
       if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 1) {
-        throw new RangeError(`patterns: color.${channel2} must be a number in 0..1, got ${String(v)}`);
+        throw new RangeError(`patterns: color.${channel3} must be a number in 0..1, got ${String(v)}`);
       }
-      parsed[channel2] = v;
+      parsed[channel3] = v;
     }
     spec.color = parsed;
   }
@@ -2905,6 +3160,9 @@ function createEngine(host) {
   let patternTimer = null;
   let reconnectTimer = null;
   let pattern = null;
+  let effect = null;
+  let effectSpec = null;
+  let effectTimer = null;
   function build(config) {
     const layout = resolveLayout(config);
     const leds = layout.length;
@@ -2929,6 +3187,10 @@ function createEngine(host) {
       }),
       smoother: createSmoother({ mode: "asymmetric", count: leds, outputHz: OUTPUT_HZ }, clock2),
       target: allocLedColors(leds),
+      // Built with the stages rather than with the effect: it depends on the
+      // layout, and a layout edit while an effect is running must not leave the
+      // effect drawing on the old geometry.
+      geometry: effectGeometry(layout),
       encoder: createFrameEncoder(
         // WLED never sees one of our wire formats; it gets JSON from its own
         // sink. The encoder still exists so the loopback has something to parse.
@@ -3156,6 +3418,14 @@ function createEngine(host) {
     s.order.apply(out);
     writer.send(out);
   }
+  function emitEffect() {
+    const e = effect;
+    if (e === null || state !== "running") return;
+    const s = stages;
+    e.render(s.target, clock2());
+    s.smoother.setTarget(s.target, clock2());
+    tick();
+  }
   function emitPattern() {
     const p = pattern;
     if (p === null || state !== "running") return;
@@ -3210,12 +3480,16 @@ function createEngine(host) {
     if (tickTimer !== null) clearInterval(tickTimer);
     if (reportTimer !== null) clearInterval(reportTimer);
     if (patternTimer !== null) clearInterval(patternTimer);
+    if (effectTimer !== null) clearInterval(effectTimer);
     if (reconnectTimer !== null) clearTimeout(reconnectTimer);
     tickTimer = null;
     reportTimer = null;
     patternTimer = null;
+    effectTimer = null;
     reconnectTimer = null;
     pattern = null;
+    effect = null;
+    effectSpec = null;
     const s = source;
     source = null;
     void s?.stop().catch(() => {
@@ -3265,6 +3539,7 @@ function createEngine(host) {
       ...sourceSize(),
       ...sourceKind !== void 0 ? { sourceKind } : {},
       ...pattern !== null ? { pattern: pattern.kind } : {},
+      ...effect !== null ? { effect: effect.kind } : {},
       ...captureLost ? { lost: true } : {},
       ...lastError !== void 0 ? { error: lastError } : {}
     };
@@ -3297,6 +3572,7 @@ function createEngine(host) {
       const ledsChanged = stages.leds !== next.leds;
       stages = next;
       if (outputChanged || ledsChanged) rebuildLink();
+      if (effectSpec !== null) effect = createEffect(parseEffectSpec(effectSpec), next.geometry, clock2);
       return config;
     },
     async start() {
@@ -3311,6 +3587,29 @@ function createEngine(host) {
         return;
       }
       await begin(async () => await open(stages.config));
+    },
+    /**
+     * Starts an effect.
+     *
+     * Deliberately NOT `begin()`: there is no capture, no source and no pump.
+     * The effect renders into the same target the sampler would fill, on its
+     * own timer, and everything downstream is unchanged.
+     */
+    runEffect(spec) {
+      const parsed = parseEffectSpec(spec);
+      if (state === "running" || state === "starting") stop("restart");
+      lastError = void 0;
+      captureLost = false;
+      sourceKind = void 0;
+      effectSpec = parsed;
+      effect = createEffect(parsed, stages.geometry, clock2);
+      state = "running";
+      void connectLink();
+      effectTimer = setInterval(emitEffect, Math.round(1e3 / OUTPUT_HZ));
+      tickTimer = setInterval(tick, TICK_MS);
+      reportTimer = setInterval(report, REPORT_MS);
+      emitEffect();
+      report();
     },
     runPattern(spec) {
       const parsed = parsePatternSpec(spec);
@@ -3484,6 +3783,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       try {
         engine.runPattern(message.spec);
         sendResponse({ state: engine.state(), pattern: engine.stats().pattern });
+      } catch (error) {
+        sendResponse({ state: engine.state(), error: describe3(error) });
+      }
+      return false;
+    case "ambiflux/effect":
+      try {
+        engine.runEffect(message.spec);
+        sendResponse({ state: engine.state(), effect: engine.stats().effect });
       } catch (error) {
         sendResponse({ state: engine.state(), error: describe3(error) });
       }

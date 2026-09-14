@@ -175,6 +175,7 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
     case 'ambiflux/start':
     case 'ambiflux/selftest':
     case 'ambiflux/pattern':
+    case 'ambiflux/effect':
     case 'ambiflux/serial':
     case 'ambiflux/control':
       relayToOffscreen({ ...message, target: 'offscreen' })

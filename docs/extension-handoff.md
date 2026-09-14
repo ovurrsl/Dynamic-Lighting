@@ -629,6 +629,7 @@ tüm zinciri** ölçen tek yöntem bu.
 | (u) | `AxC` kontrol kanalı, host tarafı | **yapıldı** — `lib/engine/control.ts`; WiFi kimlik bilgileri Cihaz sayfasından |
 | (v) | Motoru host'tan ayır | **yapıldı** — `lib/engine/runtime.ts`; offscreen 875 → 199 satır |
 | (w) | Sayfa host'u | **yapıldı** — `lib/page-host.ts`; üç kare rotası gerçek tarayıcıda ölçüldü |
+| (x) | Efekt motoru | **yapıldı** — `lib/engine/effects.ts`, yedi efekt, kendi paneli, CPython yok |
 
 ### Sıra değiştirmek isteyen için
 

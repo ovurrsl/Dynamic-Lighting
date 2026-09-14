@@ -5,6 +5,7 @@ import { queryControl, wifiControl } from '#lib/engine/control'
 import { allocLinearGrid, createRgbaDecoder, type RgbaDecoder } from '#lib/engine/decode'
 import { createFrameEncoder, type FrameEncoder } from '#lib/engine/encode'
 import { afxUrl, createSocketSink, createWledSink } from '#lib/engine/net'
+import { createEffect, effectGeometry, parseEffectSpec, type Effect, type EffectGeometry } from '#lib/engine/effects'
 import { createColorOrder, type ColorOrderStage } from '#lib/engine/order'
 import { createPattern, parsePatternSpec, type Pattern } from '#lib/engine/patterns'
 import { createSampler, type Sampler } from '#lib/engine/sample'
@@ -120,6 +121,14 @@ export interface Engine {
   selfTest: () => Promise<void>
   /** A test pattern straight to the strip: no capture, no smoothing, no sampling. */
   runPattern: (spec: unknown) => void
+  /**
+   * An effect: light with no screen behind it.
+   *
+   * Unlike a test pattern this is CONTENT, so it goes through the smoother and
+   * the channel-order stage exactly as a captured frame does. A pattern that
+   * did the same would be testing the smoother instead of the wiring.
+   */
+  runEffect: (spec: unknown) => void
   stop: (reason?: StopReason) => void
   /** Reopens the link - after the user pairs a serial port, or changes a host. */
   relink: () => Promise<void>
@@ -144,6 +153,7 @@ interface Stages {
   smoother: Smoother
   target: LedColors
   encoder: FrameEncoder
+  geometry: EffectGeometry
 }
 
 export function createEngine (host: EngineHost): Engine {
@@ -173,6 +183,9 @@ export function createEngine (host: EngineHost): Engine {
   let patternTimer: ReturnType<typeof setInterval> | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let pattern: Pattern | null = null
+  let effect: Effect | null = null
+  let effectSpec: unknown = null
+  let effectTimer: ReturnType<typeof setInterval> | null = null
 
   // -------------------------------------------------------------------------
   // The stages, rebuilt whenever the configuration changes.
@@ -202,6 +215,10 @@ export function createEngine (host: EngineHost): Engine {
       }),
       smoother: createSmoother({ mode: 'asymmetric', count: leds, outputHz: OUTPUT_HZ }, clock),
       target: allocLedColors(leds),
+      // Built with the stages rather than with the effect: it depends on the
+      // layout, and a layout edit while an effect is running must not leave the
+      // effect drawing on the old geometry.
+      geometry: effectGeometry(layout),
       encoder: createFrameEncoder(
         // WLED never sees one of our wire formats; it gets JSON from its own
         // sink. The encoder still exists so the loopback has something to parse.
@@ -501,6 +518,24 @@ export function createEngine (host: EngineHost): Engine {
     writer.send(out)
   }
 
+  /**
+   * One effect frame.
+   *
+   * Into the smoother's TARGET, not straight to the writer: an effect is
+   * content and gets the same output path a captured frame gets, so the
+   * asymmetric smoothing and the channel order both apply. The effects are
+   * already continuous, so the smoother has almost nothing to do - but "almost
+   * nothing" is the right amount for a second code path to be doing.
+   */
+  function emitEffect (): void {
+    const e = effect
+    if (e === null || state !== 'running') return
+    const s = stages
+    e.render(s.target, clock())
+    s.smoother.setTarget(s.target, clock())
+    tick()
+  }
+
   function emitPattern (): void {
     const p = pattern
     if (p === null || state !== 'running') return
@@ -562,12 +597,16 @@ export function createEngine (host: EngineHost): Engine {
     if (tickTimer !== null) clearInterval(tickTimer)
     if (reportTimer !== null) clearInterval(reportTimer)
     if (patternTimer !== null) clearInterval(patternTimer)
+    if (effectTimer !== null) clearInterval(effectTimer)
     if (reconnectTimer !== null) clearTimeout(reconnectTimer)
     tickTimer = null
     reportTimer = null
     patternTimer = null
+    effectTimer = null
     reconnectTimer = null
     pattern = null
+    effect = null
+    effectSpec = null
     const s = source
     source = null
     void s?.stop().catch(() => { /* already gone */ })
@@ -620,6 +659,7 @@ export function createEngine (host: EngineHost): Engine {
       ...sourceSize(),
       ...(sourceKind !== undefined ? { sourceKind } : {}),
       ...(pattern !== null ? { pattern: pattern.kind } : {}),
+      ...(effect !== null ? { effect: effect.kind } : {}),
       ...(captureLost ? { lost: true } : {}),
       ...(lastError !== undefined ? { error: lastError } : {})
     }
@@ -665,6 +705,9 @@ export function createEngine (host: EngineHost): Engine {
       // would otherwise be accepted by the panel and silently not reach the
       // device.
       if (outputChanged || ledsChanged) rebuildLink()
+      // A running effect holds the geometry it was built with, so a layout edit
+      // would otherwise leave it drawing the old rig onto the new one.
+      if (effectSpec !== null) effect = createEffect(parseEffectSpec(effectSpec), next.geometry, clock)
       return config
     },
 
@@ -681,6 +724,32 @@ export function createEngine (host: EngineHost): Engine {
         return
       }
       await begin(async () => await open(stages.config))
+    },
+
+    /**
+     * Starts an effect.
+     *
+     * Deliberately NOT `begin()`: there is no capture, no source and no pump.
+     * The effect renders into the same target the sampler would fill, on its
+     * own timer, and everything downstream is unchanged.
+     */
+    runEffect (spec: unknown): void {
+      const parsed = parseEffectSpec(spec)
+      if (state === 'running' || state === 'starting') stop('restart')
+      lastError = undefined
+      captureLost = false
+      sourceKind = undefined
+      effectSpec = parsed
+      effect = createEffect(parsed, stages.geometry, clock)
+      state = 'running'
+      void connectLink()
+      // The smoother paces the output; this timer only has to keep the target
+      // moving, so it runs at the output rate and no faster.
+      effectTimer = setInterval(emitEffect, Math.round(1000 / OUTPUT_HZ))
+      tickTimer = setInterval(tick, TICK_MS)
+      reportTimer = setInterval(report, REPORT_MS)
+      emitEffect()
+      report()
     },
 
     runPattern (spec: unknown): void {

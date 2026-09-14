@@ -9,10 +9,20 @@ Son güncelleme: 2026-09-14 · HeroUI v3.2.5 · Next.js 16 · Tailwind 4
 
 ---
 
-## 0. Hangi araçlar kullanılabilir — dürüst cevap
+## 0. Hangi araçlar kullanılabilir
 
-Bu oturumda etkin olan tasarım becerileri incelendi ve **hiçbiri bu uygulamaya
-uymuyor**; bunu sayıp geçmek yerine sebebiyle yazıyorum:
+> **2026-09-14 düzeltmesi.** Bu bölüm önce "etkin tasarım becerilerinin hiçbiri
+> bu uygulamaya uymuyor" diyordu. O, yazıldığı andaki beceri listesi için
+> doğruydu; **`design` becerisi o listede yoktu ve şimdi var.** Doküman
+> üzerinden karar verilecek bir yerde yanlış kalmasın diye düzeltiliyor.
+
+**`design` — Claude Design'ın kendisi.** Çok-artboard'lu bir tasarım tuvalini
+bir Artifact olarak yayınlıyor; `.dc.html` artboard'ları tek bir pan/zoom
+tuvaline diziliyor ve görsel olarak düzenlenebiliyor. Yani "bütün ekranları
+tasarlatmak" için doğru araç bu, ve bu dosyanın geri kalanı tam olarak onu
+besleyecek girdi: hangi ekran, ne içeriyor, hangi hallere giriyor.
+
+Diğer becerilerin neden uymadığı yerinde duruyor:
 
 | Beceri | Neden uymuyor |
 |---|---|
@@ -21,13 +31,15 @@ uymuyor**; bunu sayıp geçmek yerine sebebiyle yazıyorum:
 | `canvas-design`, `algorithmic-art` | statik görsel/afiş |
 | `brand-guidelines` | Anthropic'in marka kimliği, bizimki değil |
 
-**Kullanılan tek şey `heroui-react` MCP'si** — üreticinin kendi sunucusu, yani
-"Next.js/React/Tailwind için üçüncü parti MCP kullanma" kuralına uyuyor. Bu
+**MCP tarafında kullanılan tek şey `heroui-react`** — üreticinin kendi sunucusu,
+yani "Next.js/React/Tailwind için üçüncü parti MCP kullanma" kuralına uyuyor. Bu
 dosyadaki bileşen listesi ve token'lar oradan, tahminden değil.
 
-Tasarım dışarıda yapılacaksa doğru teslim biçimi **ekran mockup'ı + token
-eşlemesi**, kod değil: kod HeroUI'nin compound API'siyle yazılmak zorunda ve
-onu burada üretmek daha hızlı.
+Tuval bir **mockup**, kod değil, ve öyle kalmalı: uygulama HeroUI'nin compound
+API'siyle yazılmak zorunda (`Card.Header`, `Select.Trigger`, `Slider.Track`…),
+ve üretilen HTML'i oraya çevirmek, mockup'a bakıp yazmaktan daha yavaş. Tuvalin
+işi **karar vermek** — hangi kontrol nerede duruyor, kenar çubuğu on altı bölüme
+nasıl ölçekleniyor, kırpma editörü neye benziyor.
 
 ---
 

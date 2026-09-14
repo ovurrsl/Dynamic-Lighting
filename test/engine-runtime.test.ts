@@ -314,3 +314,26 @@ test('an ANIMATED startup layer also lets go — it cannot reset its own expiry'
   assert.ok(!layers(h.engine).some((l) => l.component === 'startup'), 'and it is gone, not merely losing')
   h.engine.stop()
 })
+
+test('a still screen holds the strip rather than falling through to the background', async () => {
+  // A screen capture that sends nothing is overwhelmingly a STILL SCREEN, not
+  // a broken one: a frame arrives per change. Standing the capture down after
+  // a few silent seconds would hand the strip to the background whenever
+  // somebody stopped moving the mouse, and hand it back on the next change.
+  const h = harness()
+  h.engine.applyConfig(withLayers({
+    background: { enabled: true, kind: 'color', color: { r: 255, g: 170, b: 100 }, effect: 'candle' }
+  }))
+  // Stands in for the capture layer: registered by the pipeline on each frame,
+  // with no inactivity timeout of its own.
+  h.engine.setColor({ r: 0, g: 0, b: 255 })
+  assert.equal(winner(h.engine), 'color')
+
+  // Far longer than Hyperion's five seconds, and a dozen arbitration ticks.
+  for (let i = 0; i < 6; i++) {
+    h.advance(5000)
+    await delay(15)
+  }
+  assert.equal(winner(h.engine), 'color', 'still showing, thirty silent seconds later')
+  h.engine.stop()
+})

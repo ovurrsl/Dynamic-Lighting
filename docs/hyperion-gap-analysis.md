@@ -107,9 +107,30 @@ ayrı yazdığı şey bizde tek bir Web Audio çağrısı.
 - `foregroundEffect` — ✅ **bitti**, ama bizde adı `startup`: Hyperion'un adı
   bir açılış animasyonu için kafa karıştırıcı. Öncelik 1'de, her şeyin üstünde,
   süresi dolunca kendiliğinden bırakıyor.
-- `instCapture` — **kısmen.** Kaynak başına hareketsizlik zaman aşımları
-  `DEFAULT_STREAM_TIMEOUT_MS`'te Hyperion'un değerleriyle duruyor ama ayar
-  değil; öncelikler de sabit. Açık kalan tek parça bu.
+- `instCapture` — **bilinçli olarak farklı.** Kaynak başına *öncelik*
+  açılmıyor: bizim öncelik tablomuz gerekçeli ve panelde görünür bir katman
+  listesi var, yani ham sayıları açmak kullanıcıyı tarif edemeyeceği bir kazanç
+  için tutarlı bir tasarımı bozmaya davet etmek olurdu. Hyperion onları açıyor
+  çünkü katmanlanması başka türlü görünmez.
+
+  **Yakalama katmanının hareketsizlik zaman aşımı ise kaldırıldı**, ve bunu
+  arka plan zorladı: hiçbir şey göndermeyen bir ekran yakalaması ezici
+  çoğunlukla BOZUK değil DURAĞAN bir ekran — kare değişim başına geliyor, yani
+  kimsenin dokunmadığı bir masaüstü tasarımı gereği sessiz. Arka plan
+  yapılandırılmışken yakalamayı zaman aşımına uğratmak, biri fareyi
+  kıpırdatmayı bıraktığı anda şeridi arka plana veriyor ve ilk değişimde geri
+  alıyor olurdu: boş bir masada ekran ile sıcak beyaz arasında titreyen bir
+  şerit.
+
+  Gerçekten biten bir yakalama zaten ve daha iyi yakalanıyor: iz `onEnd`
+  tetikliyor, ki bu çıkarım değil olgu. Ses zaman aşımını koruyor çünkü canlı
+  bir mikrofon hiçlik değil sessizlik gönderiyor, yani sessiz bir ses katmanı
+  gerçekten ölü bir giriş demek.
+
+  **Ölçülemedi:** Chromium'un durağan bir ekranda kare göndermeye devam edip
+  etmediği. Bu ortamda Xvfb altında gerçek ekran yakalama hiç başlamıyor (0 fps,
+  katman yok). Muxer seviyesinde etkileşimi kanıtladım; yukarıdaki tasarım iki
+  durumda da doğru olduğu için ölçüm artık kritik değil.
 
 İki karar ve ikisi de teste dayanıyor:
 

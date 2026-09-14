@@ -4469,7 +4469,7 @@ function createEngine(host) {
       s.sampler.sample(s.grid, s.target, "mean");
       s.adjustment.apply(s.target);
       captureTarget.set(s.target);
-      feed(PRIORITY.capture, "capture", captureTarget, DEFAULT_STREAM_TIMEOUT_MS.capture);
+      feed(PRIORITY.capture, "capture", captureTarget);
       const t4 = clock2();
       downscaleTimes.add(t1 - t0);
       readbackTimes.add(t2 - t1);

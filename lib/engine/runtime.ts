@@ -652,7 +652,23 @@ export function createEngine (host: EngineHost): Engine {
       s.sampler.sample(s.grid, s.target, 'mean')
       s.adjustment.apply(s.target)
       captureTarget.set(s.target)
-      feed(PRIORITY.capture, 'capture', captureTarget, DEFAULT_STREAM_TIMEOUT_MS.capture)
+      // NO inactivity timeout on the capture layer, and this is a decision the
+      // background forced rather than a simplification.
+      //
+      // Hyperion stands a grabber down after a few silent seconds. That is
+      // right for it and wrong here, because a screen capture that sends
+      // nothing is overwhelmingly a STILL SCREEN rather than a broken one - a
+      // frame arrives per change, so a desktop nobody is touching is silent by
+      // design. With a background configured, expiring the capture would hand
+      // the strip to the background whenever somebody stopped moving the
+      // mouse, and hand it back on the next change: a strip that flickers
+      // between the screen and warm white on an idle desk.
+      //
+      // A capture that really ends is already caught, and caught better: the
+      // track fires `onEnd`, which is a fact rather than an inference. Audio
+      // keeps its timeout because a live microphone delivers silence rather
+      // than nothing, so a silent audio layer really is a dead input.
+      feed(PRIORITY.capture, 'capture', captureTarget)
       const t4 = clock()
 
       downscaleTimes.add(t1 - t0)

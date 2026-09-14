@@ -26,6 +26,7 @@ import { useTranslate } from '#components/Preferences'
 import { ProfilesCard } from '#components/ProfilesCard'
 import { RoadmapCard } from '#components/RoadmapCard'
 import { ScheduleCard } from '#components/ScheduleCard'
+import { TelemetryCard } from '#components/TelemetryCard'
 import { SmoothingCard } from '#components/SmoothingCard'
 import {
   DEFAULT_SECTION,
@@ -89,6 +90,7 @@ function DeviceSection () {
     <div className="flex flex-col gap-6">
       <HostCard />
       <DeviceCard />
+      <TelemetryCard />
       <BoardNetworkCard />
       <CapabilitiesCard />
     </div>

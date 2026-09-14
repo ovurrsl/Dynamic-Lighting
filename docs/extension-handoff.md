@@ -649,7 +649,7 @@ tüm zinciri** ölçen tek yöntem bu.
 | (k) | Yumuşatma profilleri | **yapıldı** — üç profil + iki sabit + kesme bypass'ı, yeni Görüntü sayfası |
 | (l) | Renk düzeltme arayüzü | **yapıldı** — parlaklık, doygunluk, beyaz dengesi, taper, taban; Görüntü sayfasında |
 | (m) | Kenar algılama modu | **yapıldı** — dört tarama deseni, eşik, kenar kırpma, canlı okuma; Görüntü sayfasında |
-| (n) | Telemetri paneli | kısmen — sayaçlar ve aşama kırılımı var, grafik yok |
+| (n) | Telemetri paneli | **yapıldı** — üç zaman serisi + bütçeye karşı aşama çubuğu; `lib/telemetry.ts` |
 | (o)-(q) | Dağıtım | açık |
 | (r) | Çıkış katmanı (`FrameSink`) | **yapıldı** — `lib/engine/sink.ts`, renk alıyor, bayt değil |
 | (s) | Ağ sürücüleri | **yapıldı** — `lib/engine/net.ts` (bizim firmware + WLED), panelde taşıma seçici |

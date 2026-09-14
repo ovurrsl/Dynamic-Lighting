@@ -155,6 +155,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ state: engine.state(), error: describe(error) })
       }
       return false
+    case 'ambiflux/audio':
+      engine.runAudio(message.spec, message.input).then(
+        () => sendResponse({ state: engine.state(), error: engine.error() }),
+        (error: unknown) => sendResponse({ state: engine.state(), error: describe(error) })
+      )
+      return true
     case 'ambiflux/stop':
       stopEngine()
       sendResponse({ state: engine.state() })

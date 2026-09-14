@@ -38,8 +38,14 @@ async function ensureOffscreen (): Promise<void> {
       // DISPLAY_MEDIA is the documented reason for exactly this use, and unlike
       // AUDIO_PLAYBACK it carries no lifetime limit: the document lives until
       // we close it or Chrome exits.
-      reasons: [chrome.offscreen.Reason.DISPLAY_MEDIA],
-      justification: 'Ekran yakalama ve LED şeridine seri port çıkışı, hiçbir sekme açık olmadan.'
+      // USER_MEDIA alongside DISPLAY_MEDIA: the audio visualiser opens a
+      // microphone, and an offscreen document may only do that if it says so
+      // here. It is a REASON, not a permission - the manifest deliberately does
+      // NOT ask for `audioCapture`, because a permanent microphone grant on an
+      // ambilight extension is exactly the kind of thing that should make a
+      // user suspicious. The prompt happens, or the visualiser reports why not.
+      reasons: [chrome.offscreen.Reason.DISPLAY_MEDIA, chrome.offscreen.Reason.USER_MEDIA],
+      justification: 'Ekran yakalama, ses görselleştirme ve LED şeridine çıkış, hiçbir sekme açık olmadan.'
     }).finally(() => { creating = null })
   }
   await creating
@@ -176,6 +182,7 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
     case 'ambiflux/selftest':
     case 'ambiflux/pattern':
     case 'ambiflux/effect':
+    case 'ambiflux/audio':
     case 'ambiflux/serial':
     case 'ambiflux/control':
       relayToOffscreen({ ...message, target: 'offscreen' })

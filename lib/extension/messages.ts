@@ -66,6 +66,8 @@ export type Message =
    * purpose; an effect is content and goes through both.
    */
   | { type: 'ambiflux/effect'; target: Target; spec: unknown }
+  /** Starts an audio visualiser. `input` picks the microphone or tab audio. */
+  | { type: 'ambiflux/audio'; target: Target; spec: unknown; input?: 'microphone' | 'display' }
   /** Asks the worker for the engine's state and its latest statistics. */
   | { type: 'ambiflux/status'; target: Target }
   | { type: 'ambiflux/status-reply'; version: string; state: EngineState; stats: EngineStats | null }
@@ -209,6 +211,14 @@ export interface EngineStats {
   pattern?: string
   /** The effect running, if one is. Same distinction as `pattern` above. */
   effect?: string
+  /**
+   * The audio visualiser, when one is running.
+   *
+   * `level` is the follower's current normalising value, which is what the
+   * panel's meter shows - it says "the engine can hear something" in a way a
+   * strip across the room cannot.
+   */
+  audio?: { kind: string, input: string, level: number }
   /** The black-border inset currently applied, in grid pixels. */
   border: { unknown: boolean; topBottom: number; leftRight: number }
   /** Capture source size as the track reports it. */

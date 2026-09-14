@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Button, Surface, Switch } from '@heroui/react'
 
+import { AudioCard } from '#components/AudioCard'
 import { CalibrationCard } from '#components/CalibrationCard'
 import { CapabilitiesCard } from '#components/CapabilitiesCard'
 import { CaptureCard } from '#components/CaptureCard'
@@ -56,6 +57,7 @@ function sectionBody (id: SectionId, enabled: boolean) {
     case 'calibration': return <CalibrationCard />
     case 'profiles': return <ProfilesSection />
     case 'effects': return <EffectsCard />
+    case 'audio': return <AudioCard />
     case 'device': return <DeviceSection />
     case 'guide': return <GuideCard />
     case 'roadmap': return <RoadmapCard />
@@ -111,6 +113,7 @@ function ProfilesSection () {
  * only meaningful when something is being captured.
  */
 function describeRate (stats: EngineStats): string {
+  if (stats.audio !== undefined) return stats.audio.kind
   if (stats.effect !== undefined) return stats.effect
   if (stats.pattern !== undefined) return stats.pattern
   return `${stats.deliveredFps.toFixed(0)} fps`

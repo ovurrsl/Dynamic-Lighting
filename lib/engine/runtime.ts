@@ -1,4 +1,6 @@
 import { createAdjustment, type Adjustment } from '#lib/engine/adjust'
+import { createVisualiser, parseAudioSpec, type Visualiser } from '#lib/engine/audio'
+import { openDisplayAudio, openMicrophone, type AudioInputKind, type AudioSource } from '#lib/engine/audio-input'
 import { createBorderDetector } from '#lib/engine/border'
 import { DEFAULT_ENGINE_CONFIG, parseEngineConfig, resolveLayout, type EngineConfig } from '#lib/engine/config'
 import { queryControl, wifiControl } from '#lib/engine/control'
@@ -129,6 +131,14 @@ export interface Engine {
    * did the same would be testing the smoother instead of the wiring.
    */
   runEffect: (spec: unknown) => void
+  /**
+   * Sound on the strip.
+   *
+   * `input` chooses the microphone (everywhere, hears the room) or tab/system
+   * audio (Chromium only, hears exactly what is playing). Like an effect this
+   * is content and goes through the whole output path.
+   */
+  runAudio: (spec: unknown, input?: AudioInputKind) => Promise<void>
   stop: (reason?: StopReason) => void
   /** Reopens the link - after the user pairs a serial port, or changes a host. */
   relink: () => Promise<void>
@@ -186,6 +196,9 @@ export function createEngine (host: EngineHost): Engine {
   let effect: Effect | null = null
   let effectSpec: unknown = null
   let effectTimer: ReturnType<typeof setInterval> | null = null
+  let visualiser: Visualiser | null = null
+  let audio: AudioSource | null = null
+  let bins: Float32Array = new Float32Array(0)
 
   // -------------------------------------------------------------------------
   // The stages, rebuilt whenever the configuration changes.
@@ -536,6 +549,30 @@ export function createEngine (host: EngineHost): Engine {
     tick()
   }
 
+  /**
+   * One audio frame.
+   *
+   * Into the smoother's target, like an effect: this is content. A source that
+   * has gone - a microphone unplugged, a shared tab closed - stops the engine
+   * rather than rendering silence forever, because silence and a dead input
+   * look identical on a strip.
+   */
+  function emitAudio (): void {
+    const v = visualiser
+    const source = audio
+    if (v === null || source === null || state !== 'running') return
+    if (!source.read(bins)) {
+      lastError = 'ses kaynağı kayboldu'
+      stop('lost')
+      return
+    }
+    const s = stages
+    const now = clock()
+    v.render(bins, s.target, now)
+    s.smoother.setTarget(s.target, now)
+    tick()
+  }
+
   function emitPattern (): void {
     const p = pattern
     if (p === null || state !== 'running') return
@@ -607,6 +644,10 @@ export function createEngine (host: EngineHost): Engine {
     pattern = null
     effect = null
     effectSpec = null
+    visualiser = null
+    const a = audio
+    audio = null
+    void a?.stop().catch(() => { /* already gone */ })
     const s = source
     source = null
     void s?.stop().catch(() => { /* already gone */ })
@@ -660,6 +701,9 @@ export function createEngine (host: EngineHost): Engine {
       ...(sourceKind !== undefined ? { sourceKind } : {}),
       ...(pattern !== null ? { pattern: pattern.kind } : {}),
       ...(effect !== null ? { effect: effect.kind } : {}),
+      ...(visualiser !== null
+        ? { audio: { kind: visualiser.kind, input: audio?.kind ?? 'microphone', level: visualiser.level() } }
+        : {}),
       ...(captureLost ? { lost: true } : {}),
       ...(lastError !== undefined ? { error: lastError } : {})
     }
@@ -708,6 +752,17 @@ export function createEngine (host: EngineHost): Engine {
       // A running effect holds the geometry it was built with, so a layout edit
       // would otherwise leave it drawing the old rig onto the new one.
       if (effectSpec !== null) effect = createEffect(parseEffectSpec(effectSpec), next.geometry, clock)
+      // The visualiser holds the geometry AND the band layout, so a layout edit
+      // has to rebuild it as well or the spectrum keeps drawing the old rig.
+      if (visualiser !== null && audio !== null) {
+        visualiser = createVisualiser({
+          spec: parseAudioSpec({ kind: visualiser.kind }),
+          geometry: next.geometry,
+          sampleRate: audio.sampleRate,
+          binCount: audio.binCount,
+          outputHz: OUTPUT_HZ
+        })
+      }
       return config
     },
 
@@ -749,6 +804,45 @@ export function createEngine (host: EngineHost): Engine {
       tickTimer = setInterval(tick, TICK_MS)
       reportTimer = setInterval(report, REPORT_MS)
       emitEffect()
+      report()
+    },
+
+    /**
+     * Starts an audio visualiser.
+     *
+     * Asynchronous where the effects are not, because opening an input means a
+     * permission prompt - and a refusal is a decision the user made, reported
+     * as a sentence rather than left as a strip that never lights.
+     */
+    async runAudio (spec: unknown, input: AudioInputKind = 'microphone'): Promise<void> {
+      const parsed = parseAudioSpec(spec)
+      if (state === 'running' || state === 'starting') stop('restart')
+      lastError = undefined
+      captureLost = false
+      sourceKind = undefined
+      state = 'starting'
+      report()
+      try {
+        const source = input === 'display' ? await openDisplayAudio() : await openMicrophone()
+        audio = source
+        bins = new Float32Array(source.binCount)
+        visualiser = createVisualiser({
+          spec: parsed,
+          geometry: stages.geometry,
+          sampleRate: source.sampleRate,
+          binCount: source.binCount,
+          outputHz: OUTPUT_HZ
+        })
+        state = 'running'
+        void connectLink()
+        effectTimer = setInterval(emitAudio, Math.round(1000 / OUTPUT_HZ))
+        tickTimer = setInterval(tick, TICK_MS)
+        reportTimer = setInterval(report, REPORT_MS)
+        emitAudio()
+      } catch (error) {
+        state = 'error'
+        lastError = describe(error)
+      }
       report()
     },
 

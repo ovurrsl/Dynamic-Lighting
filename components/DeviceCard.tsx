@@ -123,6 +123,12 @@ export function DeviceCard () {
                   to be diagnosable.
                 */}
                 {detail !== null && <Stat className="col-span-2 sm:col-span-3" label={t('device.stat.detail')} value={detail} />}
+                {stats.audio !== undefined && (
+                  <Stat
+                    label={t('device.stat.audio')}
+                    value={`${stats.audio.kind} / ${stats.audio.input} ${(stats.audio.level * 100).toFixed(0)}%`}
+                  />
+                )}
                 {stats.effect !== undefined && (
                   <Stat label={t('device.stat.effect')} value={stats.effect} />
                 )}

@@ -3,11 +3,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { EngineConfig } from '#lib/engine/config'
+import type { AudioSpec } from '#lib/engine/audio'
+import type { AudioInputKind } from '#lib/engine/audio-input'
 import type { EffectSpec } from '#lib/engine/effects'
 import type { PatternSpec } from '#lib/engine/patterns'
 import {
   fetchStatus,
   probeExtension,
+  runAudio as runAudioInExtension,
   runEffect as runEffectInExtension,
   runPattern as runPatternInExtension,
   saveConfig as saveConfigInExtension,
@@ -63,6 +66,8 @@ export interface Engine {
   runPattern: (spec: PatternSpec) => Promise<StartOutcome>
   /** Starts an effect. Unlike a pattern this is content and is smoothed. */
   runEffect: (spec: EffectSpec) => Promise<StartOutcome>
+  /** Starts an audio visualiser on the microphone or on tab audio. */
+  runAudio: (spec: AudioSpec, input: AudioInputKind) => Promise<StartOutcome>
   /** Applies a configuration to whichever host is live. Null on success. */
   saveConfig: (config: EngineConfig) => Promise<string | null>
   /** One AxC control frame to the board. Null on success. */
@@ -236,6 +241,15 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
     }
   ), [run, pageEngine])
 
+  const runAudio = useCallback((spec: AudioSpec, input: AudioInputKind) => run(
+    async () => await runAudioInExtension(spec, input),
+    async () => {
+      const { engine } = pageEngine()
+      await engine.runAudio(spec, input)
+      return { state: engine.state(), ...(engine.error() !== undefined ? { error: engine.error() } : {}) }
+    }
+  ), [run, pageEngine])
+
   const stop = useCallback(async () => {
     if (hostRef.current === 'page') pageRef.current?.engine.stop()
     else await stopEngine()
@@ -265,10 +279,10 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
   const value = useMemo<Engine>(
     () => ({
       probe, host, pageCapable, setHost, state, stats, version, busy,
-      reprobe, start, selfTest, stop, runPattern, runEffect, saveConfig, sendControl
+      reprobe, start, selfTest, stop, runPattern, runEffect, runAudio, saveConfig, sendControl
     }),
     [probe, host, pageCapable, setHost, state, stats, version, busy,
-      reprobe, start, selfTest, stop, runPattern, runEffect, saveConfig, sendControl]
+      reprobe, start, selfTest, stop, runPattern, runEffect, runAudio, saveConfig, sendControl]
   )
 
   return <EngineContext value={value}>{children}</EngineContext>

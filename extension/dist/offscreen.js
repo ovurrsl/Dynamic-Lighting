@@ -1,6 +1,6 @@
 // lib/light.ts
-function srgbToLinear(channel3) {
-  return channel3 <= 0.04045 ? channel3 / 12.92 : ((channel3 + 0.055) / 1.055) ** 2.4;
+function srgbToLinear(channel4) {
+  return channel4 <= 0.04045 ? channel4 / 12.92 : ((channel4 + 0.055) / 1.055) ** 2.4;
 }
 function buildSrgbToLinearLut() {
   const lut = new Float32Array(256);
@@ -296,6 +296,333 @@ function createAdjustment(profiles, count) {
       return backlight;
     }
   };
+}
+
+// lib/engine/audio.ts
+var AUDIO_KINDS = ["spectrum", "level", "pulse"];
+function isAudioKind(value) {
+  return typeof value === "string" && AUDIO_KINDS.includes(value);
+}
+var GAIN_MIN = 0.1;
+var GAIN_MAX = 10;
+var DEFAULT_GAIN = 1;
+var DEFAULT_DECAY = 0.12;
+var NOISE_FLOOR = 0.02;
+function logBands(binCount, bands, sampleRate, fMin = 40, fMax = 16e3) {
+  if (!Number.isInteger(binCount) || binCount < 2) {
+    throw new RangeError(`audio: binCount must be at least 2, got ${String(binCount)}`);
+  }
+  if (!Number.isInteger(bands) || bands < 1) {
+    throw new RangeError(`audio: bands must be a positive integer, got ${String(bands)}`);
+  }
+  const nyquist = sampleRate / 2;
+  const top = Math.min(fMax, nyquist);
+  const bottom = Math.min(fMin, top / 2);
+  const edges = new Uint16Array(bands + 1);
+  const ratio = Math.log(top / bottom);
+  for (let i = 0; i <= bands; i++) {
+    const frequency = bottom * Math.exp(ratio * i / bands);
+    const bin = Math.round(frequency / nyquist * binCount);
+    edges[i] = Math.min(binCount, Math.max(i === 0 ? 0 : edges[i - 1] + 1, bin));
+  }
+  return edges;
+}
+function createFollower(releasePerSecond = 0.5, outputHz = 120) {
+  const decay = Math.pow(1 - releasePerSecond, 1 / outputHz);
+  let peak = NOISE_FLOOR;
+  return {
+    push(next) {
+      peak = next > peak ? next : Math.max(NOISE_FLOOR, peak * decay);
+      return peak;
+    },
+    value: () => peak,
+    reset() {
+      peak = NOISE_FLOOR;
+    }
+  };
+}
+var clamp012 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
+function hue(h, out, at, value) {
+  const t = (h % 1 + 1) % 1;
+  const sector = t * 6;
+  const c = Math.floor(sector);
+  const f = sector - c;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  switch (c % 6) {
+    case 0:
+      r = 1;
+      g = f;
+      break;
+    case 1:
+      r = 1 - f;
+      g = 1;
+      break;
+    case 2:
+      g = 1;
+      b = f;
+      break;
+    case 3:
+      g = 1 - f;
+      b = 1;
+      break;
+    case 4:
+      r = f;
+      b = 1;
+      break;
+    default:
+      r = 1;
+      b = 1 - f;
+      break;
+  }
+  out[at] = srgbToLinear(r) * value;
+  out[at + 1] = srgbToLinear(g) * value;
+  out[at + 2] = srgbToLinear(b) * value;
+}
+function createVisualiser(options) {
+  const { spec, geometry, sampleRate, binCount } = options;
+  const outputHz = options.outputHz ?? 120;
+  const gain = Math.min(GAIN_MAX, Math.max(GAIN_MIN, spec.gain ?? DEFAULT_GAIN));
+  const brightness = clamp012(spec.brightness ?? 1);
+  const decay = clamp012(spec.decay ?? DEFAULT_DECAY);
+  const { count, centres, along } = geometry;
+  const base = spec.color ?? { r: 0, g: 180, b: 255 };
+  const baseLinear = new Float32Array([
+    srgbToLinear(base.r / 255),
+    srgbToLinear(base.g / 255),
+    srgbToLinear(base.b / 255)
+  ]);
+  const bandCount = Math.max(1, Math.min(64, count));
+  const edges = logBands(binCount, bandCount, sampleRate);
+  const bands = new Float32Array(bandCount);
+  const held = new Float32Array(bandCount);
+  const follower = createFollower(0.5, outputHz);
+  let smoothLevel = 0;
+  const readBands = (bins) => {
+    let peak = 0;
+    for (let b = 0; b < bandCount; b++) {
+      const from = edges[b];
+      const to = Math.max(from + 1, edges[b + 1]);
+      let sum = 0;
+      let n = 0;
+      for (let i = from; i < to && i < bins.length; i++) {
+        sum += bins[i];
+        n++;
+      }
+      const value = n === 0 ? 0 : sum / n;
+      bands[b] = value;
+      if (value > peak) peak = value;
+    }
+    return peak;
+  };
+  const render = (bins, out, _nowMs) => {
+    const peak = readBands(bins);
+    const divisor = follower.push(peak);
+    const scale = gain / Math.max(NOISE_FLOOR, divisor);
+    switch (spec.kind) {
+      case "spectrum": {
+        for (let b = 0; b < bandCount; b++) {
+          const value = clamp012(bands[b] * scale);
+          const previous = held[b];
+          held[b] = value > previous ? value : previous * (1 - decay);
+        }
+        for (let i = 0; i < count; i++) {
+          const position = count === 1 ? 0 : along[i];
+          const b = Math.min(bandCount - 1, Math.floor(position * bandCount));
+          const value = held[b];
+          hue(
+            0.66 - 0.66 * (b / Math.max(1, bandCount - 1)),
+            out,
+            i * 3,
+            value < NOISE_FLOOR ? 0 : value * brightness
+          );
+        }
+        break;
+      }
+      case "level": {
+        let sum = 0;
+        for (let b = 0; b < bandCount; b++) sum += bands[b];
+        const value = clamp012(sum / bandCount * scale);
+        smoothLevel = value > smoothLevel ? value : smoothLevel * (1 - decay);
+        const level = smoothLevel < NOISE_FLOOR ? 0 : smoothLevel * brightness;
+        for (let i = 0; i < count; i++) {
+          const at = i * 3;
+          out[at] = baseLinear[0] * level;
+          out[at + 1] = baseLinear[1] * level;
+          out[at + 2] = baseLinear[2] * level;
+        }
+        break;
+      }
+      default: {
+        const lowBands = Math.max(1, Math.floor(bandCount / 4));
+        let bass = 0;
+        for (let b = 0; b < lowBands; b++) bass = Math.max(bass, bands[b]);
+        const value = clamp012(bass * scale);
+        smoothLevel = value > smoothLevel ? value : smoothLevel * (1 - decay);
+        const reach = smoothLevel;
+        for (let i = 0; i < count; i++) {
+          const dx = centres[i * 2] - 0.5;
+          const dy = centres[i * 2 + 1] - 0.5;
+          const d = Math.min(1, Math.hypot(dx, dy) / 0.7071);
+          const lit = clamp012((reach - d) / 0.35);
+          const level = lit < NOISE_FLOOR ? 0 : lit * brightness;
+          const at = i * 3;
+          out[at] = baseLinear[0] * level;
+          out[at + 1] = baseLinear[1] * level;
+          out[at + 2] = baseLinear[2] * level;
+        }
+        break;
+      }
+    }
+  };
+  return {
+    kind: spec.kind,
+    render,
+    level: () => spec.kind === "spectrum" ? follower.value() : smoothLevel
+  };
+}
+function parseAudioSpec(value) {
+  if (typeof value !== "object" || value === null) throw new TypeError("audio: a spec must be an object");
+  const raw = value;
+  if (!isAudioKind(raw.kind)) {
+    throw new RangeError(`audio: kind must be one of ${AUDIO_KINDS.join(", ")}, got ${String(raw.kind)}`);
+  }
+  const spec = { kind: raw.kind };
+  if (raw.gain !== void 0) {
+    if (typeof raw.gain !== "number" || !Number.isFinite(raw.gain)) throw new TypeError("audio: gain must be a finite number");
+    spec.gain = Math.min(GAIN_MAX, Math.max(GAIN_MIN, raw.gain));
+  }
+  if (raw.brightness !== void 0) {
+    if (typeof raw.brightness !== "number" || !Number.isFinite(raw.brightness)) {
+      throw new TypeError("audio: brightness must be a finite number");
+    }
+    spec.brightness = clamp012(raw.brightness);
+  }
+  if (raw.decay !== void 0) {
+    if (typeof raw.decay !== "number" || !Number.isFinite(raw.decay)) throw new TypeError("audio: decay must be a finite number");
+    spec.decay = clamp012(raw.decay);
+  }
+  if (raw.color !== void 0) {
+    const color = raw.color;
+    if (typeof color !== "object" || color === null) throw new TypeError("audio: color must be an object");
+    spec.color = { r: channel(color.r), g: channel(color.g), b: channel(color.b) };
+  }
+  return spec;
+}
+function channel(value) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
+    throw new RangeError(`audio: a colour channel is an integer 0..255, got ${String(value)}`);
+  }
+  return value;
+}
+
+// lib/engine/audio-input.ts
+var DEFAULT_FFT = 2048;
+function defaultContext() {
+  const scope = globalThis;
+  const Ctor = scope.AudioContext ?? scope.webkitAudioContext;
+  if (Ctor === void 0) throw new Error("audio: this browser has no AudioContext");
+  return new Ctor();
+}
+async function build(kind, stream, options) {
+  const tracks = stream.getAudioTracks?.() ?? [];
+  if (tracks.length === 0) {
+    ;
+    stream.getTracks?.().forEach((t) => {
+      t.stop();
+    });
+    throw new Error(kind === "display" ? "bu taray\u0131c\u0131 sekme/sistem sesi payla\u015Fm\u0131yor" : "ses izi al\u0131namad\u0131");
+  }
+  const context = (options.context ?? defaultContext)();
+  if (context.state === "suspended") await context.resume?.();
+  const analyser = context.createAnalyser();
+  analyser.fftSize = options.fftSize ?? DEFAULT_FFT;
+  analyser.smoothingTimeConstant = 0;
+  analyser.minDecibels = -90;
+  analyser.maxDecibels = -10;
+  const node = context.createMediaStreamSource(stream);
+  node.connect(analyser);
+  const bytes = new Uint8Array(analyser.frequencyBinCount);
+  let stopped = false;
+  return {
+    kind,
+    sampleRate: context.sampleRate,
+    binCount: analyser.frequencyBinCount,
+    read(bins) {
+      if (stopped) return false;
+      analyser.getByteFrequencyData(bytes);
+      const n = Math.min(bins.length, bytes.length);
+      for (let i = 0; i < n; i++) bins[i] = bytes[i] / 255;
+      for (let i = n; i < bins.length; i++) bins[i] = 0;
+      return true;
+    },
+    async stop() {
+      stopped = true;
+      try {
+        node.disconnect?.();
+      } catch {
+      }
+      try {
+        analyser.disconnect?.();
+      } catch {
+      }
+      for (const track of tracks) {
+        try {
+          track.stop();
+        } catch {
+        }
+      }
+      ;
+      stream.getTracks?.().forEach((t) => {
+        try {
+          t.stop();
+        } catch {
+        }
+      });
+      try {
+        await context.close?.();
+      } catch {
+      }
+    }
+  };
+}
+async function openMicrophone(options = {}) {
+  const ask = options.getUserMedia ?? ((constraints) => navigator.mediaDevices.getUserMedia(constraints));
+  let stream;
+  try {
+    stream = await ask({
+      video: false,
+      audio: {
+        // All three off: they are designed to make a voice intelligible, and
+        // each of them actively fights what a music visualiser wants. Echo
+        // cancellation in particular would subtract the speakers - which is the
+        // entire signal here.
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+    });
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "";
+    throw new Error(name === "NotAllowedError" ? "Mikrofon izni verilmedi." : describe(error));
+  }
+  return await build("microphone", stream, options);
+}
+async function openDisplayAudio(options = {}) {
+  const ask = options.getDisplayMedia ?? ((constraints) => navigator.mediaDevices.getDisplayMedia(constraints));
+  let stream;
+  try {
+    stream = await ask({ video: true, audio: true });
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "";
+    throw new Error(name === "NotAllowedError" ? "Ses kayna\u011F\u0131 se\xE7ilmedi." : describe(error));
+  }
+  return await build("display", stream, options);
+}
+function describe(error) {
+  if (!(error instanceof Error)) return String(error);
+  return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
 }
 
 // lib/engine/types.ts
@@ -918,54 +1245,54 @@ var ConfigError = class extends Error {
 };
 function object(value, path) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new ConfigError(path, `must be an object, got ${describe(value)}`);
+    throw new ConfigError(path, `must be an object, got ${describe2(value)}`);
   }
   return value;
 }
 function integer(value, path, min, max = Number.MAX_SAFE_INTEGER) {
   if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
-    throw new ConfigError(path, `must be an integer in ${min}..${max}, got ${describe(value)}`);
+    throw new ConfigError(path, `must be an integer in ${min}..${max}, got ${describe2(value)}`);
   }
   return value;
 }
 function fraction(value, path) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new ConfigError(path, `must be a finite number, got ${describe(value)}`);
+    throw new ConfigError(path, `must be a finite number, got ${describe2(value)}`);
   }
   return value;
 }
 function boundedFraction(value, path, min, max, fallback) {
   if (value === void 0) return fallback;
   const n = fraction(value, path);
-  if (n < min || n > max) throw new ConfigError(path, `must be in ${min}..${max}, got ${describe(value)}`);
+  if (n < min || n > max) throw new ConfigError(path, `must be in ${min}..${max}, got ${describe2(value)}`);
   return n;
 }
 function readTransport(value, path) {
   if (typeof value !== "string" || !OUTPUT_TRANSPORTS.includes(value)) {
-    throw new ConfigError(path, `must be one of ${OUTPUT_TRANSPORTS.join(", ")}, got ${describe(value)}`);
+    throw new ConfigError(path, `must be one of ${OUTPUT_TRANSPORTS.join(", ")}, got ${describe2(value)}`);
   }
   return value;
 }
 function readWireFormat(value, path) {
   if (typeof value !== "string" || !WIRE_FORMATS.includes(value)) {
-    throw new ConfigError(path, `must be one of ${WIRE_FORMATS.join(", ")}, got ${describe(value)}`);
+    throw new ConfigError(path, `must be one of ${WIRE_FORMATS.join(", ")}, got ${describe2(value)}`);
   }
   return value;
 }
 function boolean(value, path) {
-  if (typeof value !== "boolean") throw new ConfigError(path, `must be a boolean, got ${describe(value)}`);
+  if (typeof value !== "boolean") throw new ConfigError(path, `must be a boolean, got ${describe2(value)}`);
   return value;
 }
 function corner(value, path) {
   if (typeof value !== "string" || !CORNERS.includes(value)) {
-    throw new ConfigError(path, `must be one of ${CORNERS.join(", ")}, got ${describe(value)}`);
+    throw new ConfigError(path, `must be one of ${CORNERS.join(", ")}, got ${describe2(value)}`);
   }
   return value;
 }
 function optional(value, path, read) {
   return value === void 0 ? void 0 : read(value, path);
 }
-function describe(value) {
+function describe2(value) {
   if (typeof value === "string") return JSON.stringify(value);
   if (value === null) return "null";
   if (Array.isArray(value)) return `an array of ${value.length}`;
@@ -1017,11 +1344,11 @@ function readClassic(raw) {
 function readMatrix(raw) {
   const cabling = raw.cabling;
   if (cabling !== "snake" && cabling !== "parallel") {
-    throw new ConfigError("layout.cabling", `must be snake or parallel, got ${describe(cabling)}`);
+    throw new ConfigError("layout.cabling", `must be snake or parallel, got ${describe2(cabling)}`);
   }
   const direction = raw.direction;
   if (direction !== "horizontal" && direction !== "vertical") {
-    throw new ConfigError("layout.direction", `must be horizontal or vertical, got ${describe(direction)}`);
+    throw new ConfigError("layout.direction", `must be horizontal or vertical, got ${describe2(direction)}`);
   }
   const spec = {
     columns: integer(raw.columns, "layout.columns", 1),
@@ -1043,7 +1370,7 @@ function readMatrix(raw) {
 }
 function readColorOrderName(value, path) {
   if (typeof value !== "string" || !COLOR_ORDERS.includes(value)) {
-    throw new ConfigError(path, `must be one of ${COLOR_ORDERS.join(", ")}, got ${describe(value)}`);
+    throw new ConfigError(path, `must be one of ${COLOR_ORDERS.join(", ")}, got ${describe2(value)}`);
   }
   return value;
 }
@@ -1052,11 +1379,11 @@ function parseEngineConfig(value) {
   const layoutRaw = object(raw.layout, "config.layout");
   const kind = layoutRaw.kind;
   if (kind !== "classic" && kind !== "matrix") {
-    throw new ConfigError("layout.kind", `must be classic or matrix, got ${describe(kind)}`);
+    throw new ConfigError("layout.kind", `must be classic or matrix, got ${describe2(kind)}`);
   }
   const layout = kind === "matrix" ? { kind, ...readMatrix(layoutRaw) } : { kind, ...readClassic(layoutRaw) };
   const blacklistRaw = raw.blacklist ?? [];
-  if (!Array.isArray(blacklistRaw)) throw new ConfigError("blacklist", `must be an array, got ${describe(blacklistRaw)}`);
+  if (!Array.isArray(blacklistRaw)) throw new ConfigError("blacklist", `must be an array, got ${describe2(blacklistRaw)}`);
   const blacklist = blacklistRaw.map((entry, i) => {
     const range = object(entry, `blacklist[${i}]`);
     return {
@@ -1090,7 +1417,7 @@ function parseEngineConfig(value) {
   } else {
     const host = outputRaw.host;
     if (typeof host !== "string" || host.trim() === "") {
-      throw new ConfigError("output.host", `must be a non-empty address for the ${transport} transport, got ${describe(host)}`);
+      throw new ConfigError("output.host", `must be a non-empty address for the ${transport} transport, got ${describe2(host)}`);
     }
     output.host = host.trim();
     if (transport === "wled") {
@@ -1618,7 +1945,7 @@ function createFrameEncoder(format, leds, calibration) {
 
 // lib/engine/wled.ts
 var HEX = "0123456789ABCDEF";
-function channel(value) {
+function channel2(value) {
   return Math.round(clamp01(value) * 255);
 }
 function hex2(value) {
@@ -1639,9 +1966,9 @@ function wledFrame(colors, leds, options = {}) {
   const parts = [];
   for (let led = 0; led < leds; led++) {
     const at = led * 3;
-    const r = channel(colors[at] ?? 0);
-    const g = channel(colors[at + 1] ?? 0);
-    const b = channel(colors[at + 2] ?? 0);
+    const r = channel2(colors[at] ?? 0);
+    const g = channel2(colors[at + 1] ?? 0);
+    const b = channel2(colors[at + 2] ?? 0);
     parts.push(encoding === "hex" ? `"${hex2(r)}${hex2(g)}${hex2(b)}"` : `[${r},${g},${b}]`);
   }
   const body = `{"id":${segment},"i":[${parts.join(",")}]}`;
@@ -1864,7 +2191,7 @@ function effectGeometry(layout) {
   }
   return { count, centres, along };
 }
-function hue(h, out, at, value = 1) {
+function hue2(h, out, at, value = 1) {
   const t = (h % 1 + 1) % 1;
   const sector = t * 6;
   const c = Math.floor(sector);
@@ -1913,7 +2240,7 @@ function seeded(seed) {
     return ((t ^ t >>> 14) >>> 0) / 4294967296;
   };
 }
-var clamp012 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
+var clamp013 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
 function noiseTable(size, seed) {
   const random = seeded(seed);
   const table = new Float32Array(size);
@@ -1932,7 +2259,7 @@ function noiseAt(table, t) {
 }
 function createEffect(spec, geometry, clock2) {
   const speed = clampSpeed(spec.speed ?? DEFAULT_SPEED);
-  const brightness = clamp012(spec.brightness ?? DEFAULT_BRIGHTNESS);
+  const brightness = clamp013(spec.brightness ?? DEFAULT_BRIGHTNESS);
   const { count, centres, along } = geometry;
   const start = clock2();
   const flicker = noiseTable(64, 2654435769);
@@ -1948,7 +2275,7 @@ function createEffect(spec, geometry, clock2) {
     switch (spec.kind) {
       case "rainbow": {
         for (let i = 0; i < count; i++) {
-          hue(along[i] - t * 0.1, out, i * 3, brightness);
+          hue2(along[i] - t * 0.1, out, i * 3, brightness);
         }
         break;
       }
@@ -1965,15 +2292,15 @@ function createEffect(spec, geometry, clock2) {
             const by = 0.5 + 0.45 * Math.cos(phase * 0.89 + blob * 1.7);
             const d = Math.hypot(x - bx, y - by);
             const weight = Math.exp(-(d * d) / 0.06);
-            hue(blob / 3 + t * 0.03, scratch, 0, 1);
+            hue2(blob / 3 + t * 0.03, scratch, 0, 1);
             r += scratch[0] * weight;
             g += scratch[1] * weight;
             b += scratch[2] * weight;
           }
           const at = i * 3;
-          out[at] = clamp012(r) * brightness;
-          out[at + 1] = clamp012(g) * brightness;
-          out[at + 2] = clamp012(b) * brightness;
+          out[at] = clamp013(r) * brightness;
+          out[at + 1] = clamp013(g) * brightness;
+          out[at + 2] = clamp013(b) * brightness;
         }
         break;
       }
@@ -2028,7 +2355,7 @@ function createEffect(spec, geometry, clock2) {
           const x = centres[i * 2];
           const y = centres[i * 2 + 1];
           const v = Math.sin(x * 6 + t * 0.7) + Math.sin(y * 5 - t * 0.53) + Math.sin((x + y) * 4 + t * 0.31);
-          hue(v / 6 + 0.5, out, i * 3, brightness);
+          hue2(v / 6 + 0.5, out, i * 3, brightness);
         }
         break;
       }
@@ -2059,16 +2386,16 @@ function parseEffectSpec(value) {
     if (typeof raw.brightness !== "number" || !Number.isFinite(raw.brightness)) {
       throw new TypeError("effects: brightness must be a finite number");
     }
-    spec.brightness = clamp012(raw.brightness);
+    spec.brightness = clamp013(raw.brightness);
   }
   if (raw.color !== void 0) {
     const color = raw.color;
     if (typeof color !== "object" || color === null) throw new TypeError("effects: color must be an object");
-    spec.color = { r: channel2(color.r), g: channel2(color.g), b: channel2(color.b) };
+    spec.color = { r: channel3(color.r), g: channel3(color.g), b: channel3(color.b) };
   }
   return spec;
 }
-function channel2(value) {
+function channel3(value) {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
     throw new RangeError(`effects: a colour channel is an integer 0..255, got ${String(value)}`);
   }
@@ -2163,12 +2490,12 @@ function parsePatternSpec(value) {
     if (typeof colour !== "object" || colour === null) throw new TypeError("patterns: color must be an object");
     const channels = ["r", "g", "b"];
     const parsed = { r: 0, g: 0, b: 0 };
-    for (const channel3 of channels) {
-      const v = colour[channel3];
+    for (const channel4 of channels) {
+      const v = colour[channel4];
       if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 1) {
-        throw new RangeError(`patterns: color.${channel3} must be a number in 0..1, got ${String(v)}`);
+        throw new RangeError(`patterns: color.${channel4} must be a number in 0..1, got ${String(v)}`);
       }
-      parsed[channel3] = v;
+      parsed[channel4] = v;
     }
     spec.color = parsed;
   }
@@ -3163,7 +3490,10 @@ function createEngine(host) {
   let effect = null;
   let effectSpec = null;
   let effectTimer = null;
-  function build(config) {
+  let visualiser = null;
+  let audio = null;
+  let bins = new Float32Array(0);
+  function build2(config) {
     const layout = resolveLayout(config);
     const leds = layout.length;
     const { gridWidth, gridHeight } = config.capture;
@@ -3200,7 +3530,7 @@ function createEngine(host) {
       )
     };
   }
-  let stages = build(DEFAULT_ENGINE_CONFIG);
+  let stages = build2(DEFAULT_ENGINE_CONFIG);
   let linkMode = "none";
   let loopback = createLoopbackSink({ encoder: stages.encoder });
   let sink = loopback;
@@ -3227,7 +3557,7 @@ function createEngine(host) {
     });
   }
   async function onLinkError(error) {
-    lastError = `${linkMode}: ${describe2(error)}`;
+    lastError = `${linkMode}: ${describe3(error)}`;
     if (linkMode === "port") await dropPort(error);
   }
   async function closePort() {
@@ -3269,7 +3599,7 @@ function createEngine(host) {
           address
         );
       } catch (error) {
-        lastError = `${output.transport}: ${describe2(error)}`;
+        lastError = `${output.transport}: ${describe3(error)}`;
         useLoopback();
       }
       return;
@@ -3311,13 +3641,13 @@ function createEngine(host) {
         void dropPort(new Error("port disconnected"));
       }, { once: true });
     } catch (error) {
-      lastError = `seri port: ${describe2(error)}`;
+      lastError = `seri port: ${describe3(error)}`;
       if (linkMode !== "loopback") useLoopback();
       scheduleReconnect();
     }
   }
   async function dropPort(error) {
-    lastError = `seri port: ${describe2(error)}`;
+    lastError = `seri port: ${describe3(error)}`;
     await closePort();
     useLoopback();
     scheduleReconnect();
@@ -3403,7 +3733,7 @@ function createEngine(host) {
       return;
     }
     processing = processFrame(frame, at).catch((error) => {
-      lastError = describe2(error);
+      lastError = describe3(error);
     }).finally(() => {
       processing = null;
     });
@@ -3424,6 +3754,21 @@ function createEngine(host) {
     const s = stages;
     e.render(s.target, clock2());
     s.smoother.setTarget(s.target, clock2());
+    tick();
+  }
+  function emitAudio() {
+    const v = visualiser;
+    const source2 = audio;
+    if (v === null || source2 === null || state !== "running") return;
+    if (!source2.read(bins)) {
+      lastError = "ses kayna\u011F\u0131 kayboldu";
+      stop("lost");
+      return;
+    }
+    const s = stages;
+    const now = clock2();
+    v.render(bins, s.target, now);
+    s.smoother.setTarget(s.target, now);
     tick();
   }
   function emitPattern() {
@@ -3465,13 +3810,13 @@ function createEngine(host) {
       reportTimer = setInterval(report, REPORT_MS);
       void connectLink();
       next.start(onFrame, (error) => {
-        if (error !== void 0) lastError = describe2(error);
+        if (error !== void 0) lastError = describe3(error);
         if (state === "running") stop("lost");
       });
       report();
     } catch (error) {
       state = "error";
-      lastError = describe2(error);
+      lastError = describe3(error);
       report();
     }
   }
@@ -3490,6 +3835,11 @@ function createEngine(host) {
     pattern = null;
     effect = null;
     effectSpec = null;
+    visualiser = null;
+    const a = audio;
+    audio = null;
+    void a?.stop().catch(() => {
+    });
     const s = source;
     source = null;
     void s?.stop().catch(() => {
@@ -3540,6 +3890,7 @@ function createEngine(host) {
       ...sourceKind !== void 0 ? { sourceKind } : {},
       ...pattern !== null ? { pattern: pattern.kind } : {},
       ...effect !== null ? { effect: effect.kind } : {},
+      ...visualiser !== null ? { audio: { kind: visualiser.kind, input: audio?.kind ?? "microphone", level: visualiser.level() } } : {},
       ...captureLost ? { lost: true } : {},
       ...lastError !== void 0 ? { error: lastError } : {}
     };
@@ -3566,13 +3917,22 @@ function createEngine(host) {
     link: () => ({ mode: linkMode, ...portLabel !== void 0 ? { label: portLabel } : {} }),
     applyConfig(value) {
       const config = parseEngineConfig(value);
-      const next = build(config);
+      const next = build2(config);
       next.sampler.setBorder(border2);
       const outputChanged = JSON.stringify(stages.config.output) !== JSON.stringify(config.output);
       const ledsChanged = stages.leds !== next.leds;
       stages = next;
       if (outputChanged || ledsChanged) rebuildLink();
       if (effectSpec !== null) effect = createEffect(parseEffectSpec(effectSpec), next.geometry, clock2);
+      if (visualiser !== null && audio !== null) {
+        visualiser = createVisualiser({
+          spec: parseAudioSpec({ kind: visualiser.kind }),
+          geometry: next.geometry,
+          sampleRate: audio.sampleRate,
+          binCount: audio.binCount,
+          outputHz: OUTPUT_HZ
+        });
+      }
       return config;
     },
     async start() {
@@ -3611,6 +3971,44 @@ function createEngine(host) {
       emitEffect();
       report();
     },
+    /**
+     * Starts an audio visualiser.
+     *
+     * Asynchronous where the effects are not, because opening an input means a
+     * permission prompt - and a refusal is a decision the user made, reported
+     * as a sentence rather than left as a strip that never lights.
+     */
+    async runAudio(spec, input = "microphone") {
+      const parsed = parseAudioSpec(spec);
+      if (state === "running" || state === "starting") stop("restart");
+      lastError = void 0;
+      captureLost = false;
+      sourceKind = void 0;
+      state = "starting";
+      report();
+      try {
+        const source2 = input === "display" ? await openDisplayAudio() : await openMicrophone();
+        audio = source2;
+        bins = new Float32Array(source2.binCount);
+        visualiser = createVisualiser({
+          spec: parsed,
+          geometry: stages.geometry,
+          sampleRate: source2.sampleRate,
+          binCount: source2.binCount,
+          outputHz: OUTPUT_HZ
+        });
+        state = "running";
+        void connectLink();
+        effectTimer = setInterval(emitAudio, Math.round(1e3 / OUTPUT_HZ));
+        tickTimer = setInterval(tick, TICK_MS);
+        reportTimer = setInterval(report, REPORT_MS);
+        emitAudio();
+      } catch (error) {
+        state = "error";
+        lastError = describe3(error);
+      }
+      report();
+    },
     runPattern(spec) {
       const parsed = parsePatternSpec(spec);
       if (state === "running" || state === "starting") stop("restart");
@@ -3633,7 +4031,7 @@ function createEngine(host) {
     sendControl
   };
 }
-function describe2(error) {
+function describe3(error) {
   if (!(error instanceof Error)) return String(error);
   return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
 }
@@ -3719,7 +4117,7 @@ async function openSource(config) {
     });
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
-    throw new Error(name === "NotAllowedError" ? "Ekran se\xE7ilmedi." : describe3(error));
+    throw new Error(name === "NotAllowedError" ? "Ekran se\xE7ilmedi." : describe4(error));
   }
   const track = stream.getVideoTracks()[0];
   if (track === void 0) throw new Error("yakalama video izi vermedi");
@@ -3766,7 +4164,7 @@ function stopEngine() {
   }
   engine.stop();
 }
-function describe3(error) {
+function describe4(error) {
   if (!(error instanceof Error)) return String(error);
   return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
 }
@@ -3784,7 +4182,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         engine.runPattern(message.spec);
         sendResponse({ state: engine.state(), pattern: engine.stats().pattern });
       } catch (error) {
-        sendResponse({ state: engine.state(), error: describe3(error) });
+        sendResponse({ state: engine.state(), error: describe4(error) });
       }
       return false;
     case "ambiflux/effect":
@@ -3792,9 +4190,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         engine.runEffect(message.spec);
         sendResponse({ state: engine.state(), effect: engine.stats().effect });
       } catch (error) {
-        sendResponse({ state: engine.state(), error: describe3(error) });
+        sendResponse({ state: engine.state(), error: describe4(error) });
       }
       return false;
+    case "ambiflux/audio":
+      engine.runAudio(message.spec, message.input).then(
+        () => sendResponse({ state: engine.state(), error: engine.error() }),
+        (error) => sendResponse({ state: engine.state(), error: describe4(error) })
+      );
+      return true;
     case "ambiflux/stop":
       stopEngine();
       sendResponse({ state: engine.state() });
@@ -3816,7 +4220,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({
           type: "ambiflux/config-reply",
           config: engine.config(),
-          error: describe3(error)
+          error: describe4(error)
         });
       }
       return false;
@@ -3826,7 +4230,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         (error) => sendResponse({
           type: "ambiflux/control-reply",
           sent: false,
-          error: describe3(error)
+          error: describe4(error)
         })
       );
       return true;

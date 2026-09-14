@@ -351,8 +351,31 @@ katmanını ve ağ sürücüsünü yukarı taşıdı — bir iPhone ekranı okuy
    ve son LED dikişte çakışıyordu — kapanış segmenti toplama katılmadan her
    sarmalı olan efekt dikişte iki baş yakıyordu, ve gerçek bir çerçevede o iki
    LED köşede yan yana.
-5. **Ses görselleştirici** — Web Audio, küçük iş, büyük görünürlük, her
-   platformda çalışıyor.
+5. **Ses görselleştirici — ✅ 2026-09-14.** `lib/engine/audio.ts` (saf analiz)
+   + `lib/engine/audio-input.ts` (tarayıcı tutkalı) + kendi paneli. Üç
+   görselleştirici: spektrum, seviye, nabız. İki giriş: mikrofon (her
+   tarayıcı, iPhone dahil) ve sekme/sistem sesi (yalnız Chromium — Safari ve
+   Firefox ses izi olmayan bir ekran paylaşımı veriyor, ve bu söyleniyor).
+
+   Kararların hepsi analizde:
+
+   - **Bantlar logaritmik, doğrusal değil.** FFT frekansta eşit aralıklı bin
+     veriyor; onları şerite eşit dağıtmak müziğin tamamını ilk onda birine
+     tıkıyor — 60 Hz'lik bir kick ile 12 kHz'lik bir hi-hat yüz LED'de dört
+     LED arayla düşerdi. Duyma kabaca logaritmik, bantlar da öyle.
+   - **Kazanç malzemeyi takip ediyor.** Müzik -20 ile -6 dB arasında herhangi
+     bir yerde master'lanıyor, odanın mikrofon seviyesi ise belirsiz. Sabit
+     kazanç ya hiç yanmayan ya sürekli beyaz bir şerit verir; tepe takipçisi
+     normalize ediyor — hızlı yükselen, yavaş düşen.
+   - **Gürültü tabanı.** Sessiz bir oda sessiz değil: fan, disk, şebeke
+     uğultusu. Taban olmadan şerit sonsuza kadar hafifçe titrer ve kullanıcı
+     haklı olarak bozuk olduğuna karar eder.
+
+   Panelde "duyulan seviye" ölçeri var ve **görselleştiricinin kendi tepkisini
+   değil genel seviyeyi** gösteriyor: şerit odanın karşısında, ve "motor bir
+   şey duyuyor mu" sorusu şeride bakmadan cevaplanabilmeli. Nabız yalnız bası
+   dinlediği için onun tepkisini göstermek, basssız müzikte düz sıfır okuyup
+   kullanıcıyı gayet çalışan bir girişi kontrol etmeye gönderirdi.
 6. **Yakalama kartı girişi** — `enumerateDevices` + `getUserMedia`. Ekran
    yakalamanın olmadığı platformlarda tek gerçek kaynak, ve **DRM'li içeriği
    çözen tek yol**: sinyal HDMI splitter'dan sonra şifresiz geliyor.

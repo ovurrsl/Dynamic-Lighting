@@ -1,5 +1,7 @@
 import { EXTENSION_ID } from '#data/extension'
 import { parseEngineConfig, type EngineConfig } from '#lib/engine/config'
+import type { AudioSpec } from '#lib/engine/audio'
+import type { AudioInputKind } from '#lib/engine/audio-input'
 import type { EffectSpec } from '#lib/engine/effects'
 import type { PatternSpec } from '#lib/engine/patterns'
 import type { ControlRequest, EngineStats, EngineState, Message } from '#lib/extension/messages'
@@ -150,6 +152,14 @@ export async function selfTestEngine (): Promise<StartOutcome> {
  * the channel-order stage inside the engine - see extension/src/offscreen.ts
  * startPattern for why the last of those is not optional.
  */
+export async function runAudio (spec: AudioSpec, input: AudioInputKind): Promise<StartOutcome> {
+  try {
+    return outcome(await send({ type: 'ambiflux/audio', target: 'sw', spec, input }))
+  } catch (error) {
+    return { state: 'error', error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 export async function runEffect (spec: EffectSpec): Promise<StartOutcome> {
   try {
     return outcome(await send({ type: 'ambiflux/effect', target: 'sw', spec }))

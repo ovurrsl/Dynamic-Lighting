@@ -33,7 +33,7 @@ import type { Clock, LedColors } from '#lib/engine/types'
  * Values are LINEAR light 0..1, like everything else in the engine.
  */
 
-export const PATTERN_KINDS = ['walk', 'solid', 'ramp', 'flash', 'off'] as const
+export const PATTERN_KINDS = ['walk', 'single', 'solid', 'ramp', 'flash', 'off'] as const
 
 export type PatternKind = (typeof PATTERN_KINDS)[number]
 
@@ -54,6 +54,16 @@ export interface PatternSpec {
   color?: { r: number, g: number, b: number }
   /** 'walk' only: LEDs per second. Hyperion's own walk runs at 5; so does ours. */
   ledsPerSecond?: number
+  /**
+   * 'single' only: which LED to light. Wraps, so a caller stepping past the end
+   * lands back at 0 - the strip is a loop and so is this.
+   *
+   * The difference from 'walk' is who owns the clock. A walk moves on its own,
+   * which proves the wire order; the layout wizard needs the light to STAY
+   * where it was put, because the user is looking away from the screen at their
+   * strip and then pressing a button about it.
+   */
+  index?: number
   /** 'flash' only: full cycles per second. */
   hz?: number
 }
@@ -127,6 +137,16 @@ export function createPattern (spec: PatternSpec, count: number, clock: Clock): 
         fill(out, count, colour.r, colour.g, colour.b)
         return
 
+      case 'single': {
+        fill(out, count, 0, 0, 0)
+        const at = (((spec.index ?? 0) % count) + count) % count
+        const base = at * 3
+        out[base] = colour.r
+        out[base + 1] = colour.g
+        out[base + 2] = colour.b
+        return
+      }
+
       case 'walk': {
         fill(out, count, 0, 0, 0)
         // Floor, not round: the lit index must change exactly once per step and
@@ -184,6 +204,13 @@ export function parsePatternSpec (value: unknown): PatternSpec {
     throw new RangeError(`patterns: unknown kind ${String(raw.kind)}`)
   }
   const spec: PatternSpec = { kind: raw.kind }
+
+  if (raw.index !== undefined) {
+    if (typeof raw.index !== 'number' || !Number.isInteger(raw.index)) {
+      throw new RangeError(`patterns: index must be an integer, got ${String(raw.index)}`)
+    }
+    spec.index = raw.index
+  }
 
   if (raw.color !== undefined) {
     const colour = raw.color as Record<string, unknown>

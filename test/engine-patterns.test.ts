@@ -191,3 +191,44 @@ test('a spec from the wire is validated, not trusted', () => {
     assert.throws(() => parsePatternSpec(bad), `accepted ${JSON.stringify(bad)}`)
   }
 })
+
+test('a single LED stays where it was put, because the user is looking away', () => {
+  // The difference from `walk` is who owns the clock. The layout wizard needs
+  // the light to stay put: the user is looking at their strip, not the screen,
+  // and then presses a button about it.
+  const clock = stopwatch()
+  const pattern = createPattern({ kind: 'single', index: 7 }, 12, clock.now)
+  const out = new Float32Array(36)
+
+  pattern.render(out, clock.now())
+  assert.deepEqual([...out.slice(21, 24)], [1, 1, 1], 'LED 7 is lit')
+  assert.equal(out.reduce((sum, v) => sum + v, 0), 3, 'and nothing else is')
+
+  clock.set(5000)
+  pattern.render(out, clock.now())
+  assert.deepEqual([...out.slice(21, 24)], [1, 1, 1], 'five seconds later it has not moved')
+})
+
+test('a single LED wraps, because the strip is a loop', () => {
+  const clock = stopwatch()
+  const out = new Float32Array(36)
+  createPattern({ kind: 'single', index: 12 }, 12, clock.now).render(out, clock.now())
+  assert.deepEqual([...out.slice(0, 3)], [1, 1, 1], 'index 12 of 12 is index 0')
+
+  out.fill(0)
+  createPattern({ kind: 'single', index: -1 }, 12, clock.now).render(out, clock.now())
+  assert.deepEqual([...out.slice(33, 36)], [1, 1, 1], 'and -1 is the last one')
+})
+
+test('a single LED takes the colour it is given', () => {
+  const clock = stopwatch()
+  const out = new Float32Array(9)
+  createPattern({ kind: 'single', index: 1, color: { r: 1, g: 0, b: 0 } }, 3, clock.now).render(out, clock.now())
+  assert.deepEqual([...out.slice(3, 6)], [1, 0, 0])
+})
+
+test('a single LED’s index is validated off the wire', () => {
+  assert.equal(parsePatternSpec({ kind: 'single', index: 4 }).index, 4)
+  assert.throws(() => parsePatternSpec({ kind: 'single', index: 1.5 }), /index must be an integer/)
+  assert.throws(() => parsePatternSpec({ kind: 'single', index: 'yedi' }), /index must be an integer/)
+})

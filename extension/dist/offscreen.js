@@ -2944,7 +2944,7 @@ function channel3(value) {
 }
 
 // lib/engine/patterns.ts
-var PATTERN_KINDS = ["walk", "solid", "ramp", "flash", "off"];
+var PATTERN_KINDS = ["walk", "single", "solid", "ramp", "flash", "off"];
 function isPatternKind(value) {
   return typeof value === "string" && PATTERN_KINDS.includes(value);
 }
@@ -2988,6 +2988,15 @@ function createPattern(spec, count, clock2) {
       case "solid":
         fill(out, count, colour.r, colour.g, colour.b);
         return;
+      case "single": {
+        fill(out, count, 0, 0, 0);
+        const at = ((spec.index ?? 0) % count + count) % count;
+        const base = at * 3;
+        out[base] = colour.r;
+        out[base + 1] = colour.g;
+        out[base + 2] = colour.b;
+        return;
+      }
       case "walk": {
         fill(out, count, 0, 0, 0);
         const at = Math.floor(elapsed * perSecond) % count;
@@ -3026,6 +3035,12 @@ function parsePatternSpec(value) {
     throw new RangeError(`patterns: unknown kind ${String(raw.kind)}`);
   }
   const spec = { kind: raw.kind };
+  if (raw.index !== void 0) {
+    if (typeof raw.index !== "number" || !Number.isInteger(raw.index)) {
+      throw new RangeError(`patterns: index must be an integer, got ${String(raw.index)}`);
+    }
+    spec.index = raw.index;
+  }
   if (raw.color !== void 0) {
     const colour = raw.color;
     if (typeof colour !== "object" || colour === null) throw new TypeError("patterns: color must be an object");

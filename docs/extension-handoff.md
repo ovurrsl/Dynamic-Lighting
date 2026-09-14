@@ -643,7 +643,7 @@ tüm zinciri** ölçen tek yöntem bu.
 | (e) | Yakalamanın kalıcılığı | **yapıldı** |
 | (f) | Yakalama koptuğunda | **yapıldı** |
 | (g) | Panelden kontrol | **yapıldı** |
-| (h) | Kalibrasyon sihirbazı | önkoşulu (j) hazır; köşe tıklama arayüzü kaldı |
+| (h) | Kalibrasyon sihirbazı | **yapıldı** — şeridi yürüt, köşeleri işaretle, yerleşimi çıkar; `lib/engine/calibrate.ts` |
 | (i) | Kanal sırası sihirbazı | **yapıldı** — panelde Kalibrasyon bölümünde |
 | (j) | Test deseni kaynağı | **yapıldı** — `lib/engine/patterns.ts`, 14 test |
 | (k) | Yumuşatma profilleri | **yapıldı** — üç profil + iki sabit + kesme bypass'ı, yeni Görüntü sayfası |

@@ -11,10 +11,12 @@ import {
   fetchStatus,
   probeExtension,
   clearLayer as clearLayerInExtension,
+  fetchSchedule,
   runAudio as runAudioInExtension,
   runEffect as runEffectInExtension,
   runPattern as runPatternInExtension,
   saveConfig as saveConfigInExtension,
+  saveSchedule,
   selfTestEngine,
   setStripColor,
   sendControl as sendControlToExtension,
@@ -24,6 +26,8 @@ import {
   type StartOutcome
 } from '#lib/extension-client'
 import type { ControlRequest, EngineState, EngineStats } from '#lib/extension/messages'
+import type { ScheduleRule } from '#lib/engine/schedule'
+import { loadStoredSchedule, storeSchedule } from '#lib/config-store'
 import { createPageEngine, pageHostAvailable, type PageEngine } from '#lib/page-host'
 
 /**
@@ -77,10 +81,29 @@ export interface Engine {
   setColor: (color: { r: number, g: number, b: number }, durationMs?: number) => Promise<StartOutcome>
   /** Drops one priority layer, revealing whatever was under it. */
   clearLayer: (priority: number) => Promise<StartOutcome>
+  /** The time-of-day rules in force, or null while they are being fetched. */
+  schedule: ScheduleRule[] | null
+  /** Replaces them. */
+  saveSchedule: (rules: ScheduleRule[]) => Promise<ScheduleSave>
   /** Applies a configuration to whichever host is live. Null on success. */
   saveConfig: (config: EngineConfig) => Promise<string | null>
   /** One AxC control frame to the board. Null on success. */
   sendControl: (request: ControlRequest) => Promise<string | null>
+}
+
+/**
+ * Two different things can go wrong when saving a schedule, and telling a user
+ * "it failed" for the second one would be a lie.
+ */
+export interface ScheduleSave {
+  /** The rules did not apply at all: a bad rule, or the engine refused them. */
+  error?: string
+  /**
+   * They applied and are running, but this browser would not keep them across
+   * a reload. Worth saying: the whole point of a rule is that it fires when
+   * nobody is looking, and one that dies with the tab does not.
+   */
+  notStored?: string
 }
 
 const EngineContext = createContext<Engine | null>(null)
@@ -95,6 +118,7 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
   const [busy, setBusy] = useState(false)
   const [host, setHostState] = useState<EngineHostKind>('extension')
   const [pageCapable, setPageCapable] = useState(false)
+  const [schedule, setSchedule] = useState<ScheduleRule[] | null>(null)
 
   /**
    * The page engine is built once, lazily, and only when it is actually used.
@@ -103,10 +127,26 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
    */
   const pageRef = useRef<PageEngine | null>(null)
   const pageEngine = useCallback((): PageEngine => {
-    pageRef.current ??= createPageEngine((next, nextState) => {
-      setStats(next)
-      setState(nextState)
-    })
+    if (pageRef.current === null) {
+      const built = createPageEngine((next, nextState) => {
+        setStats(next)
+        setState(nextState)
+      })
+      // The page's engine is memory, and a reload empties it. The rules come
+      // back from storage as it is BUILT rather than when the schedule card
+      // happens to be open, because a rule that only fires while you are
+      // watching it is not a schedule.
+      const stored = loadStoredSchedule()
+      if (stored.rules.length > 0) {
+        try {
+          built.engine.setSchedule(stored.rules)
+        } catch {
+          // Written by an older version and no longer valid. The engine runs
+          // without them; the card shows what it actually has.
+        }
+      }
+      pageRef.current = built
+    }
     return pageRef.current
   }, [])
 
@@ -115,6 +155,22 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
   // Asked of the browser, not read from a table - the tables have been wrong
   // about this project three times.
   useEffect(() => { setPageCapable(pageHostAvailable()) }, [])
+
+  useEffect(() => {
+    if (host === 'page') {
+      // Building the engine appends a hidden <video> to the page, so a visitor
+      // with no rules does not get one. A visitor WITH rules does, because
+      // otherwise they would fire only once something else happened to start
+      // the engine - which on a quiet evening is never.
+      const wanted = pageRef.current !== null || loadStoredSchedule().rules.length > 0
+      setSchedule(wanted ? pageEngine().engine.schedule() : [])
+      return
+    }
+    if (probe?.available !== true) return
+    let cancelled = false
+    void fetchSchedule().then((rules) => { if (!cancelled) setSchedule(rules) })
+    return () => { cancelled = true }
+  }, [host, probe, pageEngine])
 
   const reprobe = useCallback(() => {
     setProbe(null)
@@ -277,6 +333,31 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
     }
   ), [run, pageEngine])
 
+  /**
+   * The rules live in the ENGINE, not in the panel.
+   *
+   * They have to fire with no panel open - that is most of what a schedule is
+   * for - so the panel reads them back rather than owning them.
+   */
+  const saveScheduleRules = useCallback(async (rules: ScheduleRule[]): Promise<ScheduleSave> => {
+    if (hostRef.current !== 'page') {
+      // The extension's service worker owns the stored copy there: it outlives
+      // both the engine document and this page, and storing a second copy here
+      // would give two answers to one question.
+      const reply = await saveSchedule(rules)
+      setSchedule(reply.rules)
+      return reply.error === undefined ? {} : { error: reply.error }
+    }
+    try {
+      const applied = pageEngine().engine.setSchedule(rules)
+      setSchedule(applied)
+      const problem = storeSchedule(applied)
+      return problem === null ? {} : { notStored: problem }
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) }
+    }
+  }, [pageEngine])
+
   const stop = useCallback(async () => {
     if (hostRef.current === 'page') pageRef.current?.engine.stop()
     else await stopEngine()
@@ -307,11 +388,11 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
     () => ({
       probe, host, pageCapable, setHost, state, stats, version, busy,
       reprobe, start, selfTest, stop, runPattern, runEffect, runAudio, setColor, clearLayer,
-      saveConfig, sendControl
+      schedule, saveSchedule: saveScheduleRules, saveConfig, sendControl
     }),
     [probe, host, pageCapable, setHost, state, stats, version, busy,
       reprobe, start, selfTest, stop, runPattern, runEffect, runAudio, setColor, clearLayer,
-      saveConfig, sendControl]
+      schedule, saveScheduleRules, saveConfig, sendControl]
   )
 
   return <EngineContext value={value}>{children}</EngineContext>

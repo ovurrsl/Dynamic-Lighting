@@ -161,6 +161,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       engine.clearLayer(message.priority)
       sendResponse({ state: engine.state() })
       return false
+    case 'ambiflux/schedule':
+      try {
+        sendResponse({ type: 'ambiflux/schedule-reply', rules: engine.setSchedule(message.rules) } satisfies Message)
+      } catch (error) {
+        sendResponse({
+          type: 'ambiflux/schedule-reply', rules: engine.schedule(), error: describe(error)
+        } satisfies Message)
+      }
+      return false
+    case 'ambiflux/schedule-get':
+      sendResponse({ type: 'ambiflux/schedule-reply', rules: engine.schedule() } satisfies Message)
+      return false
     case 'ambiflux/stop':
       stopEngine()
       sendResponse({ state: engine.state() })
@@ -218,3 +230,21 @@ void chrome.runtime.sendMessage({ type: 'ambiflux/config-get', target: 'sw' } sa
     }
   })
   .catch(() => { /* no stored config yet; the default stands */ })
+
+/**
+ * And the rules, for the same reason and from the same owner.
+ *
+ * This document is destroyed when Chrome closes, so the scheduler in it starts
+ * empty every time. The worker's stored copy is what makes "warm white at
+ * sunset" survive a restart; without this pull the rules would apply only until
+ * the browser was next shut down, which is the one time a user would not be
+ * watching.
+ */
+void chrome.runtime.sendMessage({ type: 'ambiflux/schedule-get', target: 'sw' } satisfies Message)
+  .then((reply: unknown) => {
+    if (typeof reply === 'object' && reply !== null && (reply as { type?: string }).type === 'ambiflux/schedule-reply') {
+      const rules = (reply as { rules?: unknown }).rules
+      if (Array.isArray(rules) && rules.length > 0) engine.setSchedule(rules)
+    }
+  })
+  .catch(() => { /* no stored rules yet; an empty schedule stands */ })

@@ -2,6 +2,7 @@ import { APP_VERSION } from '#data/version'
 
 import { DEFAULT_ENGINE_CONFIG, parseEngineConfig, type EngineConfig } from '#lib/engine/config'
 import { isMessage, type Message } from '#lib/extension/messages'
+import { parseRules, type ScheduleRule } from '#lib/engine/schedule'
 
 /**
  * The service worker. It owns exactly one thing: the offscreen document's
@@ -19,6 +20,8 @@ import { isMessage, type Message } from '#lib/extension/messages'
 const OFFSCREEN_URL = 'offscreen.html'
 /** Where the configuration lives across a worker that Chrome keeps killing. */
 const CONFIG_KEY = 'ambiflux/config'
+/** And the time-of-day rules, beside it and for the same reason. */
+const SCHEDULE_KEY = 'ambiflux/schedule'
 
 let creating: Promise<void> | null = null
 
@@ -107,6 +110,65 @@ async function setConfig (value: unknown): Promise<{ config: EngineConfig, error
   return { config: parsed }
 }
 
+/**
+ * The schedule, owned here rather than by the engine that runs it.
+ *
+ * The offscreen document holds the live scheduler, but that document is memory:
+ * Chrome destroys it when the browser closes. A schedule that forgets itself
+ * overnight is not a schedule, so the worker keeps the stored copy and the
+ * document asks for it as it loads - exactly as it does for the configuration.
+ *
+ * The rules can only FIRE while that document exists, which is why the worker
+ * builds it on `onStartup`, and why saving a rule builds it too.
+ */
+let schedule: ScheduleRule[] | null = null
+
+async function loadSchedule (): Promise<ScheduleRule[]> {
+  if (schedule !== null) return schedule
+  try {
+    const stored = await chrome.storage.local.get(SCHEDULE_KEY)
+    const raw = stored[SCHEDULE_KEY]
+    schedule = raw === undefined ? [] : parseRules(raw)
+  } catch {
+    // Rules this version cannot read are rules that would never fire anyway;
+    // an empty schedule is at least an honest one.
+    schedule = []
+  }
+  return schedule
+}
+
+/**
+ * Validates, stores and forwards a new rule list. Validation happens here as
+ * well as in the engine because this is the boundary the panel talks to: a rule
+ * that cannot be built must never reach storage, or the next load would throw
+ * the whole schedule away with nobody listening.
+ */
+async function setSchedule (value: unknown): Promise<{ rules: ScheduleRule[], error?: string }> {
+  let parsed: ScheduleRule[]
+  try {
+    parsed = parseRules(value)
+  } catch (error) {
+    return { rules: await loadSchedule(), error: error instanceof Error ? error.message : String(error) }
+  }
+  schedule = parsed
+  await chrome.storage.local.set({ [SCHEDULE_KEY]: parsed })
+
+  // Unlike a configuration change, a rule has to reach a LIVE engine or it
+  // cannot fire, so saving one builds the document rather than waiting for the
+  // next time Chrome starts. It costs a blank page - there is no stream, no
+  // timer and no port until something starts a capture.
+  if (parsed.length > 0) await ensureOffscreen()
+  if (await offscreenExists()) {
+    try {
+      await chrome.runtime.sendMessage({ type: 'ambiflux/schedule', target: 'offscreen', rules: parsed } satisfies Message)
+    } catch {
+      // The document went away between the check and the send; it asks for the
+      // rules itself when it next loads.
+    }
+  }
+  return { rules: parsed }
+}
+
 async function relayToOffscreen (message: Message): Promise<unknown> {
   await ensureOffscreen()
   return chrome.runtime.sendMessage(message)
@@ -168,6 +230,26 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
       loadConfig().then(
         (current) => sendResponse({ type: 'ambiflux/config-reply', config: current } satisfies Message),
         (error: unknown) => sendResponse({ type: 'ambiflux/config-reply', config: null, error: String(error) } satisfies Message)
+      )
+      return true
+
+    case 'ambiflux/schedule':
+      setSchedule(message.rules).then(
+        (result) => sendResponse({
+          type: 'ambiflux/schedule-reply',
+          rules: result.rules,
+          ...(result.error === undefined ? {} : { error: result.error })
+        } satisfies Message),
+        (error: unknown) => sendResponse({ type: 'ambiflux/schedule-reply', rules: [], error: String(error) } satisfies Message)
+      )
+      return true
+
+    // Answered from storage, never by waking the engine document: a panel that
+    // opens the schedule page must not be the reason the document exists.
+    case 'ambiflux/schedule-get':
+      loadSchedule().then(
+        (rules) => sendResponse({ type: 'ambiflux/schedule-reply', rules } satisfies Message),
+        (error: unknown) => sendResponse({ type: 'ambiflux/schedule-reply', rules: [], error: String(error) } satisfies Message)
       )
       return true
 

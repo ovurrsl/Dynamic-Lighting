@@ -4,6 +4,7 @@ import {
   serialiseEngineConfig,
   type EngineConfig
 } from '#lib/engine/config'
+import { parseRules, type ScheduleRule } from '#lib/engine/schedule'
 
 /**
  * The panel's copy of the engine configuration.
@@ -91,5 +92,59 @@ export function clearStoredConfig (storage: StorageLike | null = defaultStorage(
 }
 
 function message (error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+// ---------------------------------------------------------------------------
+// The schedule.
+// ---------------------------------------------------------------------------
+
+/**
+ * The time-of-day rules, stored beside the configuration.
+ *
+ * They live in the engine while it runs, but the engine is memory: the page
+ * host's is gone on a reload, and the extension's offscreen document is gone
+ * when Chrome closes. A schedule that forgets itself overnight is not a
+ * schedule, so the panel keeps a copy and hands it back on load.
+ *
+ * Same guards as the configuration above, and for the same reasons: reading
+ * `localStorage` throws outright in a private window with site data blocked,
+ * and writing throws on a full quota. Neither is a reason to fail to render.
+ */
+export const SCHEDULE_STORAGE_KEY = 'ambiflux/schedule'
+
+export type ScheduleLoad =
+  | { rules: ScheduleRule[], source: 'default' | 'stored', problem?: undefined }
+  /** Stored but unusable - an older format, or hand-edited. Say so rather than losing it silently. */
+  | { rules: ScheduleRule[], source: 'default', problem: string }
+
+export function loadStoredSchedule (storage: StorageLike | null = defaultStorage()): ScheduleLoad {
+  if (storage === null) return { rules: [], source: 'default' }
+  let raw: string | null
+  try {
+    raw = storage.getItem(SCHEDULE_STORAGE_KEY)
+  } catch (error) {
+    return { rules: [], source: 'default', problem: describeStorage(error) }
+  }
+  if (raw === null) return { rules: [], source: 'default' }
+  try {
+    return { rules: parseRules(JSON.parse(raw)), source: 'stored' }
+  } catch (error) {
+    return { rules: [], source: 'default', problem: describeStorage(error) }
+  }
+}
+
+/** Returns the reason it could not be stored, or null. */
+export function storeSchedule (rules: readonly ScheduleRule[], storage: StorageLike | null = defaultStorage()): string | null {
+  if (storage === null) return null
+  try {
+    storage.setItem(SCHEDULE_STORAGE_KEY, JSON.stringify(rules))
+    return null
+  } catch (error) {
+    return describeStorage(error)
+  }
+}
+
+function describeStorage (error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }

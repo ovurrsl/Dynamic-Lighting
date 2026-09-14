@@ -19,6 +19,14 @@ import {
 } from '#lib/engine/priority'
 import { createSampler, type Sampler } from '#lib/engine/sample'
 import {
+  createScheduler,
+  momentFrom,
+  parseRules,
+  type ScheduleAction,
+  type ScheduleRule,
+  type Scheduler
+} from '#lib/engine/schedule'
+import {
   createBytesSink,
   createFrameWriter,
   createLoopbackSink,
@@ -202,6 +210,14 @@ export interface Engine {
   clearLayer: (priority: number) => void
   /** Drives the strip with one colour, optionally for a fixed time. */
   setColor: (color: { r: number, g: number, b: number }, durationMs?: number) => void
+  /**
+   * Replaces the time-of-day rules.
+   *
+   * The scheduler runs whether or not anything is showing - "start the capture
+   * at eight" is useless if it needs the engine to already be running.
+   */
+  setSchedule: (rules: unknown) => ScheduleRule[]
+  schedule: () => ScheduleRule[]
   /** One AxC control frame to the board, down whichever link is carrying frames. */
   sendControl: (request: ControlRequest) => Promise<void>
   /** The current link, for a host that needs to name it. */
@@ -270,6 +286,19 @@ export function createEngine (host: EngineHost): Engine {
    * overwriting each other and the winner showing whichever wrote last.
    */
   const muxer = new PriorityMuxer(clock)
+
+  /**
+   * Time-of-day rules, on their own clock.
+   *
+   * Deliberately NOT tied to the engine running: "start the capture at eight in
+   * the morning" is exactly the case where nothing is running yet, and a
+   * scheduler that only ticked while something was showing could never fire it.
+   *
+   * A second is plenty - the rules have a resolution of a minute - and it costs
+   * one comparison per rule.
+   */
+  const scheduler: Scheduler = createScheduler()
+  let scheduleTimer: ReturnType<typeof setInterval> | null = null
   let captureTarget = allocLedColors(1)
   let effectTarget = allocLedColors(1)
   let audioTarget = allocLedColors(1)
@@ -802,6 +831,37 @@ export function createEngine (host: EngineHost): Engine {
     report()
   }
 
+  /**
+   * Applies one scheduled action.
+   *
+   * `capture` is the one that can fail, and honestly so: most browsers require
+   * a user gesture for `getDisplayMedia`, which a timer does not have. It
+   * fails in the page host and works in the extension's offscreen document,
+   * where the picker opens without one - and the failure is reported rather
+   * than swallowed, because a schedule that silently does nothing is worse than
+   * no schedule.
+   */
+  function applyScheduled (action: ScheduleAction): void {
+    switch (action.kind) {
+      case 'stop': stop('user'); return
+      case 'capture': void api.start(); return
+      case 'effect': api.runEffect(action.spec); return
+      default: api.setColor(action.color)
+    }
+  }
+
+  function runSchedule (): void {
+    const actions = scheduler.tick(momentFrom(new Date(), clock()))
+    for (const action of actions) {
+      try {
+        applyScheduled(action)
+      } catch (error) {
+        lastError = `zamanlama: ${describe(error)}`
+      }
+    }
+    if (actions.length > 0) report()
+  }
+
   function stopClocks (): void {
     if (tickTimer !== null) clearInterval(tickTimer)
     if (reportTimer !== null) clearInterval(reportTimer)
@@ -979,7 +1039,7 @@ export function createEngine (host: EngineHost): Engine {
     host.onReport?.(snapshot(), state)
   }
 
-  return {
+  const api: Engine = {
     state: () => state,
     stats: snapshot,
     config: () => stages.config,
@@ -1124,6 +1184,25 @@ export function createEngine (host: EngineHost): Engine {
      * drops the layer on its own when the time is up. Nothing underneath is
      * touched.
      */
+    setSchedule (rules: unknown): ScheduleRule[] {
+      const parsed = parseRules(rules)
+      scheduler.setRules(parsed)
+      if (parsed.length === 0) {
+        if (scheduleTimer !== null) {
+          clearInterval(scheduleTimer)
+          scheduleTimer = null
+        }
+      } else {
+        // Started on the first rule and never stopped while any remain: the
+        // whole point is that it fires with the engine idle.
+        scheduleTimer ??= setInterval(runSchedule, 1000)
+        runSchedule()
+      }
+      return scheduler.rules()
+    },
+
+    schedule: () => scheduler.rules(),
+
     setColor (color: { r: number, g: number, b: number }, durationMs?: number): void {
       // Timed means "interrupt"; untimed means "this is the base". The caller
       // does not choose a priority, because the difference is already in what
@@ -1159,6 +1238,8 @@ export function createEngine (host: EngineHost): Engine {
 
     sendControl
   }
+
+  return api
 }
 
 function clampByte (value: number): number {

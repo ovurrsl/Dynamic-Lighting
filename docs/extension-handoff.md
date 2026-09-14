@@ -196,11 +196,23 @@ iki tarafın karşı derlediği tek sözleşme.
 | `ambiflux/status` → `status-reply` | panel → sw | durum + son istatistikler |
 | `ambiflux/config` → `config-reply` | panel → sw → offscreen | yapılandırmayı değiştir |
 | `ambiflux/config-get` → `config-reply` | → sw | yürürlükteki yapılandırma |
+| `ambiflux/schedule` → `schedule-reply` | panel → sw → offscreen | zaman kurallarını değiştir |
+| `ambiflux/schedule-get` → `schedule-reply` | panel/offscreen → sw | saklanan kurallar |
 | `ambiflux/stats`, `ambiflux/state` | offscreen → sw | yukarı rapor; sw sonuncuyu tutar |
 
 **`config` alanı bilinçli olarak `unknown`.** Panelden ya da
 `chrome.storage`'dan geliyor; worker onu `parseEngineConfig` ile ayrıştırıyor
-ve hatayla cevap veriyor, güvenmiyor.
+ve hatayla cevap veriyor, güvenmiyor. `rules` için aynısı `parseRules` ile.
+
+**Zaman kurallarının sahibi worker, motor değil.** Offscreen doküman canlı
+zamanlayıcıyı taşıyor ama o doküman bellektir — Chrome kapanınca yok oluyor ve
+gecesinde kendini unutan bir zamanlama, zamanlama değildir. Kurallar
+`chrome.storage.local`'da duruyor, doküman yüklenirken tam yapılandırmada
+olduğu gibi `schedule-get` ile onları istiyor, ve `schedule-get`'e **depodan**
+cevap veriliyor: zamanlama sayfasını açmak, motor dokümanının var olma sebebi
+olmamalı. Tersine, kural KAYDETMEK dokümanı inşa ediyor — bir kural ancak canlı
+bir motora ulaşırsa tetiklenebilir, ve bir sonraki Chrome açılışına kadar
+sessizce hiçbir şey yapmayan bir kural en kötü türden.
 
 ---
 
@@ -633,6 +645,7 @@ tüm zinciri** ölçen tek yöntem bu.
 | (y) | Ses görselleştirici | **yapıldı** — `lib/engine/audio{,-input}.ts`, üç görselleştirici, iki giriş, iOS dahil |
 | (z) | Yakalama kartı girişi | **yapıldı** — `lib/engine/devices.ts`, kaynak seçici Yakalama sayfasında |
 | (aa) | Öncelik katmanları | **yapıldı** — muxer motora bağlandı, katman listesi Genel bakış'ta, renk kaynağı gerçek |
+| (bb) | Zaman kuralları | **yapıldı** — `lib/engine/schedule.ts`, saat enjekte, iki host'ta da kalıcı, tarayıcıda tetiklenirken ölçüldü |
 
 ### Sıra değiştirmek isteyen için
 

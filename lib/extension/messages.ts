@@ -75,6 +75,14 @@ export type Message =
   | { type: 'ambiflux/color'; target: Target; color: { r: number, g: number, b: number }; durationMs?: number }
   /** Drops one priority layer, leaving the rest running. */
   | { type: 'ambiflux/clear-layer'; target: Target; priority: number }
+  /**
+   * Replaces the time-of-day rules. UNVALIDATED here on purpose: they arrive
+   * from the panel or from storage, so the engine parses them and answers with
+   * the error rather than trusting them.
+   */
+  | { type: 'ambiflux/schedule'; target: Target; rules: unknown }
+  | { type: 'ambiflux/schedule-get'; target: Target }
+  | { type: 'ambiflux/schedule-reply'; rules: unknown[]; error?: string }
   /** Asks the worker for the engine's state and its latest statistics. */
   | { type: 'ambiflux/status'; target: Target }
   | { type: 'ambiflux/status-reply'; version: string; state: EngineState; stats: EngineStats | null }

@@ -425,7 +425,46 @@ katmanını ve ağ sürücüsünü yukarı taşıdı — bir iPhone ekranı okuy
    Arayüz: Genel bakış sayfasında katman listesi, kazanan işaretli, her
    katmanda kendi durdurma düğmesi. Renk sayfası da gerçekten şeride
    bağlandı — "Şeride gönder" ve "5 saniye yak".
-8. **Olaylar** — sekme gizlenince duraklat, zamanlanmış aç/kapat.
+8. **Olaylar** — ✅ **bitti.** `lib/engine/schedule.ts` saf bir zaman kuralı
+   motoru: kural saati yerel dakikada, günler 0..6 (boş = her gün), eylem
+   dur/yakala/efekt/renk. Saat `momentFrom(new Date(), clock())` ile ENJEKTE
+   ediliyor — `Date.now()`'a bakan bir zamanlayıcı ancak beklenerek test
+   edilebilirdi, 22:00 kuralı için de bu "hiç" demek. 14 test.
+
+   İki karar, ikisi de ancak gerçek bir masada görünüyor:
+
+   - **Kural saat onu GEÇERKEN tetikleniyor, saate eşitken değil.** Eşitlik
+     aynı kuralı bir dakika boyunca saniyede bir uygulardı; şeritte bu, altmış
+     kez baştan başlayan bir efekt demek.
+   - **Uyumuş bir makine kaçırdığı kuralların yalnız SONUNCUSUNU alıyor.**
+     Akşam dokuzda sabah sekizin ayarına uyanmak yanlış; beş saatlik kuralı
+     yarım saniyede oynatmak daha saçma. Eşik 10 dakika: kısıtlanmış bir arka
+     plan sekmesi (en kötü ihtimalle dakikada bir) uyku sanılmıyor.
+
+   Listenin "sekme gizlenince duraklat" yarısı zaten çözülmüştü ve ayrı bir
+   özellik değil: yakalama izi oturumla birlikte ölüyor, motor da bunu
+   kaybolmuş kaynak olarak bildiriyor.
+
+   **Kurallar diskte, motorda değil** — ve bu, tarayıcı probu yenilemeden
+   sonra kuralların yok olduğunu gösterdiği için eklendi. Motor bellektir:
+   sayfa yenilenince gidiyor, eklentinin offscreen dokümanı da Chrome
+   kapanınca. Gecesinde kendini unutan bir zamanlama, zamanlama değildir.
+   Sayfa tarafında `localStorage` (`loadStoredSchedule`/`storeSchedule`,
+   motor KURULURKEN besleniyor — yalnız zamanlama kartı açıkken tetiklenen
+   bir kural zamanlama sayılmaz); eklenti tarafında service worker'ın
+   `chrome.storage.local`'ı, offscreen doküman da yüklenirken tam
+   yapılandırmada olduğu gibi kuralları isteyerek alıyor. Kural kaydetmek
+   dokümanı ayrıca inşa ediyor: bir kural ancak canlı bir motora ulaşırsa
+   tetiklenebilir.
+
+   Tarayıcıda ölçüldü: kural kuruldu → sayfa yenilendi → zamanlama sayfasından
+   ÇIKILDI → kural saatinde (05:37:00) renk katmanı kendiliğinden geldi,
+   "şeritte" olarak işaretli. Kimse bakmıyorken tetiklenmesi zaten
+   zamanlamanın tamamı.
+
+   Arayüzde iki cümle, ikisi de talimat değil KISIT: bir sayfada zamanlayıcı
+   ekran seçici açamaz (kullanıcı hareketi yok, ve bu tarayıcının kuralı),
+   ve uyumuş makine yalnız son kuralı alır.
 9. **Çoklu örnek** — mimariyi en çok değiştiren madde, o yüzden en sonda.
 
 ### Yapılandırılabilirlik kuralı

@@ -3,6 +3,7 @@ import { parseEngineConfig, type EngineConfig } from '#lib/engine/config'
 import type { AudioSpec } from '#lib/engine/audio'
 import type { AudioInputKind } from '#lib/engine/audio-input'
 import type { EffectSpec } from '#lib/engine/effects'
+import { parseRules, type ScheduleRule } from '#lib/engine/schedule'
 import type { PatternSpec } from '#lib/engine/patterns'
 import type { ControlRequest, EngineStats, EngineState, Message } from '#lib/extension/messages'
 
@@ -152,6 +153,35 @@ export async function selfTestEngine (): Promise<StartOutcome> {
  * the channel-order stage inside the engine - see extension/src/offscreen.ts
  * startPattern for why the last of those is not optional.
  */
+export async function saveSchedule (rules: ScheduleRule[]): Promise<{ rules: ScheduleRule[], error?: string }> {
+  try {
+    const reply = await send({ type: 'ambiflux/schedule', target: 'sw', rules })
+    return readSchedule(reply)
+  } catch (error) {
+    return { rules: [], error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export async function fetchSchedule (): Promise<ScheduleRule[]> {
+  try {
+    return readSchedule(await send({ type: 'ambiflux/schedule-get', target: 'sw' })).rules
+  } catch {
+    return []
+  }
+}
+
+function readSchedule (reply: unknown): { rules: ScheduleRule[], error?: string } {
+  if (typeof reply !== 'object' || reply === null || !('rules' in reply)) {
+    return { rules: [], error: 'eklenti beklenmeyen bir yanıt verdi' }
+  }
+  const answer = reply as { rules: unknown, error?: string }
+  try {
+    return { rules: parseRules(answer.rules), ...(answer.error !== undefined ? { error: answer.error } : {}) }
+  } catch (error) {
+    return { rules: [], error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 export async function setStripColor (
   color: { r: number, g: number, b: number },
   durationMs?: number

@@ -1,6 +1,6 @@
 // lib/light.ts
-function srgbToLinear(channel4) {
-  return channel4 <= 0.04045 ? channel4 / 12.92 : ((channel4 + 0.055) / 1.055) ** 2.4;
+function srgbToLinear(channel5) {
+  return channel5 <= 0.04045 ? channel5 / 12.92 : ((channel5 + 0.055) / 1.055) ** 2.4;
 }
 function buildSrgbToLinearLut() {
   const lut = new Float32Array(256);
@@ -2509,12 +2509,12 @@ function parsePatternSpec(value) {
     if (typeof colour !== "object" || colour === null) throw new TypeError("patterns: color must be an object");
     const channels = ["r", "g", "b"];
     const parsed = { r: 0, g: 0, b: 0 };
-    for (const channel4 of channels) {
-      const v = colour[channel4];
+    for (const channel5 of channels) {
+      const v = colour[channel5];
       if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 1) {
-        throw new RangeError(`patterns: color.${channel4} must be a number in 0..1, got ${String(v)}`);
+        throw new RangeError(`patterns: color.${channel5} must be a number in 0..1, got ${String(v)}`);
       }
-      parsed[channel4] = v;
+      parsed[channel5] = v;
     }
     spec.color = parsed;
   }
@@ -3240,6 +3240,111 @@ function validateRect(rect, led) {
   return Object.freeze({ xMin: rect.xMin, xMax: rect.xMax, yMin: rect.yMin, yMax: rect.yMax });
 }
 
+// lib/engine/schedule.ts
+var MINUTES_IN_DAY = 1440;
+var ACTION_KINDS = ["stop", "capture", "effect", "color"];
+var DEFAULT_GAP_MS = 10 * 60 * 1e3;
+function momentFrom(date, atMs) {
+  return { minute: date.getHours() * 60 + date.getMinutes(), weekday: date.getDay(), atMs };
+}
+function appliesOn(rule, weekday) {
+  return rule.days.length === 0 || rule.days.includes(weekday);
+}
+function crossed(minute, from, to) {
+  if (from === to) return false;
+  return from < to ? minute > from && minute <= to : minute > from || minute <= to;
+}
+function createScheduler(initial = [], options = {}) {
+  const gapMs = options.gapMs ?? DEFAULT_GAP_MS;
+  let rules = [...initial];
+  let previous = null;
+  return {
+    rules: () => rules.map((rule) => ({ ...rule, days: [...rule.days] })),
+    lastMinute: () => previous?.minute ?? null,
+    setRules(next) {
+      rules = [...next];
+    },
+    tick(now) {
+      const before = previous;
+      previous = now;
+      if (before === null) return [];
+      const elapsed = now.atMs - before.atMs;
+      const due = rules.filter((rule) => rule.enabled && appliesOn(rule, now.weekday)).filter((rule) => crossed(rule.atMinute, before.minute, now.minute));
+      if (due.length === 0) return [];
+      if (elapsed > gapMs) {
+        const last = due.reduce((best, rule) => distanceBack(rule.atMinute, now.minute) < distanceBack(best.atMinute, now.minute) ? rule : best);
+        return [last.action];
+      }
+      return due.slice().sort((a, b) => distanceBack(b.atMinute, now.minute) - distanceBack(a.atMinute, now.minute)).map((rule) => rule.action);
+    }
+  };
+}
+function distanceBack(minute, now) {
+  const delta = now - minute;
+  return delta < 0 ? delta + MINUTES_IN_DAY : delta;
+}
+function parseRules(value) {
+  if (!Array.isArray(value)) throw new TypeError("schedule: rules must be an array");
+  return value.map((entry, index) => parseRule(entry, index));
+}
+function parseRule(value, index = 0) {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError(`schedule: rule ${index} must be an object`);
+  }
+  const raw = value;
+  const id = typeof raw.id === "string" && raw.id !== "" ? raw.id : `rule-${index}`;
+  if (typeof raw.atMinute !== "number" || !Number.isInteger(raw.atMinute) || raw.atMinute < 0 || raw.atMinute >= MINUTES_IN_DAY) {
+    throw new RangeError(`schedule: rule ${index} atMinute must be an integer 0..1439, got ${String(raw.atMinute)}`);
+  }
+  const days = raw.days === void 0 ? [] : parseDays(raw.days, index);
+  return {
+    id,
+    enabled: raw.enabled !== false,
+    atMinute: raw.atMinute,
+    days,
+    action: parseAction(raw.action, index)
+  };
+}
+function parseDays(value, index) {
+  if (!Array.isArray(value)) throw new TypeError(`schedule: rule ${index} days must be an array`);
+  const days = value.map((day) => {
+    if (typeof day !== "number" || !Number.isInteger(day) || day < 0 || day > 6) {
+      throw new RangeError(`schedule: rule ${index} day must be an integer 0..6, got ${String(day)}`);
+    }
+    return day;
+  });
+  return [...new Set(days)].sort((a, b) => a - b);
+}
+function parseAction(value, index) {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError(`schedule: rule ${index} action must be an object`);
+  }
+  const raw = value;
+  switch (raw.kind) {
+    case "stop":
+      return { kind: "stop" };
+    case "capture":
+      return { kind: "capture" };
+    case "effect":
+      return { kind: "effect", spec: parseEffectSpec(raw.spec) };
+    case "color": {
+      const color = raw.color;
+      if (typeof color !== "object" || color === null) {
+        throw new TypeError(`schedule: rule ${index} colour must be an object`);
+      }
+      return { kind: "color", color: { r: channel4(color.r, index), g: channel4(color.g, index), b: channel4(color.b, index) } };
+    }
+    default:
+      throw new RangeError(`schedule: rule ${index} kind must be one of ${ACTION_KINDS.join(", ")}, got ${String(raw.kind)}`);
+  }
+}
+function channel4(value, index) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
+    throw new RangeError(`schedule: rule ${index} colour channel must be an integer 0..255, got ${String(value)}`);
+  }
+  return value;
+}
+
 // lib/engine/sink.ts
 function createFrameWriter(sink, options = {}) {
   const onError = options.onError;
@@ -3812,6 +3917,8 @@ function createEngine(host) {
   let audio = null;
   let bins = new Float32Array(0);
   const muxer = new PriorityMuxer(clock2);
+  const scheduler = createScheduler();
+  let scheduleTimer = null;
   let captureTarget = allocLedColors(1);
   let effectTarget = allocLedColors(1);
   let audioTarget = allocLedColors(1);
@@ -4210,6 +4317,32 @@ function createEngine(host) {
     blackout();
     report();
   }
+  function applyScheduled(action) {
+    switch (action.kind) {
+      case "stop":
+        stop("user");
+        return;
+      case "capture":
+        void api.start();
+        return;
+      case "effect":
+        api.runEffect(action.spec);
+        return;
+      default:
+        api.setColor(action.color);
+    }
+  }
+  function runSchedule() {
+    const actions = scheduler.tick(momentFrom(/* @__PURE__ */ new Date(), clock2()));
+    for (const action of actions) {
+      try {
+        applyScheduled(action);
+      } catch (error) {
+        lastError = `zamanlama: ${describe3(error)}`;
+      }
+    }
+    if (actions.length > 0) report();
+  }
   function stopClocks() {
     if (tickTimer !== null) clearInterval(tickTimer);
     if (reportTimer !== null) clearInterval(reportTimer);
@@ -4350,7 +4483,7 @@ function createEngine(host) {
   function report() {
     host.onReport?.(snapshot2(), state);
   }
-  return {
+  const api = {
     state: () => state,
     stats: snapshot2,
     config: () => stages.config,
@@ -4469,6 +4602,21 @@ function createEngine(host) {
      * drops the layer on its own when the time is up. Nothing underneath is
      * touched.
      */
+    setSchedule(rules) {
+      const parsed = parseRules(rules);
+      scheduler.setRules(parsed);
+      if (parsed.length === 0) {
+        if (scheduleTimer !== null) {
+          clearInterval(scheduleTimer);
+          scheduleTimer = null;
+        }
+      } else {
+        scheduleTimer ??= setInterval(runSchedule, 1e3);
+        runSchedule();
+      }
+      return scheduler.rules();
+    },
+    schedule: () => scheduler.rules(),
     setColor(color, durationMs) {
       const priority = durationMs === void 0 ? PRIORITY.color : PRIORITY.flash;
       sizeBuffers(stages.leds);
@@ -4499,6 +4647,7 @@ function createEngine(host) {
     },
     sendControl
   };
+  return api;
 }
 function clampByte(value) {
   if (!Number.isFinite(value)) return 0;
@@ -4742,6 +4891,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       engine.clearLayer(message.priority);
       sendResponse({ state: engine.state() });
       return false;
+    case "ambiflux/schedule":
+      try {
+        sendResponse({ type: "ambiflux/schedule-reply", rules: engine.setSchedule(message.rules) });
+      } catch (error) {
+        sendResponse({
+          type: "ambiflux/schedule-reply",
+          rules: engine.schedule(),
+          error: describe5(error)
+        });
+      }
+      return false;
+    case "ambiflux/schedule-get":
+      sendResponse({ type: "ambiflux/schedule-reply", rules: engine.schedule() });
+      return false;
     case "ambiflux/stop":
       stopEngine();
       sendResponse({ state: engine.state() });
@@ -4791,6 +4954,13 @@ void chrome.runtime.sendMessage({ type: "ambiflux/config-get", target: "sw" }).t
   if (typeof reply === "object" && reply !== null && reply.type === "ambiflux/config-reply") {
     const config = reply.config;
     if (config !== null && config !== void 0) engine.applyConfig(config);
+  }
+}).catch(() => {
+});
+void chrome.runtime.sendMessage({ type: "ambiflux/schedule-get", target: "sw" }).then((reply) => {
+  if (typeof reply === "object" && reply !== null && reply.type === "ambiflux/schedule-reply") {
+    const rules = reply.rules;
+    if (Array.isArray(rules) && rules.length > 0) engine.setSchedule(rules);
   }
 }).catch(() => {
 });

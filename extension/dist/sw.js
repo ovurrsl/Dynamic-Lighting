@@ -573,9 +573,132 @@ function isMessage(value) {
   return typeof value === "object" && value !== null && typeof value.type === "string" && value.type.startsWith("ambiflux/");
 }
 
+// lib/engine/effects.ts
+var EFFECT_KINDS = [
+  "rainbow",
+  "blobs",
+  "breathe",
+  "candle",
+  "comet",
+  "police",
+  "plasma"
+];
+function isEffectKind(value) {
+  return typeof value === "string" && EFFECT_KINDS.includes(value);
+}
+var SPEED_MIN = 0.05;
+var SPEED_MAX = 8;
+var DEFAULT_SPEED = 1;
+var clamp01 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
+function clampSpeed(value) {
+  if (!Number.isFinite(value)) return DEFAULT_SPEED;
+  return Math.min(SPEED_MAX, Math.max(SPEED_MIN, value));
+}
+function parseEffectSpec(value) {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError("effects: a spec must be an object");
+  }
+  const raw = value;
+  if (!isEffectKind(raw.kind)) {
+    throw new RangeError(`effects: kind must be one of ${EFFECT_KINDS.join(", ")}, got ${String(raw.kind)}`);
+  }
+  const spec = { kind: raw.kind };
+  if (raw.speed !== void 0) {
+    if (typeof raw.speed !== "number" || !Number.isFinite(raw.speed)) {
+      throw new TypeError("effects: speed must be a finite number");
+    }
+    spec.speed = clampSpeed(raw.speed);
+  }
+  if (raw.brightness !== void 0) {
+    if (typeof raw.brightness !== "number" || !Number.isFinite(raw.brightness)) {
+      throw new TypeError("effects: brightness must be a finite number");
+    }
+    spec.brightness = clamp01(raw.brightness);
+  }
+  if (raw.color !== void 0) {
+    const color = raw.color;
+    if (typeof color !== "object" || color === null) throw new TypeError("effects: color must be an object");
+    spec.color = { r: channel(color.r), g: channel(color.g), b: channel(color.b) };
+  }
+  return spec;
+}
+function channel(value) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
+    throw new RangeError(`effects: a colour channel is an integer 0..255, got ${String(value)}`);
+  }
+  return value;
+}
+
+// lib/engine/schedule.ts
+var MINUTES_IN_DAY = 1440;
+var ACTION_KINDS = ["stop", "capture", "effect", "color"];
+var DEFAULT_GAP_MS = 10 * 60 * 1e3;
+function parseRules(value) {
+  if (!Array.isArray(value)) throw new TypeError("schedule: rules must be an array");
+  return value.map((entry, index) => parseRule(entry, index));
+}
+function parseRule(value, index = 0) {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError(`schedule: rule ${index} must be an object`);
+  }
+  const raw = value;
+  const id = typeof raw.id === "string" && raw.id !== "" ? raw.id : `rule-${index}`;
+  if (typeof raw.atMinute !== "number" || !Number.isInteger(raw.atMinute) || raw.atMinute < 0 || raw.atMinute >= MINUTES_IN_DAY) {
+    throw new RangeError(`schedule: rule ${index} atMinute must be an integer 0..1439, got ${String(raw.atMinute)}`);
+  }
+  const days = raw.days === void 0 ? [] : parseDays(raw.days, index);
+  return {
+    id,
+    enabled: raw.enabled !== false,
+    atMinute: raw.atMinute,
+    days,
+    action: parseAction(raw.action, index)
+  };
+}
+function parseDays(value, index) {
+  if (!Array.isArray(value)) throw new TypeError(`schedule: rule ${index} days must be an array`);
+  const days = value.map((day) => {
+    if (typeof day !== "number" || !Number.isInteger(day) || day < 0 || day > 6) {
+      throw new RangeError(`schedule: rule ${index} day must be an integer 0..6, got ${String(day)}`);
+    }
+    return day;
+  });
+  return [...new Set(days)].sort((a, b) => a - b);
+}
+function parseAction(value, index) {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError(`schedule: rule ${index} action must be an object`);
+  }
+  const raw = value;
+  switch (raw.kind) {
+    case "stop":
+      return { kind: "stop" };
+    case "capture":
+      return { kind: "capture" };
+    case "effect":
+      return { kind: "effect", spec: parseEffectSpec(raw.spec) };
+    case "color": {
+      const color = raw.color;
+      if (typeof color !== "object" || color === null) {
+        throw new TypeError(`schedule: rule ${index} colour must be an object`);
+      }
+      return { kind: "color", color: { r: channel2(color.r, index), g: channel2(color.g, index), b: channel2(color.b, index) } };
+    }
+    default:
+      throw new RangeError(`schedule: rule ${index} kind must be one of ${ACTION_KINDS.join(", ")}, got ${String(raw.kind)}`);
+  }
+}
+function channel2(value, index) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
+    throw new RangeError(`schedule: rule ${index} colour channel must be an integer 0..255, got ${String(value)}`);
+  }
+  return value;
+}
+
 // extension/src/sw.ts
 var OFFSCREEN_URL = "offscreen.html";
 var CONFIG_KEY = "ambiflux/config";
+var SCHEDULE_KEY = "ambiflux/schedule";
 var creating = null;
 async function ensureOffscreen() {
   const contexts = await chrome.runtime.getContexts({
@@ -634,6 +757,36 @@ async function setConfig(value) {
   }
   return { config: parsed };
 }
+var schedule = null;
+async function loadSchedule() {
+  if (schedule !== null) return schedule;
+  try {
+    const stored = await chrome.storage.local.get(SCHEDULE_KEY);
+    const raw = stored[SCHEDULE_KEY];
+    schedule = raw === void 0 ? [] : parseRules(raw);
+  } catch {
+    schedule = [];
+  }
+  return schedule;
+}
+async function setSchedule(value) {
+  let parsed;
+  try {
+    parsed = parseRules(value);
+  } catch (error) {
+    return { rules: await loadSchedule(), error: error instanceof Error ? error.message : String(error) };
+  }
+  schedule = parsed;
+  await chrome.storage.local.set({ [SCHEDULE_KEY]: parsed });
+  if (parsed.length > 0) await ensureOffscreen();
+  if (await offscreenExists()) {
+    try {
+      await chrome.runtime.sendMessage({ type: "ambiflux/schedule", target: "offscreen", rules: parsed });
+    } catch {
+    }
+  }
+  return { rules: parsed };
+}
 async function relayToOffscreen(message) {
   await ensureOffscreen();
   return chrome.runtime.sendMessage(message);
@@ -682,6 +835,24 @@ function handle(message, sendResponse) {
       loadConfig().then(
         (current) => sendResponse({ type: "ambiflux/config-reply", config: current }),
         (error) => sendResponse({ type: "ambiflux/config-reply", config: null, error: String(error) })
+      );
+      return true;
+    case "ambiflux/schedule":
+      setSchedule(message.rules).then(
+        (result) => sendResponse({
+          type: "ambiflux/schedule-reply",
+          rules: result.rules,
+          ...result.error === void 0 ? {} : { error: result.error }
+        }),
+        (error) => sendResponse({ type: "ambiflux/schedule-reply", rules: [], error: String(error) })
+      );
+      return true;
+    // Answered from storage, never by waking the engine document: a panel that
+    // opens the schedule page must not be the reason the document exists.
+    case "ambiflux/schedule-get":
+      loadSchedule().then(
+        (rules) => sendResponse({ type: "ambiflux/schedule-reply", rules }),
+        (error) => sendResponse({ type: "ambiflux/schedule-reply", rules: [], error: String(error) })
       );
       return true;
     case "ambiflux/prepare":

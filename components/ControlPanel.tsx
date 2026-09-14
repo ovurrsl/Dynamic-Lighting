@@ -22,6 +22,7 @@ import { PreferencesMenu } from '#components/PreferencesMenu'
 import { useTranslate } from '#components/Preferences'
 import { ProfilesCard } from '#components/ProfilesCard'
 import { RoadmapCard } from '#components/RoadmapCard'
+import { ScheduleCard } from '#components/ScheduleCard'
 import {
   DEFAULT_SECTION,
   GROUP_TITLE,
@@ -59,6 +60,7 @@ function sectionBody (id: SectionId, enabled: boolean) {
     case 'profiles': return <ProfilesSection />
     case 'effects': return <EffectsCard />
     case 'audio': return <AudioCard />
+    case 'schedule': return <ScheduleCard />
     case 'device': return <DeviceSection />
     case 'guide': return <GuideCard />
     case 'roadmap': return <RoadmapCard />

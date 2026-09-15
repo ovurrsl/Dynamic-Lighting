@@ -17,6 +17,7 @@
     "pack:extension": "node scripts/pack-extension.mjs",
     "typecheck:extension": "tsc -p extension --noEmit",
     "hyperion:watch": "node scripts/hyperion-watch.mjs",
+    "bench": "node scripts/bench-pipeline.ts",
     "verify": "npm run typecheck && npm run typecheck:extension && npm test && npm run build && npm run verify:extension",
     "verify:extension": "npm run build:extension && rm -f extension/dist/*.map && { git diff --quiet -- extension/dist || { echo 'extension/dist kaynakla eşleşmiyor: build:extension çıktısını commit et'; git diff --stat -- extension/dist; exit 1; }; }"
   },

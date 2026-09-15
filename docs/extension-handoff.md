@@ -536,10 +536,35 @@ yerel yardımcı uygulamaya dönülür — o yüzden **ilk bu**.
 1. Önce **nerede geçtiğini ölç**, tahmin etme. **✅ YAPILDI:** `processFrame`
    artık dört parçada ölçülüyor ve `stats.stageMs` ile panele geliyor —
    `downscale` (`createImageBitmap`), `readback` (`drawImage` + `getImageData`),
-   `decode`, `sample`. Cihaz sayfasında ayrı bir kutuda. **Sayıyı gerçek bir
-   makinede okumak kaldı**; buradaki headless ölçüm GPU'suz ve yanıltıcı olur.
-   Dördü işin kendisini toplar; toplamları ile `processMs` p50 arasındaki fark
-   kuyruklama gecikmesi, yani motorun ne kadar geride koştuğu.
+   `decode`, `sample`. Cihaz sayfasında ayrı bir kutuda. Dördü işin kendisini
+   toplar; toplamları ile `processMs` p50 arasındaki fark kuyruklama gecikmesi,
+   yani motorun ne kadar geride koştuğu.
+
+   **Ve dördünün ikisi artık burada ölçüldü** — `npm run bench`
+   (`scripts/bench-pipeline.ts`). `decode`, `sample` ve `adjust` **analiz
+   ızgarasında** koşuyor, kaynak karede değil, yani GPU'ya hiç dokunmuyorlar ve
+   aynı CPU'da her yerde aynı çıkıyorlar:
+
+   | Aşama | 128×72, 108 LED |
+   |---|---|
+   | decode (sRGB → doğrusal) | 0.086 ms |
+   | border (varsayılan desen) | 0.001 ms |
+   | sample (`mean`) | 0.024 ms |
+   | adjust (kimlik profili) | 0.003 ms |
+   | **varsayılan yolun tamamı** | **0.114 ms — bütçenin %1.4'ü** |
+
+   Yani bildirilen 9.00 ms'in **pratikte tamamı küçültme + geri okuma**.
+   Örnekleyiciyi ya da çözücüyü optimize etmenin ölçülebilir bir karşılığı yok;
+   geriye kalan tek bilinmez o ikisinin kendi aralarındaki dağılımı, ve o hâlâ
+   gerçek bir GPU istiyor.
+
+   İndirgemeler düz değil, ve bu kullanıcının görmesi gereken bir şey:
+   `dominant` ortalamanın 7 katı, `dominantAdvanced` 18 katı,
+   **`unicolorDominantAdvanced` 130 katı** — tek başına 3.13 ms, yani 120 Hz
+   bütçesinin %39'u. (Kod doğru: unicolor modları bir kez hesaplayıp
+   `fillFromFirst` ile yayıyor, LED başına tekrar etmiyor. Maliyet k-means'in
+   9216 piksel üstünde koşmasının dürüst bedeli.) Ölçülen oranlar örnekleme
+   kartında, seçimin yapıldığı yerde yazıyor.
 2. Küçültme ise: `createImageBitmap` yerine `OffscreenCanvas` + `drawImage`
    (ikisi de ölçüldü, ikisi de doğru alan ortalaması yapıyor — hangisinin daha
    ucuz olduğu ölçülmedi), ya da WebGPU ile tek geçişte.

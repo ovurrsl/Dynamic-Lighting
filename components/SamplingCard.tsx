@@ -70,6 +70,49 @@ const FACTOR_KEY: MessageKey[] = [
 /** The two modes that cluster, and so the only two the accuracy level reaches. */
 const CLUSTERING: readonly SampleMode[] = ['dominantAdvanced', 'unicolorDominantAdvanced']
 
+/**
+ * What each reduction costs, as a multiple of the average.
+ *
+ * MEASURED, not estimated - `npm run bench`, 128x72 grid, 108 LEDs, a gradient
+ * plus noise so the clustering has real work. This table exists because the
+ * first version of this page asserted the cost ordering from reading the code
+ * and got it wrong by a factor of seven: it called `dominantAdvanced` the most
+ * expensive mode, when `unicolorDominantAdvanced` costs seven times more again.
+ * Claiming without measuring has now been wrong four times in this repository.
+ *
+ * The numbers are stable across runs on one machine and will differ on another;
+ * the ORDERING is algorithmic and will not. What the user needs from them is
+ * which choices are free and which one is not, and that survives the move.
+ */
+const MODE_COST: Record<SampleMode, number> = {
+  mean: 1,
+  meanSquared: 1,
+  unicolorMean: 2.3,
+  dominant: 7,
+  unicolorDominant: 16.1,
+  dominantAdvanced: 18.4,
+  unicolorDominantAdvanced: 131.5
+}
+
+/**
+ * The same measurement, split the way the budget is actually spent.
+ *
+ * The multiple above scales the SAMPLE stage only; the rest of the path costs
+ * what it costs whichever reduction is chosen. Multiplying the whole path by
+ * the mode's factor - which the first draft of this did - reported 175% of a
+ * frame for a mode measured at 3.13 ms against an 8.33 ms budget, which is 39%.
+ * An impossible number on a page whose entire purpose is honest cost.
+ */
+const MEAN_SAMPLE_MS = 0.0241
+const FIXED_MS = 0.0898
+const BUDGET_MS = 1000 / 120
+
+/** A share of one frame's budget, said in whole percent - or "well under 1%". */
+function budgetShare (times: number, t: (key: MessageKey, vars?: Record<string, string | number>) => string): string {
+  const share = (FIXED_MS + MEAN_SAMPLE_MS * times) / BUDGET_MS
+  return share < 0.01 ? t('sampling.cost.tiny') : `${Math.round(share * 100)}%`
+}
+
 export function SamplingCard () {
   const t = useTranslate()
   const { probe, host, pageCapable, saveConfig, stats } = useEngine()
@@ -134,6 +177,17 @@ export function SamplingCard () {
           </Select.Popover>
         </Select>
         <p className="-mt-3 text-xs text-muted">{t(MODE_NOTE[current.mode])}</p>
+        {/*
+          The cost sits with the choice rather than in a document nobody opens:
+          six of these are free and one is 38% of a frame, and that is the whole
+          of what somebody picking one needs to know.
+        */}
+        <p className="-mt-4 font-mono text-xs text-muted">
+          {t('sampling.cost', {
+            times: MODE_COST[current.mode],
+            budget: budgetShare(MODE_COST[current.mode], t)
+          })}
+        </p>
 
         <Select
           className="w-full max-w-sm"
@@ -157,6 +211,7 @@ export function SamplingCard () {
           </Select.Popover>
         </Select>
         <p className="-mt-3 text-xs text-muted">{t('sampling.factor.note')}</p>
+        <p className="-mt-4 text-xs text-muted">{t('sampling.cost.note')}</p>
 
         {/*
           Shown only while a clustering mode is selected, but NOT dropped when

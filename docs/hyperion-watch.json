@@ -1,0 +1,7 @@
+{
+  "upstream": "https://github.com/hyperion-project/hyperion.ng",
+  "branch": "master",
+  "reviewed": "c9f12db503bbe461eaa599a4dae309700dfe0119",
+  "reviewedAt": "2026-09-13",
+  "note": "scripts/hyperion-watch.mjs bunu okur ve --mark ile ilerletir. Kararlar docs/hyperion-watch.md'de."
+}

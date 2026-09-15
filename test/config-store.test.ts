@@ -3,11 +3,15 @@ import test from 'node:test'
 
 import {
   CONFIG_STORAGE_KEY,
+  SCHEDULE_STORAGE_KEY,
   clearStoredConfig,
   loadStoredConfig,
+  loadStoredSchedule,
   storeConfig,
+  storeSchedule,
   type StorageLike
 } from '#lib/config-store'
+import type { ScheduleRule } from '#lib/engine/schedule'
 import { DEFAULT_ENGINE_CONFIG, parseEngineConfig, serialiseEngineConfig } from '#lib/engine/config'
 
 function memoryStorage (initial: Record<string, string> = {}): StorageLike & { data: Record<string, string> } {
@@ -85,4 +89,69 @@ test('clearing takes the stored config away and the next load is the default aga
   assert.equal(loadStoredConfig(storage).source, 'stored')
   clearStoredConfig(storage)
   assert.equal(loadStoredConfig(storage).source, 'default')
+})
+
+// ---------------------------------------------------------------------------
+// The schedule.
+// ---------------------------------------------------------------------------
+
+const rule = (over: Partial<ScheduleRule> = {}): ScheduleRule => ({
+  id: 'evening',
+  enabled: true,
+  atMinute: 22 * 60,
+  days: [1, 5],
+  action: { kind: 'color', color: { r: 255, g: 180, b: 60 } },
+  ...over
+})
+
+test('rules survive the round trip that a page reload is', () => {
+  // The failure this exists for: the rules were set, the page was reloaded, and
+  // the schedule page came back empty because the engine is memory.
+  const storage = memoryStorage()
+  assert.deepEqual(loadStoredSchedule(storage), { rules: [], source: 'default' })
+
+  assert.equal(storeSchedule([rule()], storage), null)
+  const back = loadStoredSchedule(storage)
+  assert.equal(back.source, 'stored')
+  assert.deepEqual(back.rules, [rule()])
+})
+
+test('an empty schedule is stored as one, not treated as nothing to store', () => {
+  // Deleting every rule has to STICK. Skipping the write would resurrect them
+  // on the next load, which reads as the panel ignoring the user.
+  const storage = memoryStorage()
+  storeSchedule([rule()], storage)
+  storeSchedule([], storage)
+  assert.deepEqual(loadStoredSchedule(storage).rules, [])
+  assert.equal(storage.data[SCHEDULE_STORAGE_KEY], '[]')
+})
+
+test('rules out of storage are parsed, not trusted', () => {
+  // Written by an older version, or hand-edited. A rule at minute 9999 would
+  // simply never fire with nothing saying why.
+  const storage = memoryStorage({ [SCHEDULE_STORAGE_KEY]: '[{"atMinute":9999,"action":{"kind":"stop"}}]' })
+  const outcome = loadStoredSchedule(storage)
+  assert.equal(outcome.source, 'default')
+  assert.deepEqual(outcome.rules, [])
+  assert.match(outcome.problem ?? '', /0\.\.1439/)
+
+  const broken = memoryStorage({ [SCHEDULE_STORAGE_KEY]: 'not json' })
+  assert.equal(loadStoredSchedule(broken).source, 'default')
+  assert.notEqual(loadStoredSchedule(broken).problem, undefined)
+})
+
+test('a browser that refuses storage is not a browser that refuses schedules', () => {
+  // A private window with site data blocked. The panel still works; the rules
+  // simply do not outlive the tab, and the reading path says why rather than
+  // throwing into a render.
+  assert.deepEqual(loadStoredSchedule(null), { rules: [], source: 'default' })
+  assert.equal(storeSchedule([rule()], null), null)
+
+  const hostile = loadStoredSchedule(hostileStorage)
+  assert.equal(hostile.source, 'default')
+  assert.match(hostile.problem ?? '', /insecure/)
+
+  // A full quota IS reported: here the user asked for something and did not get
+  // it, which is not the same as a browser that never offered storage at all.
+  assert.match(storeSchedule([rule()], fullStorage) ?? '', /Quota/)
 })

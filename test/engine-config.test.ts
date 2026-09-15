@@ -1,18 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import {
-  ConfigError,
-  DEFAULT_ENGINE_CONFIG,
-  MATRIX_ENGINE_CONFIG,
-  configLedCount,
-  deserialiseEngineConfig,
-  parseEngineConfig,
-  resolveLayout,
-  serialiseEngineConfig,
-  type EngineConfig
-} from '#lib/engine/config'
+import { MAX_ACCURACY_LEVEL, SAMPLE_MODES } from '#lib/engine/sample'
+import { ConfigError, DEFAULT_BORDER, DEFAULT_CAPTURE, DEFAULT_COLOR, DEFAULT_ENGINE_CONFIG, DEFAULT_SAMPLING, DEFAULT_SMOOTHING, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, MAX_PIXEL_SET_FACTOR, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, switchTransport, type EngineConfig } from '#lib/engine/config'
 import { DARK_RECT, REFERENCE_LAYOUT, classicLayout, matrixLayout } from '#lib/engine/layout'
+import { SMOOTHING_PROFILES, profileOf } from '#lib/engine/smooth'
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 const classic = (over: Record<string, unknown> = {}): unknown =>
@@ -158,4 +150,435 @@ test('parsing does not keep a reference to the caller\'s object', () => {
   raw.blacklist.push({ start: 0, length: 1 })
   assert.equal((config.layout as { top: number }).top, 35, 'the parsed config is its own')
   assert.deepEqual(config.blacklist, [])
+})
+
+test('the wire format defaults to Afx and only accepts the three it can encode', () => {
+  // Afx is ours and the only one carrying 16-bit linear. The other two exist so
+  // AmbiFlux drives hardware somebody already owns, which is the whole point of
+  // the setting.
+  assert.equal(parseEngineConfig(DEFAULT_ENGINE_CONFIG).output.format, 'Afx')
+  for (const format of WIRE_FORMATS) {
+    const config = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format } })
+    assert.equal(config.output.format, format)
+  }
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Tpm2' } }),
+    /output.format/
+  )
+})
+
+test('AWA calibration is accepted for Awa and refused for the formats that cannot carry it', () => {
+  const calibration = { limit: 255, red: 255, green: 240, blue: 220 }
+  const ok = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Awa', calibration } })
+  assert.deepEqual(ok.output.calibration, calibration)
+  // Silently dropping it would leave someone staring at a white balance that
+  // does nothing, which is worse than being told.
+  for (const format of ['Afx', 'Ada'] as const) {
+    assert.throws(
+      () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format, calibration } }),
+      /only carried by the Awa format/
+    )
+  }
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Awa', calibration: { ...calibration, red: 256 } } }),
+    /calibration.red/
+  )
+})
+
+test('capture settings default to the reference grid and are bounded', () => {
+  const config = parseEngineConfig(DEFAULT_ENGINE_CONFIG)
+  assert.deepEqual(config.capture, DEFAULT_CAPTURE)
+
+  const custom = parseEngineConfig({
+    ...DEFAULT_ENGINE_CONFIG,
+    capture: { gridWidth: 96, gridHeight: 54, fps: 30, crop: { left: 0.1, right: 0, top: 0, bottom: 0.2 } }
+  })
+  assert.equal(custom.capture.gridWidth, 96)
+  assert.equal(custom.capture.fps, 30)
+  assert.equal(custom.capture.crop.bottom, 0.2)
+
+  for (const bad of [
+    { gridWidth: GRID_MIN - 1 }, { gridWidth: GRID_MAX + 1 }, { gridHeight: 0 },
+    { fps: 0 }, { fps: FPS_MAX + 1 }, { gridWidth: 100.5 }
+  ]) {
+    assert.throws(
+      () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, capture: { ...DEFAULT_CAPTURE, ...bad } }),
+      /capture\./,
+      JSON.stringify(bad)
+    )
+  }
+})
+
+test('a crop that would leave nothing on screen is refused as a pair, not per side', () => {
+  // Each side is capped at 0.45, and 0.45 + 0.45 is legal per side while
+  // leaving a tenth of the screen. The pair is what has to be checked.
+  const crop = (over: Record<string, number>) =>
+    parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, capture: { ...DEFAULT_CAPTURE, crop: { left: 0, right: 0, top: 0, bottom: 0, ...over } } })
+
+  assert.doesNotThrow(() => crop({ left: 0.45, right: 0.45 }))
+  assert.throws(() => crop({ left: 0.45, right: 0.46 }), /capture.crop.right/)
+  assert.throws(() => crop({ left: 0.5 }), /capture.crop.left/)
+  assert.throws(() => crop({ top: -0.1 }), /capture.crop.top/)
+})
+
+test('an old stored config with neither section still loads', () => {
+  // The extension stores a config that an older version wrote, and a user whose
+  // stored layout suddenly failed to parse would lose their rig to an upgrade.
+  const old = { layout: DEFAULT_ENGINE_CONFIG.layout, blacklist: [], colorOrder: { order: 'grb' } }
+  const config = parseEngineConfig(old)
+  assert.equal(config.output.format, 'Afx')
+  assert.deepEqual(config.capture, DEFAULT_CAPTURE)
+  assert.equal(config.colorOrder.order, 'grb')
+})
+
+test('the transport defaults to serial and network transports demand an address', () => {
+  assert.equal(parseEngineConfig(DEFAULT_ENGINE_CONFIG).output.transport, 'serial')
+
+  const ws = parseEngineConfig({
+    ...DEFAULT_ENGINE_CONFIG,
+    output: { transport: 'websocket', host: ' strip.local ', format: 'Afx' }
+  })
+  assert.equal(ws.output.transport, 'websocket')
+  assert.equal(ws.output.host, 'strip.local', 'the address should be trimmed')
+
+  for (const transport of ['websocket', 'wled'] as const) {
+    for (const host of [undefined, '', '   ', 42]) {
+      assert.throws(
+        () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport, host } }),
+        /output.host/,
+        `${transport} accepted ${JSON.stringify(host)}`
+      )
+    }
+  }
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'carrier-pigeon' } }),
+    /output.transport/
+  )
+})
+
+test('settings that would do nothing are refused rather than silently ignored', () => {
+  // This is how someone ends up staring at an address they are sure they typed
+  // correctly, on a transport that never reads it.
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'serial', host: 'strip.local' } }),
+    /only used by the network transports/
+  )
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'serial', segment: 1 } }),
+    /only used by WLED/
+  )
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'websocket', host: 'x', segment: 1 } }),
+    /only used by WLED/
+  )
+  // WLED speaks its own JSON and never sees one of our wire formats.
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'wled', host: 'x', format: 'Awa' } }),
+    /not used by WLED/
+  )
+})
+
+test('a WLED output defaults to segment 0 and accepts another', () => {
+  const zero = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'wled', host: '192.168.1.40' } })
+  assert.equal(zero.output.segment, 0)
+  const two = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'wled', host: 'x', segment: 2 } })
+  assert.equal(two.output.segment, 2)
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'wled', host: 'x', segment: -1 } }),
+    /output.segment/
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Switching transport in the panel.
+// ---------------------------------------------------------------------------
+
+/**
+ * The point of these: the validator refuses a setting that would do nothing, so
+ * a picker that merely changed `transport` would hand the user a config they
+ * cannot apply and did not ask for. Every result below is pushed back through
+ * `parseEngineConfig`, which is the only assertion that actually matters.
+ */
+const withOutput = (output: unknown): unknown => ({ ...clone(DEFAULT_ENGINE_CONFIG), output })
+
+test('switching to a network transport keeps the format and asks only for an address', () => {
+  const next = switchTransport({ transport: 'serial', format: 'Awa' }, 'websocket')
+  assert.equal(next.transport, 'websocket')
+  assert.equal(next.format, 'Awa', 'our firmware over a socket carries the same bytes')
+  assert.equal(next.host, '')
+  // Empty is deliberately INVALID: the panel says "type an address" rather than
+  // inventing one, and an invented address would silently dial the wrong device.
+  assert.throws(() => parseEngineConfig(withOutput(next)), /output.host/)
+  assert.equal(parseEngineConfig(withOutput({ ...next, host: '192.168.1.40' })).output.host, '192.168.1.40')
+})
+
+test('switching to WLED drops the wire format and the calibration the validator refuses', () => {
+  const calibration = { white: 1, limit: 2, red: 3, green: 4, blue: 5 }
+  const next = switchTransport({ transport: 'serial', format: 'Awa', calibration }, 'wled')
+  assert.equal(next.format, 'Afx', 'WLED has its own protocol; Awa would be refused')
+  assert.equal(next.calibration, undefined)
+  assert.equal(next.segment, 0)
+  assert.ok(parseEngineConfig(withOutput({ ...next, host: 'wled.local' })))
+})
+
+test('switching back to serial drops the address and the segment', () => {
+  const next = switchTransport({ transport: 'wled', host: 'wled.local', segment: 3, format: 'Afx' }, 'serial')
+  assert.equal(next.host, undefined)
+  assert.equal(next.segment, undefined)
+  assert.ok(parseEngineConfig(withOutput(next)))
+})
+
+test('the address survives a move between the two network transports', () => {
+  // Someone comparing our firmware against a WLED on the same board should not
+  // have to retype the address.
+  const ws = switchTransport({ transport: 'serial', format: 'Afx' }, 'websocket')
+  const wled = switchTransport({ ...ws, host: '10.0.0.7' }, 'wled')
+  assert.equal(wled.host, '10.0.0.7')
+  assert.equal(switchTransport(wled, 'websocket').host, '10.0.0.7')
+})
+
+test('every transport, from every other, produces something applicable', () => {
+  const starts = [
+    { transport: 'serial', format: 'Afx' },
+    { transport: 'serial', format: 'Awa', calibration: { white: 0, limit: 0, red: 0, green: 0, blue: 0 } },
+    { transport: 'websocket', host: 'strip.local', format: 'Ada' },
+    { transport: 'wled', host: 'wled.local', segment: 2, format: 'Afx' }
+  ] as const
+  for (const from of starts) {
+    for (const to of ['serial', 'websocket', 'wled'] as const) {
+      const next = switchTransport(from, to)
+      // An empty address is the one thing the panel still has to collect; fill
+      // it here so the rest of the shape is what is being asserted.
+      const filled = next.host === '' ? { ...next, host: 'x' } : next
+      assert.ok(parseEngineConfig(withOutput(filled)), `${from.transport} -> ${to}`)
+    }
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Smoothing.
+// ---------------------------------------------------------------------------
+
+test('smoothing defaults to Balanced, which is what the strip ran before it was a knob', () => {
+  const config = parseEngineConfig({ layout: { kind: 'classic', ...REFERENCE_LAYOUT } })
+  assert.deepEqual(config.smoothing, { attackMs: 15, releaseMs: 90, cutThreshold: 0.25 })
+  assert.equal(profileOf(config.smoothing), 'balanced')
+})
+
+test('the profile name is derived, so it can never disagree with the numbers', () => {
+  // A stored name could say "balanced" over cinema's numbers, which is a state
+  // that can exist and means nothing.
+  assert.equal(profileOf(SMOOTHING_PROFILES.cinema), 'cinema')
+  assert.equal(profileOf(SMOOTHING_PROFILES.competitive), 'competitive')
+  assert.equal(profileOf({ attackMs: 15, releaseMs: 91, cutThreshold: 0.25 }), null, 'one edited number is custom')
+})
+
+test('the cut bypass is turned off exactly, not by a sentinel', () => {
+  // It fires when the mean |target - output| is ABOVE the threshold, and each
+  // channel differs by at most 1 - so a mean above 1 is unreachable.
+  assert.equal(SMOOTHING_PROFILES.competitive.cutThreshold, 1)
+  const off = parseEngineConfig({ layout: { kind: 'classic', ...REFERENCE_LAYOUT }, smoothing: { cutThreshold: 1 } })
+  assert.equal(off.smoothing.cutThreshold, 1)
+  assert.throws(
+    () => parseEngineConfig({ layout: { kind: 'classic', ...REFERENCE_LAYOUT }, smoothing: { cutThreshold: 1.5 } }),
+    /smoothing\.cutThreshold/
+  )
+})
+
+test('a time constant out of range is refused by name', () => {
+  const base = { layout: { kind: 'classic', ...REFERENCE_LAYOUT } }
+  assert.throws(() => parseEngineConfig({ ...base, smoothing: { attackMs: -1 } }), /smoothing\.attackMs/)
+  assert.throws(() => parseEngineConfig({ ...base, smoothing: { releaseMs: 5000 } }), /smoothing\.releaseMs/)
+  assert.throws(() => parseEngineConfig({ ...base, smoothing: { attackMs: 'hızlı' } }), /smoothing\.attackMs/)
+  assert.throws(() => parseEngineConfig({ ...base, smoothing: 'sinema' }), /config\.smoothing/)
+})
+
+test('a config written before smoothing was a setting still loads', () => {
+  // Everyone who has used this has one of these stored, and it must not be
+  // the reason their strip stops working after an update.
+  const older = JSON.parse(serialiseEngineConfig(DEFAULT_ENGINE_CONFIG)) as Record<string, unknown>
+  delete older.smoothing
+  assert.deepEqual(parseEngineConfig(older).smoothing, DEFAULT_SMOOTHING)
+})
+
+// ---------------------------------------------------------------------------
+// Colour correction.
+// ---------------------------------------------------------------------------
+
+test('colour correction defaults to identity, so nothing changes until asked', () => {
+  // The chain has been in the engine and pinned to identity since it was
+  // written. Making it a setting must not move anybody's strip on its own.
+  const config = parseEngineConfig({ layout: { kind: 'classic', ...REFERENCE_LAYOUT } })
+  assert.deepEqual(config.color, {
+    brightness: 100,
+    saturationGain: 1,
+    temperature: 6600,
+    taper: 1,
+    backlightThreshold: 0,
+    backlightColored: false
+  })
+})
+
+test('the taper is bounded well below Hyperion’s 2.2, on purpose', () => {
+  // The pipeline already averages in linear light, so a 2.2 here applies the
+  // transfer function a second time and roughly squares the output.
+  const base = { layout: { kind: 'classic', ...REFERENCE_LAYOUT } }
+  assert.equal(parseEngineConfig({ ...base, color: { taper: 1.3 } }).color.taper, 1.3)
+  assert.throws(() => parseEngineConfig({ ...base, color: { taper: 2.2 } }), /color\.taper/)
+  assert.throws(() => parseEngineConfig({ ...base, color: { taper: 0.9 } }), /color\.taper/)
+})
+
+test('each colour knob is refused by name when it is out of range', () => {
+  const base = { layout: { kind: 'classic', ...REFERENCE_LAYOUT } }
+  assert.throws(() => parseEngineConfig({ ...base, color: { brightness: 101 } }), /color\.brightness/)
+  assert.throws(() => parseEngineConfig({ ...base, color: { saturationGain: 3 } }), /color\.saturationGain/)
+  assert.throws(() => parseEngineConfig({ ...base, color: { temperature: 500 } }), /color\.temperature/)
+  assert.throws(() => parseEngineConfig({ ...base, color: { backlightThreshold: -1 } }), /color\.backlightThreshold/)
+  assert.throws(() => parseEngineConfig({ ...base, color: { backlightColored: 'evet' } }), /color\.backlightColored/)
+})
+
+test('a config written before colour correction was a setting still loads', () => {
+  const older = JSON.parse(serialiseEngineConfig(DEFAULT_ENGINE_CONFIG)) as Record<string, unknown>
+  delete older.color
+  assert.deepEqual(parseEngineConfig(older).color, DEFAULT_COLOR)
+})
+
+// ---------------------------------------------------------------------------
+// Black-border detection.
+// ---------------------------------------------------------------------------
+
+test('border detection defaults to on, which is what a film needs', () => {
+  const config = parseEngineConfig({ layout: { kind: 'classic', ...REFERENCE_LAYOUT } })
+  assert.deepEqual(config.border, { enabled: true, mode: 'default', threshold: 0.05, blurRemovePx: 1 })
+})
+
+test('every probe pattern the engine has is settable, and nothing else is', () => {
+  const base = { layout: { kind: 'classic', ...REFERENCE_LAYOUT } }
+  for (const mode of ['default', 'classic', 'osd', 'letterbox']) {
+    assert.equal(parseEngineConfig({ ...base, border: { mode } }).border.mode, mode)
+  }
+  assert.throws(() => parseEngineConfig({ ...base, border: { mode: 'akıllı' } }), /border\.mode/)
+})
+
+test('the threshold is capped well below "any dark pixel"', () => {
+  // A "black" bar brighter than a fifth of full scale is dark content, and a
+  // detector that accepted it would crop the picture rather than the bars -
+  // which is worse than detecting nothing at all.
+  const base = { layout: { kind: 'classic', ...REFERENCE_LAYOUT } }
+  assert.equal(parseEngineConfig({ ...base, border: { threshold: 0.2 } }).border.threshold, 0.2)
+  assert.throws(() => parseEngineConfig({ ...base, border: { threshold: 0.5 } }), /border\.threshold/)
+  assert.throws(() => parseEngineConfig({ ...base, border: { blurRemovePx: 20 } }), /border\.blurRemovePx/)
+  assert.throws(() => parseEngineConfig({ ...base, border: { enabled: 'evet' } }), /border\.enabled/)
+})
+
+test('a config written before border detection was a setting still loads', () => {
+  const older = JSON.parse(serialiseEngineConfig(DEFAULT_ENGINE_CONFIG)) as Record<string, unknown>
+  delete older.border
+  assert.deepEqual(parseEngineConfig(older).border, DEFAULT_BORDER)
+})
+
+test('the host dither is accepted on the 8-bit formats and refused where it would do nothing', () => {
+  for (const format of ['Awa', 'Ada'] as const) {
+    const ok = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format, dither: true } })
+    assert.equal(ok.output.dither, true)
+  }
+
+  // Afx is 16-bit and the firmware sigma-deltas it on the strip's own refresh;
+  // a second diffuser over the same LSB is noise. Told, not ignored.
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Afx', dither: true } }),
+    /not used by Afx/
+  )
+  assert.throws(
+    () => parseEngineConfig({
+      ...DEFAULT_ENGINE_CONFIG,
+      output: { transport: 'wled', host: 'wled.local', format: 'Afx', dither: true }
+    }),
+    /not used by WLED/
+  )
+})
+
+test('an explicit `false` is the default said out loud, so it carries anywhere', () => {
+  // Otherwise a panel that always writes the field would make Afx unsaveable.
+  for (const format of WIRE_FORMATS) {
+    const parsed = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format, dither: false } })
+    assert.equal(parsed.output.dither, undefined, `${format} kept a false`)
+  }
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Awa', dither: 'yes' } }),
+    /must be true or false/
+  )
+})
+
+test('switching transport carries the dither where it still applies and drops it on WLED', () => {
+  const awa = { transport: 'serial' as const, format: 'Awa' as const, dither: true }
+  assert.equal(switchTransport(awa, 'websocket').dither, true)
+  // WLED builds its own JSON and never sees the payload the dither works on,
+  // so carrying it would produce a config the parser then refuses.
+  const wled = switchTransport({ ...awa, host: 'wled.local' }, 'wled')
+  assert.equal(wled.dither, undefined)
+  assert.doesNotThrow(() => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: wled }))
+})
+
+test('a config saved before this option existed still loads', () => {
+  // The field is optional and absent means off; a stored rig must not become
+  // unloadable because a newer panel knows about one more setting.
+  const parsed = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Awa' } })
+  assert.equal(parsed.output.dither, undefined)
+  assert.equal(serialiseEngineConfig(parsed).includes('dither'), false)
+})
+
+test('the sampling block defaults to exactly what the engine did before it existed', () => {
+  // The whole point of the defaults: a rig that never opens this page must not
+  // change behaviour because the setting now has a name.
+  const parsed = parseEngineConfig(DEFAULT_ENGINE_CONFIG)
+  assert.equal(parsed.sampling.mode, 'mean')
+  assert.equal(parsed.sampling.reducedPixelSetFactor, 0)
+  assert.equal(parsed.sampling.accuracyLevel, 2)
+
+  // And a config stored before the block existed still loads.
+  const { sampling, ...older } = DEFAULT_ENGINE_CONFIG as EngineConfig
+  assert.deepEqual(parseEngineConfig(older).sampling, DEFAULT_SAMPLING)
+})
+
+test('every reduction the sampler implements is accepted, and nothing else is', () => {
+  for (const mode of SAMPLE_MODES) {
+    const parsed = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, sampling: { mode } })
+    assert.equal(parsed.sampling.mode, mode)
+  }
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, sampling: { mode: 'median' } }),
+    /must be one of/
+  )
+})
+
+test('the decimation and accuracy levels are bounded at the sampler\'s own limits', () => {
+  // Out of range is refused here rather than clamped in the sampler and
+  // reported as a warning the user then has to notice.
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, sampling: { reducedPixelSetFactor: 4 } }),
+    /reducedPixelSetFactor/
+  )
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, sampling: { accuracyLevel: MAX_ACCURACY_LEVEL + 1 } }),
+    /accuracyLevel/
+  )
+  const top = parseEngineConfig({
+    ...DEFAULT_ENGINE_CONFIG,
+    sampling: { reducedPixelSetFactor: MAX_PIXEL_SET_FACTOR, accuracyLevel: MAX_ACCURACY_LEVEL }
+  })
+  assert.equal(top.sampling.reducedPixelSetFactor, MAX_PIXEL_SET_FACTOR)
+  assert.equal(top.sampling.accuracyLevel, MAX_ACCURACY_LEVEL)
+})
+
+test('an accuracy level is KEPT under a mode that ignores it', () => {
+  // Deliberately unlike the calibration bytes and the host dither, which are
+  // refused where they do nothing: those are payload the wire format cannot
+  // carry, this is a preference the user returns to. Dropping it would lose a
+  // setting rather than prevent a lie.
+  const parsed = parseEngineConfig({
+    ...DEFAULT_ENGINE_CONFIG,
+    sampling: { mode: 'mean', accuracyLevel: 4 }
+  })
+  assert.equal(parsed.sampling.accuracyLevel, 4)
 })

@@ -1,8 +1,13 @@
 # AmbiFlux
 
-Monitör arkası, ekranı takip eden ambilight. 108 LED'lik WS2812B şerit, ESP32-S3
-üzerinde seri protokol konuşan firmware, ekranı yakalayıp per-LED kare üreten
-tarayıcı eklentisi, ve barındırılan bir kontrol düzlemi.
+Ekranı takip eden ambilight — **tarayıcıda çalışan**, kurulum istemeyen,
+açık kaynak bir Hyperion.NG alternatifi.
+
+Hyperion bir bilgisayara (çoğunlukla bir Raspberry Pi'ye) kurulur. AmbiFlux
+kurulmaz: motor bir Chrome eklentisinin offscreen dokümanında koşuyor, arayüz
+bir web sayfası, ve şeridi süren firmware ESP32-S3 üzerinde seri protokol
+konuşuyor. Yol haritası [hyperion.ng](https://github.com/hyperion-project/hyperion.ng);
+aradaki farkın dökümü `docs/hyperion-gap-analysis.md`'de.
 
 ## Depo yapısı
 
@@ -11,27 +16,63 @@ Depo kökü **tek bir Next.js uygulaması.** Workspace yok, alt paket yok.
 | Yol | Ne | Durum |
 |---|---|---|
 | `app/` | Route handler'lar (API) + kontrol paneli sayfası | **çalışıyor** |
-| `lib/` | Lisans kriptosu, doğrulama, depolama, hız sınırı | **çalışıyor** |
-| `lib/api/` | HTTP mantığı, framework'ten bağımsız | **çalışıyor** |
+| `lib/api/` | Kalan iki uç nokta (`/healthz`, `/v1/version`) | **çalışıyor** |
 | `lib/engine/` | Motor: yerleşim, örnekleme, kenar, düzeltme, yumuşatma, dither, protokol, seri yazıcı — saf TypeScript, tarayıcı API'si yok | **çalışıyor**, testli |
 | `lib/extension/` | Panel ile eklentinin ortak mesaj sözleşmesi | **çalışıyor** |
 | `extension/` | Chrome eklentisi (MV3): yakalama + hat + seri port, offscreen document'ta | **derleniyor**, gerçek ekranda henüz ölçülmedi |
-| `components/` | HeroUI v3 ekranları | **çalışıyor** |
-| `supabase/migrations/` | Şema SQL'i, tek doğru kaynak | **çalışıyor** |
-| `test/` | 334 test, ağ ve veritabanı gerektirmez | **çalışıyor** |
+| `components/` | HeroUI v3 ekranları, kullanım kılavuzu dahil | **çalışıyor** |
+| `lib/sections.ts` | Panelin gezinme yapısı — veri olarak, testli | **çalışıyor** |
+| `lib/i18n/` | 12 dil; Türkçe ve İngilizce tam, diğerleri ortak çekirdek + İngilizce yedek | **çalışıyor**, testli |
+| `lib/theme.ts` | Tarayıcı temasını izleyen, kullanıcının ezebildiği açık/koyu | **çalışıyor**, testli |
+| `firmware/` | ESP32-S3 firmware'i, PlatformIO; algoritmalar host'ta test ediliyor | **derleniyor**, kartta ölçülmedi |
+| `test/` | Panel ve motor testleri; ağ, veritabanı ya da tarayıcı gerektirmez | **çalışıyor** |
 | `docs/hyperion-port-plan.md` | Hyperion.NG'den ne, nasıl, neden aktarılıyor | plan |
+| `docs/hyperion-gap-analysis.md` | Hyperion'un özellik envanteri ve bizdeki karşılıkları | analiz |
+| `docs/firmware-and-devices.md` | ESP32 çıkış yolları, mevcut kütüphanelerle uyum, ve tarayıcıdan hangi ağ cihazına ulaşılabildiği | araştırma |
+| `docs/design-brief.md` | Bütün ekranların tasarım brief'i: içerik, durumlar, HeroUI bileşen ve token sözlüğü | tasarım |
+| `docs/hyperion-watch.md` | Hyperion'un yeni commit'leri ve her biri için verilen karar | takip |
+| `docs/extension-handoff.md` | Eklentinin mimarisi, protokolü, ölçülenler, ve §12'de sıradaki işin tamamı + durum tablosu | plan |
 | `AmbiFluxNanoR4LampArray/` | Eski HID LampArray firmware'i | ESP32-S3'e yeniden yazılacak |
 
 WinUI 3 masaüstü uygulaması **silindi** — Windows Dynamic Lighting kapsamdan
 çıktı. Git geçmişinde duruyor (`fa622c5` ve öncesi).
 
+## Arayüz: bölümler, tek sayfa değil
+
+Panel bir kenar çubuğu ve aynı anda tek bölüm. Sebep bugün değil yarın: yol
+haritasında efekt motoru, ağ cihazları, ses, renk düzeltme, yumuşatma profilleri,
+kenar modları ve öncelik katmanları var — bunları tek bir sütuna dizmek, içinde
+hiçbir şeyin bulunamadığı bir sayfa üretir. Hyperion'un kendi web arayüzü de tam
+olarak böyle kurulu, ve aynı sebeple.
+
+Gezinme **veri**: `lib/sections.ts`. Yeni bir özellik eklemek bir tablo satırı ve
+bir bileşen — gitgide uzayan bir sütuna sıkıştırılan başka bir kart değil.
+Bölümler adreslenebilir (`#/layout`), geri tuşu çalışıyor, ve dar ekranda kenar
+çubuğu bir menüye dönüşüyor.
+
+## Dil ve tema
+
+Arayüz **tamamen Türkçe** ve varsayılan dil Türkçe. İlk açılışta tarayıcının
+dilinden (`navigator.languages`) en yakını seçiliyor, sonra kullanıcının seçimi
+`localStorage`'a yazılıyor. On iki dil listeleniyor — Türkçe, İngilizce,
+Almanca, Çince (Basitleştirilmiş), İspanyolca, Fransızca, Rusça, Portekizce
+(Brezilya), İtalyanca, Lehçe, Felemenkçe, Japonca — ve seçicide her birinin
+**yüzde kaçının çevrildiği yazıyor**: bir dili sunup İngilizce göstermek,
+baştan ne kadarının hazır olduğunu söylemekten kötü. Çevrilmemiş bir anahtar
+İngilizce'ye düşüyor, anahtar adı asla görünmüyor.
+
+Tema üç durumlu: **sistemi izle** (varsayılan), açık, koyu. "Sistemi izle" ayrı
+bir seçim — sabah aydınlanan bir masaüstünde panel de aydınlanıyor. Seçim ilk
+boyamadan önce `app/layout.tsx`'teki küçük satır içi betikle uygulanıyor, yani
+yanlış renkte bir kare yanıp sönmüyor.
+
 ## Yığın
 
-**Next.js 16 · React 19 · HeroUI v3 · Tailwind 4 · Zod · Supabase (Postgres)**
+**Next.js 16 · React 19 · HeroUI v3 · Tailwind 4**
 
-Neden Next.js: aynı kod **hem Vercel'de hem Hostinger'da** çalışıyor. Önceki
-Fastify + Vite kurulumu yalnız uzun ömürlü bir Node sürecinde çalışabiliyordu,
-yani Vercel'e geçmek yeniden yazım olurdu.
+Sunucu tarafı bilinçli olarak neredeyse yok: geriye `/healthz` ve `/v1/version`
+kaldı. Uygulamanın tamamı tarayıcıda çalışıyor, hiçbir şey bir hesaba ya da bir
+veritabanına bağlı değil, ve ekran görüntüsü hiçbir yere gönderilmiyor.
 
 **Vite yok.** Frontend'i Next derliyor (Next 16 kendi içinde Turbopack
 kullanıyor), Tailwind'i de `@tailwindcss/vite` değil `@tailwindcss/postcss`
@@ -55,25 +96,18 @@ değişirse mantık yerinde kalıyor.
 
 ```bash
 npm install
-npm test          # 334 test; ağ, veritabanı ya da build gerekmez
+npm test          # ağ, veritabanı ya da build gerekmez
 npm run typecheck
 npm run dev       # http://localhost:3000
 npm run build
 ```
 
-`npm run dev` kalıcı imza anahtarı olmadan çalışır: geçici bir anahtar üretip
-yüksek sesle uyarır ve bellek içi depolamayı bir geliştirme lisansıyla
-(`AF-DEV-0000-0000`) tohumlar. Üretimde ikisi de reddedilir.
-
 ```bash
-curl -X POST localhost:3000/v1/licence/activate \
-  -H 'content-type: application/json' \
-  -d '{"licenceKey":"AF-DEV-0000-0000","fingerprint":"fingerprint-demo12345678"}'
+npm run hyperion:watch   # hyperion.ng'de son incelemeden beri ne değişti
 ```
 
-> **Tuzak:** `next start` kendisi `NODE_ENV=production` set ediyor, yani
-> derlenmiş bir build'i `STORAGE=memory` ile çalıştıramazsın — config bunu
-> bilerek reddediyor. Bellek içi depolama `npm run dev` içindir.
+Yapılandırılacak ortam değişkeni yok. Panel açılır açılmaz çalışıyor; kaydettiği
+her şey tarayıcının kendi deposunda.
 
 ## Motor: tarayıcı eklentisi
 
@@ -86,11 +120,22 @@ dolayısıyla hiç kısıtlanmıyor. Ölçümü ve alternatiflerin neden kaybett
 ```bash
 npm run typecheck:extension   # DOM + chrome + Web Serial tipleriyle
 npm run build:extension       # esbuild → extension/dist
+npm run pack:extension        # derler + extension/ambiflux-extension.zip üretir
 ```
 
 Sonra Chrome'da `chrome://extensions` → **Geliştirici modu** → **Paketlenmemiş
 öğe yükle** → `extension/dist`. Manifest'teki `key` sayesinde eklenti kimliği
 her makinede aynıdır (`data/extension.ts`), panel onu bu kimlikle bulur.
+
+> **`extension/dist` depoda**, bilinçli olarak: yüklenecek şey o, ve depoda
+> olmaması araç zinciri kurmadan çalışan bir uzantı indirmeyi imkânsız
+> kılıyordu. Depoyu klonla (ya da ZIP olarak indir) ve `extension/dist`
+> klasörünü yükle. Kaynağa dokunduysan önce `npm run build:extension`, sonra
+> commit — çıktı depoda olduğu için güncel tutulması gerekiyor.
+>
+> Doğrudan `extension/` klasörünü seçersen Chrome **"Could not load background
+> script 'sw.js'"** der: orada yalnız TypeScript kaynağı var. Klasör `dist`
+> olmalı. Başka birine tek dosya olarak göndermek için `npm run pack:extension`.
 
 Kullanım, eklenti simgesinden:
 
@@ -114,51 +159,17 @@ nasıl ve hangi kusuru dışarıda bırakılarak aktarıldığı her modülün b
 
 ## API
 
+Neredeyse yok, ve bu bilinçli. Uygulamanın tamamı tarayıcıda çalışıyor.
+
 | Uç nokta | Ne yapar |
 |---|---|
-| `GET /healthz` | Canlılık. Veritabanına **dokunmaz** — en ucuz ısıtma pingi |
-| `GET /readyz` | Hazırlık. Veritabanını *ve* yapılandırmayı kontrol eder |
-| `GET /v1/version` | Sürüm + lisans **açık anahtarı** |
-| `POST /v1/licence/activate` | Lisans anahtarı + makine parmak izi → imzalı token |
-| `POST /v1/licence/refresh` | Token yenileme. Süresi geçmiş token'ı **kabul eder** |
-| `GET/PUT/DELETE /v1/presets[/:id]` | Monitör profilleri. Token'ın kendisi kimlik bilgisi |
-| `GET /v1/updates/manifest` | Motor ve firmware sürüm bilgisi |
+| `GET /healthz` | Canlılık |
+| `GET /v1/version` | Dağıtılmış sürüm; eklenti kendi derlemesiyle karşılaştırıyor |
 | `* /v1/*` (eşleşmeyen) | JSON 404 — API istemcisi HTML hata sayfası almamalı |
 
-### Lisans tasarımının iki kasıtlı kararı
-
-**Token'lar çevrimdışı doğrulanıyor.** Ed25519 imzalı; istemci gömülü açık
-anahtarla kendi başına doğruluyor. Sunucu yalnızca sıradaki token'ı üretmek için
-gerekiyor — motorun **fail-open** olmasını mümkün kılan şey bu.
-
-**Yetkiler imzanın içinde.** `features` dizisi imzalanan payload'da; istemci
-haklarını yerel bir boolean'dan değil doğrulanmış veriden okuyor. Böylece lisans
-kontrolünü yamalamak premium özellikleri **kapalı** bırakıyor, açık değil.
-
-Dürüst olmak gerekirse: bu korsan kullanımı **engellemiyor.** Yerelde çalışan bir
-ikili her zaman yamalanabilir. Barındırmanın kazandırdığı şeyler iptal edebilme,
-merkezi güncelleme ve sunucuda kalan kodun korunması.
-
-## Veritabanı
-
-Supabase (Postgres 17), `eu-central-1`. Şema `supabase/migrations/` altında.
-
-**Row Level Security açık ve politikası yok.** Bu isteğe bağlı değil: Supabase
-`public` şemasındaki her tabloyu anon anahtarıyla PostgREST üzerinden yayınlıyor
-ve anon anahtarı tasarımı gereği herkese açık. RLS kapalıyken o anahtarı tutan
-herkes `select * from licences` çekip bugüne kadar ürettiğimiz **tüm lisans
-anahtarlarını** alabilirdi. API servis rolüyle bağlandığı için RLS'i atlıyor;
-anon anahtarı sızarsa hiçbir şey okuyamıyor. İki yönden de doğrulandı.
-
-`npm run migrate` şema **oluşturmuyor**, şemayı **doğruluyor** — PostgREST DDL
-çalıştıramıyor, o yüzden şema değişiklikleri migration dosyalarına ait. Script'in
-yaptığı iş asıl faydalı olan yarısı: işaret ettiğin veritabanının kodun beklediği
-şemaya sahip olup olmadığını söylüyor ve olmadığında sıfırdan farklı çıkıyor.
+Hesap yok, oturum yok, veritabanı yok. Profiller `localStorage`'da duruyor ve
+makineler arasında bir **dosyayla** taşınıyor.
 
 ## Dağıtım
 
 Bkz. [`docs/deploy.md`](docs/deploy.md).
-
-## Lisans
-
-Apache-2.0, bkz. `LICENSE.txt`.

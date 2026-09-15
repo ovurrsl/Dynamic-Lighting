@@ -16,25 +16,16 @@ import type { NextConfig } from 'next'
  * this app is a single root-level Next project and not a workspace.
  */
 const nextConfig: NextConfig = {
-  // Fail the build on a type error rather than shipping it. This is the default,
-  // stated explicitly because turning it off is a common shortcut and this is a
-  // licensing service.
+  // Fail the build on a type error rather than shipping it. The default, stated
+  // explicitly because turning it off is a common shortcut.
   typescript: { ignoreBuildErrors: false },
 
-  // The licence API must never be cached by a CDN: a token response is specific
-  // to one machine fingerprint and one moment.
+  // Liveness must not be answered from a CDN cache, or it stops meaning
+  // anything about the deployment behind it.
   async headers () {
     return [
       {
-        source: '/v1/licence/:path*',
-        headers: [{ key: 'cache-control', value: 'no-store, max-age=0' }]
-      },
-      {
         source: '/healthz',
-        headers: [{ key: 'cache-control', value: 'no-store, max-age=0' }]
-      },
-      {
-        source: '/readyz',
         headers: [{ key: 'cache-control', value: 'no-store, max-age=0' }]
       }
     ]

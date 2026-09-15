@@ -878,6 +878,440 @@ function requireDuration(name, value) {
   return value;
 }
 
+// lib/engine/sample.ts
+var SAMPLE_MODES = Object.freeze([
+  "mean",
+  "meanSquared",
+  "unicolorMean",
+  "dominant",
+  "unicolorDominant",
+  "dominantAdvanced",
+  "unicolorDominantAdvanced"
+]);
+var SAMPLER_DEFAULTS = Object.freeze({
+  reducedPixelSetFactor: 0,
+  accuracyLevel: 2
+});
+var LARGE_REGION_PIXELS = 1600;
+var MAX_ACCURACY_LEVEL = 4;
+var KMEANS_CONVERGENCE = 1 / 255;
+var KMEANS_MAX_ITERATIONS = 20;
+var CLUSTER_SEEDS = Object.freeze([
+  Object.freeze({ r: 0, g: 0, b: 0 }),
+  Object.freeze({ r: 0, g: 1, b: 0 }),
+  Object.freeze({ r: 1, g: 1, b: 1 }),
+  Object.freeze({ r: 1, g: 0, b: 0 }),
+  Object.freeze({ r: 1, g: 1, b: 0 })
+]);
+var DOMINANT_LEVELS = 32;
+function createSampler(options) {
+  return new LedSampler(options);
+}
+var NAMED_LEDS_IN_WARNING = 8;
+var LedSampler = class {
+  width;
+  height;
+  count;
+  warnings = [];
+  rects;
+  /** Pixels stepped along each axis: reducedPixelSetFactor + 1 (.cpp:83). */
+  step;
+  clusterCount;
+  /** How many leading entries of `warnings` were produced at construction and survive every rebuild. */
+  fixedWarnings;
+  currentBorder = NO_BORDER;
+  /** `starts[led] .. starts[led + 1]` is LED `led`'s slice of `indices`. */
+  starts;
+  /** Every LED's pixel offsets back to back. Grows when a rebuild needs more, never shrinks. */
+  indices = new Int32Array(0);
+  /** Rebuild scratch, five ints per LED: minX, endX, minY, endY, step. */
+  bounds;
+  /** Rebuild scratch: the first few LEDs the large-region guard fired on. */
+  forced = new Int32Array(NAMED_LEDS_IN_WARNING);
+  // Scratch for the modes that need it, allocated on first use so a sampler
+  // that only ever runs `mean` pays for none of it.
+  /** The identity map 0..width*height-1: the "region" of the unicolor modes. */
+  wholeGrid = null;
+  /** 32^3 bin counts for `dominant`, zero between calls. */
+  histogram = null;
+  /** The bin of each pixel of the region in hand, so the winning bin can be averaged and the histogram cleared without recomputing keys. */
+  keys = null;
+  centroids = new Float64Array(CLUSTER_SEEDS.length * 3);
+  sums = new Float64Array(CLUSTER_SEEDS.length * 3);
+  members = new Int32Array(CLUSTER_SEEDS.length);
+  constructor(options) {
+    const { width, height, layout } = options;
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
+      throw new RangeError(`sample: grid must be at least 1x1, got ${width}x${height}`);
+    }
+    this.width = width;
+    this.height = height;
+    this.rects = layout.map(validateRect);
+    this.count = this.rects.length;
+    const factor = options.reducedPixelSetFactor ?? SAMPLER_DEFAULTS.reducedPixelSetFactor;
+    if (!Number.isInteger(factor) || factor < 0 || factor > 3) {
+      throw new RangeError(`sample: reducedPixelSetFactor must be an integer in 0..3, got ${factor}`);
+    }
+    this.step = factor + 1;
+    let accuracy = options.accuracyLevel ?? SAMPLER_DEFAULTS.accuracyLevel;
+    if (!Number.isInteger(accuracy)) throw new RangeError(`sample: accuracyLevel must be an integer, got ${accuracy}`);
+    if (accuracy > MAX_ACCURACY_LEVEL) {
+      this.warnings.push(`sample: accuracyLevel ${accuracy} is above the maximum ${MAX_ACCURACY_LEVEL}; using ${MAX_ACCURACY_LEVEL}`);
+      accuracy = MAX_ACCURACY_LEVEL;
+    } else if (accuracy < 0) {
+      this.warnings.push(`sample: accuracyLevel ${accuracy} is below 0; using 0`);
+      accuracy = 0;
+    }
+    this.clusterCount = accuracy + 1;
+    this.fixedWarnings = this.warnings.length;
+    this.starts = new Int32Array(this.count + 1);
+    this.bounds = new Int32Array(this.count * 5);
+    this.rebuild(0, 0);
+  }
+  border() {
+    return this.currentBorder;
+  }
+  setBorder(border2) {
+    const leftRight = border2.unknown ? 0 : border2.leftRight;
+    const topBottom = border2.unknown ? 0 : border2.topBottom;
+    if (!Number.isInteger(leftRight) || !Number.isInteger(topBottom) || leftRight < 0 || topBottom < 0) {
+      throw new RangeError(`sample: border insets must be non-negative integers, got ${leftRight}/${topBottom}`);
+    }
+    if (2 * leftRight >= this.width || 2 * topBottom >= this.height) {
+      throw new RangeError(`sample: border ${leftRight}/${topBottom} leaves no picture on a ${this.width}x${this.height} grid`);
+    }
+    if (leftRight === this.currentBorder.leftRight && topBottom === this.currentBorder.topBottom) return false;
+    this.rebuild(leftRight, topBottom);
+    return true;
+  }
+  pixelIndices(led) {
+    if (!Number.isInteger(led) || led < 0 || led >= this.count) throw new RangeError(`sample: no LED ${led} in a layout of ${this.count}`);
+    return this.indices.subarray(this.starts[led], this.starts[led + 1]);
+  }
+  sample(grid, out, mode) {
+    const { width, height, count } = this;
+    if (grid.width !== width || grid.height !== height) {
+      throw new RangeError(`sample: grid is ${grid.width}x${grid.height}, the map was built for ${width}x${height}`);
+    }
+    if (grid.data.length < width * height * 3) {
+      throw new RangeError(`sample: grid data holds ${grid.data.length} floats, ${width}x${height} needs ${width * height * 3}`);
+    }
+    if (out.length < count * 3) throw new RangeError(`sample: out holds ${out.length} floats, ${count} LEDs need ${count * 3}`);
+    const data = grid.data;
+    const starts = this.starts;
+    const indices = this.indices;
+    switch (mode) {
+      case "mean":
+        for (let led = 0; led < count; led++) this.meanInto(data, indices, starts[led], starts[led + 1], out, led * 3);
+        break;
+      case "meanSquared":
+        for (let led = 0; led < count; led++) this.meanSquaredInto(data, indices, starts[led], starts[led + 1], out, led * 3);
+        break;
+      case "dominant":
+        for (let led = 0; led < count; led++) this.dominantInto(data, indices, starts[led], starts[led + 1], out, led * 3);
+        break;
+      case "dominantAdvanced":
+        for (let led = 0; led < count; led++) this.kMeansInto(data, indices, starts[led], starts[led + 1], out, led * 3);
+        break;
+      case "unicolorMean": {
+        const all = this.allPixels();
+        this.meanInto(data, all, 0, all.length, out, 0);
+        fillFromFirst(out, count);
+        break;
+      }
+      case "unicolorDominant": {
+        const all = this.allPixels();
+        this.dominantInto(data, all, 0, all.length, out, 0);
+        fillFromFirst(out, count);
+        break;
+      }
+      case "unicolorDominantAdvanced": {
+        const all = this.allPixels();
+        this.kMeansInto(data, all, 0, all.length, out, 0);
+        fillFromFirst(out, count);
+        break;
+      }
+      default:
+        throw new RangeError(`sample: unknown mode ${String(mode)}`);
+    }
+    return out;
+  }
+  /**
+   * Port of the constructor's index loop (.cpp:39-111), run again for every
+   * border. Two passes: the first computes each LED's pixel box and the size
+   * of the map, the second fills it, so the one buffer grows at most once
+   * per size and there is nothing to allocate per pixel.
+   */
+  rebuild(leftRight, topBottom) {
+    const { width, height, count, rects, starts, bounds, forced } = this;
+    this.warnings.length = this.fixedWarnings;
+    this.currentBorder = Object.freeze({ unknown: false, leftRight, topBottom });
+    const xOffset = leftRight;
+    const activeW = width - 2 * leftRight;
+    const yOffset = topBottom;
+    const activeH = height - 2 * topBottom;
+    let total = 0;
+    let forcedCount = 0;
+    for (let led = 0; led < count; led++) {
+      const rect = rects[led];
+      const b = led * 5;
+      if (rect.xMax - rect.xMin < 1e-6 || rect.yMax - rect.yMin < 1e-6) {
+        bounds[b] = 0;
+        bounds[b + 1] = 0;
+        bounds[b + 2] = 0;
+        bounds[b + 3] = 0;
+        bounds[b + 4] = 1;
+        continue;
+      }
+      let minX = xOffset + Math.round(activeW * rect.xMin);
+      let maxX = xOffset + Math.round(activeW * rect.xMax);
+      let minY = yOffset + Math.round(activeH * rect.yMin);
+      let maxY = yOffset + Math.round(activeH * rect.yMax);
+      minX = Math.min(minX, xOffset + activeW - 1);
+      if (minX === maxX) maxX++;
+      minY = Math.min(minY, yOffset + activeH - 1);
+      if (minY === maxY) maxY++;
+      const endX = Math.min(maxX, xOffset + activeW);
+      const endY = Math.min(maxY, yOffset + activeH);
+      let step = this.step;
+      if (step === 1 && (endY - minY) * (endX - minX) > LARGE_REGION_PIXELS) {
+        step = 2;
+        if (forcedCount < forced.length) forced[forcedCount] = led;
+        forcedCount++;
+      }
+      bounds[b] = minX;
+      bounds[b + 1] = endX;
+      bounds[b + 2] = minY;
+      bounds[b + 3] = endY;
+      bounds[b + 4] = step;
+      total += Math.ceil((endY - minY) / step) * Math.ceil((endX - minX) / step);
+    }
+    if (total > this.indices.length) this.indices = new Int32Array(total);
+    const indices = this.indices;
+    let n = 0;
+    for (let led = 0; led < count; led++) {
+      const b = led * 5;
+      const minX = bounds[b];
+      const endX = bounds[b + 1];
+      const endY = bounds[b + 3];
+      const step = bounds[b + 4];
+      starts[led] = n;
+      for (let y = bounds[b + 2]; y < endY; y += step) {
+        for (let x = minX; x < endX; x += step) indices[n++] = y * width + x;
+      }
+    }
+    starts[count] = n;
+    if (forcedCount > 0) {
+      const named = Array.from(forced.subarray(0, Math.min(forcedCount, forced.length))).join(", ");
+      const more = forcedCount > forced.length ? ` and ${forcedCount - forced.length} more` : "";
+      this.warnings.push(
+        `sample: ${forcedCount} LED region(s) exceed ${LARGE_REGION_PIXELS} pixels (LED ${named}${more}); every 2nd pixel is skipped for them. Set reducedPixelSetFactor to choose the reduction yourself.`
+      );
+    }
+  }
+  allPixels() {
+    if (this.wholeGrid === null) {
+      const all = new Int32Array(this.width * this.height);
+      for (let i = 0; i < all.length; i++) all[i] = i;
+      this.wholeGrid = all;
+    }
+    return this.wholeGrid;
+  }
+  /**
+   * .h:409-439 in floats. The float sum of linear values divided by the count
+   * is the area average of the light; Hyperion's `uint8_t(cumm / pixelNum)`
+   * truncates, and its accumulator is wide enough only for regions under
+   * about 16 million pixels (defect #5 is the squared variant, which is not).
+   */
+  meanInto(data, idx, from, to, out, o) {
+    const n = to - from;
+    if (n === 0) {
+      black(out, o);
+      return;
+    }
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    for (let i = from; i < to; i++) {
+      const p = idx[i] * 3;
+      r += data[p];
+      g += data[p + 1];
+      b += data[p + 2];
+    }
+    out[o] = r / n;
+    out[o + 1] = g / n;
+    out[o + 2] = b / n;
+  }
+  /**
+   * .h:488-524: root of the mean of the squares, per channel. Hyperion divides
+   * the integer sum before the sqrt and overflows a 32-bit accumulator past
+   * ~66 000 pixels (.h:508, .h:518; defect #5); floats have neither problem.
+   * On linear input the result is simply biased towards the bright pixels.
+   */
+  meanSquaredInto(data, idx, from, to, out, o) {
+    const n = to - from;
+    if (n === 0) {
+      black(out, o);
+      return;
+    }
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    for (let i = from; i < to; i++) {
+      const p = idx[i] * 3;
+      const pr = data[p];
+      const pg = data[p + 1];
+      const pb = data[p + 2];
+      r += pr * pr;
+      g += pg * pg;
+      b += pb * pb;
+    }
+    out[o] = Math.sqrt(r / n);
+    out[o + 1] = Math.sqrt(g / n);
+    out[o + 2] = Math.sqrt(b / n);
+  }
+  /**
+   * .h:572-605 on quantised keys. Three passes over the region: count the
+   * bins and find the winner, average the pixels that fell into it, zero
+   * the touched bins. The histogram stays allocated and zero between calls,
+   * which is what makes the clear cost O(region) rather than O(32^3).
+   */
+  dominantInto(data, idx, from, to, out, o) {
+    const n = to - from;
+    if (n === 0) {
+      black(out, o);
+      return;
+    }
+    const histogram = this.histogram ??= new Int32Array(DOMINANT_LEVELS * DOMINANT_LEVELS * DOMINANT_LEVELS);
+    const keys = this.keys ??= new Int32Array(this.width * this.height);
+    let best = 0;
+    let bestCount = 0;
+    for (let i = from; i < to; i++) {
+      const p = idx[i] * 3;
+      const key = quantise(data[p]) << 10 | quantise(data[p + 1]) << 5 | quantise(data[p + 2]);
+      keys[i - from] = key;
+      const c = histogram[key] + 1;
+      histogram[key] = c;
+      if (c > bestCount) {
+        bestCount = c;
+        best = key;
+      }
+    }
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    for (let i = from; i < to; i++) {
+      if (keys[i - from] !== best) continue;
+      const p = idx[i] * 3;
+      r += data[p];
+      g += data[p + 1];
+      b += data[p + 2];
+    }
+    out[o] = r / bestCount;
+    out[o + 1] = g / bestCount;
+    out[o + 2] = b / bestCount;
+    for (let i = 0; i < n; i++) histogram[keys[i]] = 0;
+  }
+  /**
+   * .h:653-744, Lloyd's k-means from fixed seeds. Per iteration: assign every
+   * pixel to the nearest centroid, move every populated centroid to the mean
+   * of its pixels, stop when the largest move is under `KMEANS_CONVERGENCE`
+   * or the cap is reached. The answer is the centroid of the most-populated
+   * cluster after the last update, which is what Hyperion returns too
+   * (.h:725-740).
+   */
+  kMeansInto(data, idx, from, to, out, o) {
+    if (from === to) {
+      black(out, o);
+      return;
+    }
+    const k = this.clusterCount;
+    const c = this.centroids;
+    const s = this.sums;
+    const m = this.members;
+    for (let j = 0; j < k; j++) {
+      const seed = CLUSTER_SEEDS[j];
+      c[j * 3] = seed.r;
+      c[j * 3 + 1] = seed.g;
+      c[j * 3 + 2] = seed.b;
+    }
+    let dominant = 0;
+    for (let iteration = 0; iteration < KMEANS_MAX_ITERATIONS; iteration++) {
+      s.fill(0, 0, k * 3);
+      m.fill(0, 0, k);
+      for (let i = from; i < to; i++) {
+        const p = idx[i] * 3;
+        const r = data[p];
+        const g = data[p + 1];
+        const b = data[p + 2];
+        let best = 0;
+        let bestDistance = Infinity;
+        for (let j = 0; j < k; j++) {
+          const dr = r - c[j * 3];
+          const dg = g - c[j * 3 + 1];
+          const db = b - c[j * 3 + 2];
+          const distance = dr * dr + dg * dg + db * db;
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            best = j;
+          }
+        }
+        s[best * 3] = s[best * 3] + r;
+        s[best * 3 + 1] = s[best * 3 + 1] + g;
+        s[best * 3 + 2] = s[best * 3 + 2] + b;
+        m[best] = m[best] + 1;
+      }
+      let maxMove = 0;
+      dominant = 0;
+      for (let j = 0; j < k; j++) {
+        const n = m[j];
+        if (n === 0) continue;
+        const nr = s[j * 3] / n;
+        const ng = s[j * 3 + 1] / n;
+        const nb = s[j * 3 + 2] / n;
+        const dr = nr - c[j * 3];
+        const dg = ng - c[j * 3 + 1];
+        const db = nb - c[j * 3 + 2];
+        const move = Math.sqrt(dr * dr + dg * dg + db * db);
+        if (move > maxMove) maxMove = move;
+        c[j * 3] = nr;
+        c[j * 3 + 1] = ng;
+        c[j * 3 + 2] = nb;
+        if (n > m[dominant]) dominant = j;
+      }
+      if (maxMove < KMEANS_CONVERGENCE) break;
+    }
+    out[o] = c[dominant * 3];
+    out[o + 1] = c[dominant * 3 + 1];
+    out[o + 2] = c[dominant * 3 + 2];
+  }
+};
+function quantise(v) {
+  return v <= 0 ? 0 : v >= 1 ? DOMINANT_LEVELS - 1 : Math.round(v * (DOMINANT_LEVELS - 1));
+}
+function black(out, o) {
+  out[o] = 0;
+  out[o + 1] = 0;
+  out[o + 2] = 0;
+}
+function fillFromFirst(out, count) {
+  const r = out[0];
+  const g = out[1];
+  const b = out[2];
+  for (let led = 1; led < count; led++) {
+    out[led * 3] = r;
+    out[led * 3 + 1] = g;
+    out[led * 3 + 2] = b;
+  }
+}
+function validateRect(rect, led) {
+  for (const edge of ["xMin", "xMax", "yMin", "yMax"]) {
+    const v = rect[edge];
+    if (!(v >= 0 && v <= 1)) throw new RangeError(`sample: LED ${led} ${edge} must be in [0, 1], got ${v}`);
+  }
+  return Object.freeze({ xMin: rect.xMin, xMax: rect.xMax, yMin: rect.yMin, yMax: rect.yMax });
+}
+
 // lib/engine/effects.ts
 var EFFECT_KINDS = [
   "rainbow",
@@ -1544,6 +1978,12 @@ var DEFAULT_BORDER = Object.freeze({
   threshold: BORDER_DEFAULTS.threshold,
   blurRemovePx: BORDER_DEFAULTS.blurRemovePx
 });
+var DEFAULT_SAMPLING = Object.freeze({
+  mode: "mean",
+  reducedPixelSetFactor: SAMPLER_DEFAULTS.reducedPixelSetFactor,
+  accuracyLevel: SAMPLER_DEFAULTS.accuracyLevel
+});
+var MAX_PIXEL_SET_FACTOR = 3;
 var BORDER_THRESHOLD_MAX = 0.2;
 var BLUR_REMOVE_MAX = 8;
 var DEFAULT_BACKGROUND = Object.freeze({
@@ -1576,6 +2016,7 @@ var DEFAULT_ENGINE_CONFIG = Object.freeze({
   smoothing: DEFAULT_SMOOTHING,
   color: DEFAULT_COLOR,
   border: DEFAULT_BORDER,
+  sampling: DEFAULT_SAMPLING,
   background: DEFAULT_BACKGROUND,
   startup: DEFAULT_STARTUP
 });
@@ -1624,6 +2065,12 @@ function readLayer(value, path, fallback) {
 function readLayerKind(value, path) {
   if (value !== "color" && value !== "effect") {
     throw new ConfigError(path, `must be one of ${LAYER_KINDS.join(", ")}, got ${describe(value)}`);
+  }
+  return value;
+}
+function readSampleMode(value, path) {
+  if (typeof value !== "string" || !SAMPLE_MODES.includes(value)) {
+    throw new ConfigError(path, `must be one of ${SAMPLE_MODES.join(", ")}, got ${describe(value)}`);
   }
   return value;
 }
@@ -1894,6 +2341,22 @@ function parseEngineConfig(value) {
     threshold: boundedFraction(borderRaw.threshold, "border.threshold", 0, BORDER_THRESHOLD_MAX, DEFAULT_BORDER.threshold),
     blurRemovePx: integer(borderRaw.blurRemovePx ?? DEFAULT_BORDER.blurRemovePx, "border.blurRemovePx", 0, BLUR_REMOVE_MAX)
   };
+  const samplingRaw = raw.sampling === void 0 ? {} : object(raw.sampling, "config.sampling");
+  const sampling = {
+    mode: samplingRaw.mode === void 0 ? DEFAULT_SAMPLING.mode : readSampleMode(samplingRaw.mode, "sampling.mode"),
+    reducedPixelSetFactor: integer(
+      samplingRaw.reducedPixelSetFactor ?? DEFAULT_SAMPLING.reducedPixelSetFactor,
+      "sampling.reducedPixelSetFactor",
+      0,
+      MAX_PIXEL_SET_FACTOR
+    ),
+    accuracyLevel: integer(
+      samplingRaw.accuracyLevel ?? DEFAULT_SAMPLING.accuracyLevel,
+      "sampling.accuracyLevel",
+      0,
+      MAX_ACCURACY_LEVEL
+    )
+  };
   const background = readLayer(raw.background, "background", DEFAULT_BACKGROUND);
   const startupBase = readLayer(raw.startup, "startup", DEFAULT_STARTUP);
   const startupRaw = raw.startup === void 0 ? {} : object(raw.startup, "config.startup");
@@ -1915,6 +2378,7 @@ function parseEngineConfig(value) {
     smoothing,
     color,
     border: border2,
+    sampling,
     background,
     startup
   };
@@ -1945,6 +2409,7 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   smoothing: DEFAULT_SMOOTHING,
   color: DEFAULT_COLOR,
   border: DEFAULT_BORDER,
+  sampling: DEFAULT_SAMPLING,
   background: DEFAULT_BACKGROUND,
   startup: DEFAULT_STARTUP
 });
@@ -3562,440 +4027,6 @@ function checkInput(input) {
   throw new TypeError(`muxer: input kind must be 'grid' or 'colors', got ${String(kind)}`);
 }
 
-// lib/engine/sample.ts
-var SAMPLE_MODES = Object.freeze([
-  "mean",
-  "meanSquared",
-  "unicolorMean",
-  "dominant",
-  "unicolorDominant",
-  "dominantAdvanced",
-  "unicolorDominantAdvanced"
-]);
-var SAMPLER_DEFAULTS = Object.freeze({
-  reducedPixelSetFactor: 0,
-  accuracyLevel: 2
-});
-var LARGE_REGION_PIXELS = 1600;
-var MAX_ACCURACY_LEVEL = 4;
-var KMEANS_CONVERGENCE = 1 / 255;
-var KMEANS_MAX_ITERATIONS = 20;
-var CLUSTER_SEEDS = Object.freeze([
-  Object.freeze({ r: 0, g: 0, b: 0 }),
-  Object.freeze({ r: 0, g: 1, b: 0 }),
-  Object.freeze({ r: 1, g: 1, b: 1 }),
-  Object.freeze({ r: 1, g: 0, b: 0 }),
-  Object.freeze({ r: 1, g: 1, b: 0 })
-]);
-var DOMINANT_LEVELS = 32;
-function createSampler(options) {
-  return new LedSampler(options);
-}
-var NAMED_LEDS_IN_WARNING = 8;
-var LedSampler = class {
-  width;
-  height;
-  count;
-  warnings = [];
-  rects;
-  /** Pixels stepped along each axis: reducedPixelSetFactor + 1 (.cpp:83). */
-  step;
-  clusterCount;
-  /** How many leading entries of `warnings` were produced at construction and survive every rebuild. */
-  fixedWarnings;
-  currentBorder = NO_BORDER;
-  /** `starts[led] .. starts[led + 1]` is LED `led`'s slice of `indices`. */
-  starts;
-  /** Every LED's pixel offsets back to back. Grows when a rebuild needs more, never shrinks. */
-  indices = new Int32Array(0);
-  /** Rebuild scratch, five ints per LED: minX, endX, minY, endY, step. */
-  bounds;
-  /** Rebuild scratch: the first few LEDs the large-region guard fired on. */
-  forced = new Int32Array(NAMED_LEDS_IN_WARNING);
-  // Scratch for the modes that need it, allocated on first use so a sampler
-  // that only ever runs `mean` pays for none of it.
-  /** The identity map 0..width*height-1: the "region" of the unicolor modes. */
-  wholeGrid = null;
-  /** 32^3 bin counts for `dominant`, zero between calls. */
-  histogram = null;
-  /** The bin of each pixel of the region in hand, so the winning bin can be averaged and the histogram cleared without recomputing keys. */
-  keys = null;
-  centroids = new Float64Array(CLUSTER_SEEDS.length * 3);
-  sums = new Float64Array(CLUSTER_SEEDS.length * 3);
-  members = new Int32Array(CLUSTER_SEEDS.length);
-  constructor(options) {
-    const { width, height, layout } = options;
-    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
-      throw new RangeError(`sample: grid must be at least 1x1, got ${width}x${height}`);
-    }
-    this.width = width;
-    this.height = height;
-    this.rects = layout.map(validateRect);
-    this.count = this.rects.length;
-    const factor = options.reducedPixelSetFactor ?? SAMPLER_DEFAULTS.reducedPixelSetFactor;
-    if (!Number.isInteger(factor) || factor < 0 || factor > 3) {
-      throw new RangeError(`sample: reducedPixelSetFactor must be an integer in 0..3, got ${factor}`);
-    }
-    this.step = factor + 1;
-    let accuracy = options.accuracyLevel ?? SAMPLER_DEFAULTS.accuracyLevel;
-    if (!Number.isInteger(accuracy)) throw new RangeError(`sample: accuracyLevel must be an integer, got ${accuracy}`);
-    if (accuracy > MAX_ACCURACY_LEVEL) {
-      this.warnings.push(`sample: accuracyLevel ${accuracy} is above the maximum ${MAX_ACCURACY_LEVEL}; using ${MAX_ACCURACY_LEVEL}`);
-      accuracy = MAX_ACCURACY_LEVEL;
-    } else if (accuracy < 0) {
-      this.warnings.push(`sample: accuracyLevel ${accuracy} is below 0; using 0`);
-      accuracy = 0;
-    }
-    this.clusterCount = accuracy + 1;
-    this.fixedWarnings = this.warnings.length;
-    this.starts = new Int32Array(this.count + 1);
-    this.bounds = new Int32Array(this.count * 5);
-    this.rebuild(0, 0);
-  }
-  border() {
-    return this.currentBorder;
-  }
-  setBorder(border2) {
-    const leftRight = border2.unknown ? 0 : border2.leftRight;
-    const topBottom = border2.unknown ? 0 : border2.topBottom;
-    if (!Number.isInteger(leftRight) || !Number.isInteger(topBottom) || leftRight < 0 || topBottom < 0) {
-      throw new RangeError(`sample: border insets must be non-negative integers, got ${leftRight}/${topBottom}`);
-    }
-    if (2 * leftRight >= this.width || 2 * topBottom >= this.height) {
-      throw new RangeError(`sample: border ${leftRight}/${topBottom} leaves no picture on a ${this.width}x${this.height} grid`);
-    }
-    if (leftRight === this.currentBorder.leftRight && topBottom === this.currentBorder.topBottom) return false;
-    this.rebuild(leftRight, topBottom);
-    return true;
-  }
-  pixelIndices(led) {
-    if (!Number.isInteger(led) || led < 0 || led >= this.count) throw new RangeError(`sample: no LED ${led} in a layout of ${this.count}`);
-    return this.indices.subarray(this.starts[led], this.starts[led + 1]);
-  }
-  sample(grid, out, mode) {
-    const { width, height, count } = this;
-    if (grid.width !== width || grid.height !== height) {
-      throw new RangeError(`sample: grid is ${grid.width}x${grid.height}, the map was built for ${width}x${height}`);
-    }
-    if (grid.data.length < width * height * 3) {
-      throw new RangeError(`sample: grid data holds ${grid.data.length} floats, ${width}x${height} needs ${width * height * 3}`);
-    }
-    if (out.length < count * 3) throw new RangeError(`sample: out holds ${out.length} floats, ${count} LEDs need ${count * 3}`);
-    const data = grid.data;
-    const starts = this.starts;
-    const indices = this.indices;
-    switch (mode) {
-      case "mean":
-        for (let led = 0; led < count; led++) this.meanInto(data, indices, starts[led], starts[led + 1], out, led * 3);
-        break;
-      case "meanSquared":
-        for (let led = 0; led < count; led++) this.meanSquaredInto(data, indices, starts[led], starts[led + 1], out, led * 3);
-        break;
-      case "dominant":
-        for (let led = 0; led < count; led++) this.dominantInto(data, indices, starts[led], starts[led + 1], out, led * 3);
-        break;
-      case "dominantAdvanced":
-        for (let led = 0; led < count; led++) this.kMeansInto(data, indices, starts[led], starts[led + 1], out, led * 3);
-        break;
-      case "unicolorMean": {
-        const all = this.allPixels();
-        this.meanInto(data, all, 0, all.length, out, 0);
-        fillFromFirst(out, count);
-        break;
-      }
-      case "unicolorDominant": {
-        const all = this.allPixels();
-        this.dominantInto(data, all, 0, all.length, out, 0);
-        fillFromFirst(out, count);
-        break;
-      }
-      case "unicolorDominantAdvanced": {
-        const all = this.allPixels();
-        this.kMeansInto(data, all, 0, all.length, out, 0);
-        fillFromFirst(out, count);
-        break;
-      }
-      default:
-        throw new RangeError(`sample: unknown mode ${String(mode)}`);
-    }
-    return out;
-  }
-  /**
-   * Port of the constructor's index loop (.cpp:39-111), run again for every
-   * border. Two passes: the first computes each LED's pixel box and the size
-   * of the map, the second fills it, so the one buffer grows at most once
-   * per size and there is nothing to allocate per pixel.
-   */
-  rebuild(leftRight, topBottom) {
-    const { width, height, count, rects, starts, bounds, forced } = this;
-    this.warnings.length = this.fixedWarnings;
-    this.currentBorder = Object.freeze({ unknown: false, leftRight, topBottom });
-    const xOffset = leftRight;
-    const activeW = width - 2 * leftRight;
-    const yOffset = topBottom;
-    const activeH = height - 2 * topBottom;
-    let total = 0;
-    let forcedCount = 0;
-    for (let led = 0; led < count; led++) {
-      const rect = rects[led];
-      const b = led * 5;
-      if (rect.xMax - rect.xMin < 1e-6 || rect.yMax - rect.yMin < 1e-6) {
-        bounds[b] = 0;
-        bounds[b + 1] = 0;
-        bounds[b + 2] = 0;
-        bounds[b + 3] = 0;
-        bounds[b + 4] = 1;
-        continue;
-      }
-      let minX = xOffset + Math.round(activeW * rect.xMin);
-      let maxX = xOffset + Math.round(activeW * rect.xMax);
-      let minY = yOffset + Math.round(activeH * rect.yMin);
-      let maxY = yOffset + Math.round(activeH * rect.yMax);
-      minX = Math.min(minX, xOffset + activeW - 1);
-      if (minX === maxX) maxX++;
-      minY = Math.min(minY, yOffset + activeH - 1);
-      if (minY === maxY) maxY++;
-      const endX = Math.min(maxX, xOffset + activeW);
-      const endY = Math.min(maxY, yOffset + activeH);
-      let step = this.step;
-      if (step === 1 && (endY - minY) * (endX - minX) > LARGE_REGION_PIXELS) {
-        step = 2;
-        if (forcedCount < forced.length) forced[forcedCount] = led;
-        forcedCount++;
-      }
-      bounds[b] = minX;
-      bounds[b + 1] = endX;
-      bounds[b + 2] = minY;
-      bounds[b + 3] = endY;
-      bounds[b + 4] = step;
-      total += Math.ceil((endY - minY) / step) * Math.ceil((endX - minX) / step);
-    }
-    if (total > this.indices.length) this.indices = new Int32Array(total);
-    const indices = this.indices;
-    let n = 0;
-    for (let led = 0; led < count; led++) {
-      const b = led * 5;
-      const minX = bounds[b];
-      const endX = bounds[b + 1];
-      const endY = bounds[b + 3];
-      const step = bounds[b + 4];
-      starts[led] = n;
-      for (let y = bounds[b + 2]; y < endY; y += step) {
-        for (let x = minX; x < endX; x += step) indices[n++] = y * width + x;
-      }
-    }
-    starts[count] = n;
-    if (forcedCount > 0) {
-      const named = Array.from(forced.subarray(0, Math.min(forcedCount, forced.length))).join(", ");
-      const more = forcedCount > forced.length ? ` and ${forcedCount - forced.length} more` : "";
-      this.warnings.push(
-        `sample: ${forcedCount} LED region(s) exceed ${LARGE_REGION_PIXELS} pixels (LED ${named}${more}); every 2nd pixel is skipped for them. Set reducedPixelSetFactor to choose the reduction yourself.`
-      );
-    }
-  }
-  allPixels() {
-    if (this.wholeGrid === null) {
-      const all = new Int32Array(this.width * this.height);
-      for (let i = 0; i < all.length; i++) all[i] = i;
-      this.wholeGrid = all;
-    }
-    return this.wholeGrid;
-  }
-  /**
-   * .h:409-439 in floats. The float sum of linear values divided by the count
-   * is the area average of the light; Hyperion's `uint8_t(cumm / pixelNum)`
-   * truncates, and its accumulator is wide enough only for regions under
-   * about 16 million pixels (defect #5 is the squared variant, which is not).
-   */
-  meanInto(data, idx, from, to, out, o) {
-    const n = to - from;
-    if (n === 0) {
-      black(out, o);
-      return;
-    }
-    let r = 0;
-    let g = 0;
-    let b = 0;
-    for (let i = from; i < to; i++) {
-      const p = idx[i] * 3;
-      r += data[p];
-      g += data[p + 1];
-      b += data[p + 2];
-    }
-    out[o] = r / n;
-    out[o + 1] = g / n;
-    out[o + 2] = b / n;
-  }
-  /**
-   * .h:488-524: root of the mean of the squares, per channel. Hyperion divides
-   * the integer sum before the sqrt and overflows a 32-bit accumulator past
-   * ~66 000 pixels (.h:508, .h:518; defect #5); floats have neither problem.
-   * On linear input the result is simply biased towards the bright pixels.
-   */
-  meanSquaredInto(data, idx, from, to, out, o) {
-    const n = to - from;
-    if (n === 0) {
-      black(out, o);
-      return;
-    }
-    let r = 0;
-    let g = 0;
-    let b = 0;
-    for (let i = from; i < to; i++) {
-      const p = idx[i] * 3;
-      const pr = data[p];
-      const pg = data[p + 1];
-      const pb = data[p + 2];
-      r += pr * pr;
-      g += pg * pg;
-      b += pb * pb;
-    }
-    out[o] = Math.sqrt(r / n);
-    out[o + 1] = Math.sqrt(g / n);
-    out[o + 2] = Math.sqrt(b / n);
-  }
-  /**
-   * .h:572-605 on quantised keys. Three passes over the region: count the
-   * bins and find the winner, average the pixels that fell into it, zero
-   * the touched bins. The histogram stays allocated and zero between calls,
-   * which is what makes the clear cost O(region) rather than O(32^3).
-   */
-  dominantInto(data, idx, from, to, out, o) {
-    const n = to - from;
-    if (n === 0) {
-      black(out, o);
-      return;
-    }
-    const histogram = this.histogram ??= new Int32Array(DOMINANT_LEVELS * DOMINANT_LEVELS * DOMINANT_LEVELS);
-    const keys = this.keys ??= new Int32Array(this.width * this.height);
-    let best = 0;
-    let bestCount = 0;
-    for (let i = from; i < to; i++) {
-      const p = idx[i] * 3;
-      const key = quantise(data[p]) << 10 | quantise(data[p + 1]) << 5 | quantise(data[p + 2]);
-      keys[i - from] = key;
-      const c = histogram[key] + 1;
-      histogram[key] = c;
-      if (c > bestCount) {
-        bestCount = c;
-        best = key;
-      }
-    }
-    let r = 0;
-    let g = 0;
-    let b = 0;
-    for (let i = from; i < to; i++) {
-      if (keys[i - from] !== best) continue;
-      const p = idx[i] * 3;
-      r += data[p];
-      g += data[p + 1];
-      b += data[p + 2];
-    }
-    out[o] = r / bestCount;
-    out[o + 1] = g / bestCount;
-    out[o + 2] = b / bestCount;
-    for (let i = 0; i < n; i++) histogram[keys[i]] = 0;
-  }
-  /**
-   * .h:653-744, Lloyd's k-means from fixed seeds. Per iteration: assign every
-   * pixel to the nearest centroid, move every populated centroid to the mean
-   * of its pixels, stop when the largest move is under `KMEANS_CONVERGENCE`
-   * or the cap is reached. The answer is the centroid of the most-populated
-   * cluster after the last update, which is what Hyperion returns too
-   * (.h:725-740).
-   */
-  kMeansInto(data, idx, from, to, out, o) {
-    if (from === to) {
-      black(out, o);
-      return;
-    }
-    const k = this.clusterCount;
-    const c = this.centroids;
-    const s = this.sums;
-    const m = this.members;
-    for (let j = 0; j < k; j++) {
-      const seed = CLUSTER_SEEDS[j];
-      c[j * 3] = seed.r;
-      c[j * 3 + 1] = seed.g;
-      c[j * 3 + 2] = seed.b;
-    }
-    let dominant = 0;
-    for (let iteration = 0; iteration < KMEANS_MAX_ITERATIONS; iteration++) {
-      s.fill(0, 0, k * 3);
-      m.fill(0, 0, k);
-      for (let i = from; i < to; i++) {
-        const p = idx[i] * 3;
-        const r = data[p];
-        const g = data[p + 1];
-        const b = data[p + 2];
-        let best = 0;
-        let bestDistance = Infinity;
-        for (let j = 0; j < k; j++) {
-          const dr = r - c[j * 3];
-          const dg = g - c[j * 3 + 1];
-          const db = b - c[j * 3 + 2];
-          const distance = dr * dr + dg * dg + db * db;
-          if (distance < bestDistance) {
-            bestDistance = distance;
-            best = j;
-          }
-        }
-        s[best * 3] = s[best * 3] + r;
-        s[best * 3 + 1] = s[best * 3 + 1] + g;
-        s[best * 3 + 2] = s[best * 3 + 2] + b;
-        m[best] = m[best] + 1;
-      }
-      let maxMove = 0;
-      dominant = 0;
-      for (let j = 0; j < k; j++) {
-        const n = m[j];
-        if (n === 0) continue;
-        const nr = s[j * 3] / n;
-        const ng = s[j * 3 + 1] / n;
-        const nb = s[j * 3 + 2] / n;
-        const dr = nr - c[j * 3];
-        const dg = ng - c[j * 3 + 1];
-        const db = nb - c[j * 3 + 2];
-        const move = Math.sqrt(dr * dr + dg * dg + db * db);
-        if (move > maxMove) maxMove = move;
-        c[j * 3] = nr;
-        c[j * 3 + 1] = ng;
-        c[j * 3 + 2] = nb;
-        if (n > m[dominant]) dominant = j;
-      }
-      if (maxMove < KMEANS_CONVERGENCE) break;
-    }
-    out[o] = c[dominant * 3];
-    out[o + 1] = c[dominant * 3 + 1];
-    out[o + 2] = c[dominant * 3 + 2];
-  }
-};
-function quantise(v) {
-  return v <= 0 ? 0 : v >= 1 ? DOMINANT_LEVELS - 1 : Math.round(v * (DOMINANT_LEVELS - 1));
-}
-function black(out, o) {
-  out[o] = 0;
-  out[o + 1] = 0;
-  out[o + 2] = 0;
-}
-function fillFromFirst(out, count) {
-  const r = out[0];
-  const g = out[1];
-  const b = out[2];
-  for (let led = 1; led < count; led++) {
-    out[led * 3] = r;
-    out[led * 3 + 1] = g;
-    out[led * 3 + 2] = b;
-  }
-}
-function validateRect(rect, led) {
-  for (const edge of ["xMin", "xMax", "yMin", "yMax"]) {
-    const v = rect[edge];
-    if (!(v >= 0 && v <= 1)) throw new RangeError(`sample: LED ${led} ${edge} must be in [0, 1], got ${v}`);
-  }
-  return Object.freeze({ xMin: rect.xMin, xMax: rect.xMax, yMin: rect.yMin, yMax: rect.yMax });
-}
-
 // lib/engine/schedule.ts
 var MINUTES_IN_DAY = 1440;
 var ACTION_KINDS = ["stop", "capture", "effect", "color"];
@@ -4399,7 +4430,13 @@ function createEngine(host) {
       grid: allocLinearGrid(gridWidth, gridHeight),
       canvas,
       ctx,
-      sampler: createSampler({ layout, width: gridWidth, height: gridHeight }),
+      sampler: createSampler({
+        layout,
+        width: gridWidth,
+        height: gridHeight,
+        reducedPixelSetFactor: config.sampling.reducedPixelSetFactor,
+        accuracyLevel: config.sampling.accuracyLevel
+      }),
       // One profile over every LED. The engine supports several, selected by
       // LED range, and the eight-corner colour cube underneath them - but those
       // belong to the calibration wizard rather than to eight more sliders on a
@@ -4626,7 +4663,7 @@ function createEngine(host) {
       const t3 = clock2();
       border2 = s.detector.process(s.grid, t3);
       s.sampler.setBorder(border2);
-      s.sampler.sample(s.grid, s.target, "mean");
+      s.sampler.sample(s.grid, s.target, s.config.sampling.mode);
       s.adjustment.apply(s.target);
       captureTarget.set(s.target);
       feed(PRIORITY.capture, "capture", captureTarget);
@@ -5000,6 +5037,7 @@ function createEngine(host) {
         sample: sampleTimes.snapshot().p50
       },
       outputFps: o.fps,
+      sampling: { mode: stages.config.sampling.mode, warnings: [...stages.sampler.warnings] },
       link: {
         mode: linkMode,
         written: w.written,

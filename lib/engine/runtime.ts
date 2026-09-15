@@ -366,7 +366,13 @@ export function createEngine (host: EngineHost): Engine {
       grid: allocLinearGrid(gridWidth, gridHeight),
       canvas,
       ctx,
-      sampler: createSampler({ layout, width: gridWidth, height: gridHeight }),
+      sampler: createSampler({
+        layout,
+        width: gridWidth,
+        height: gridHeight,
+        reducedPixelSetFactor: config.sampling.reducedPixelSetFactor,
+        accuracyLevel: config.sampling.accuracyLevel
+      }),
       // One profile over every LED. The engine supports several, selected by
       // LED range, and the eight-corner colour cube underneath them - but those
       // belong to the calibration wizard rather than to eight more sliders on a
@@ -661,7 +667,10 @@ export function createEngine (host: EngineHost): Engine {
 
       border = s.detector.process(s.grid, t3)
       s.sampler.setBorder(border)
-      s.sampler.sample(s.grid, s.target, 'mean')
+      // The mode was hardcoded here, which left six of the sampler's seven
+      // reductions - and its decimation and accuracy options - written, tested
+      // and unreachable.
+      s.sampler.sample(s.grid, s.target, s.config.sampling.mode)
       s.adjustment.apply(s.target)
       captureTarget.set(s.target)
       // NO inactivity timeout on the capture layer, and this is a decision the
@@ -1193,6 +1202,7 @@ export function createEngine (host: EngineHost): Engine {
         sample: sampleTimes.snapshot().p50
       },
       outputFps: o.fps,
+      sampling: { mode: stages.config.sampling.mode, warnings: [...stages.sampler.warnings] },
       link: {
         mode: linkMode,
         written: w.written,

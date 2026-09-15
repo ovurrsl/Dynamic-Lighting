@@ -337,3 +337,31 @@ test('a still screen holds the strip rather than falling through to the backgrou
   assert.equal(winner(h.engine), 'color', 'still showing, thirty silent seconds later')
   h.engine.stop()
 })
+
+test('the configured reduction reaches the stages the sample call reads from', () => {
+  // The engine sampled with a hardcoded 'mean', which left six of the
+  // sampler's seven reductions unreachable - the same defect class this file
+  // exists for. This pins the wiring so it cannot silently go back.
+  //
+  // What it proves: `applyConfig` puts the chosen mode into the stage object
+  // that the capture path indexes as `s.config.sampling.mode`. What it does
+  // NOT prove is the reduction's effect on pixels - that needs a real frame
+  // through `createImageBitmap`, which is a browser global; the reductions
+  // themselves are covered in test/engine-sample.test.ts.
+  const h = harness()
+  assert.equal(h.engine.stats().sampling?.mode, 'mean', 'the default is the old behaviour')
+
+  h.engine.applyConfig({ ...DEFAULT_ENGINE_CONFIG, sampling: { mode: 'dominantAdvanced', accuracyLevel: 3 } })
+  assert.equal(h.engine.stats().sampling?.mode, 'dominantAdvanced')
+
+  // And the sampler is rebuilt with it rather than keeping the first one.
+  h.engine.applyConfig({ ...DEFAULT_ENGINE_CONFIG, sampling: { mode: 'unicolorMean' } })
+  assert.equal(h.engine.stats().sampling?.mode, 'unicolorMean')
+})
+
+test('the sampler gets a chance to speak, and says nothing on a sane rig', () => {
+  // Hyperion logs the large-region guard where its web UI never shows it. The
+  // channel has to exist before the panel can show it; healthy is empty.
+  const h = harness()
+  assert.deepEqual(h.engine.stats().sampling?.warnings, [])
+})

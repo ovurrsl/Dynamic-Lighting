@@ -16,6 +16,7 @@ import {
 import { COLOR_ORDERS, DEFAULT_COLOR_ORDER, type ColorOrder } from '#lib/engine/order'
 import { ADJUSTMENT_DEFAULTS, TEMPERATURE_MAX, TEMPERATURE_MIN } from '#lib/engine/adjust'
 import { BORDER_DEFAULTS, BORDER_MODES, type BorderMode } from '#lib/engine/border'
+import { MAX_ACCURACY_LEVEL, SAMPLER_DEFAULTS, SAMPLE_MODES, type SampleMode } from '#lib/engine/sample'
 import { parseEffectSpec, type EffectKind } from '#lib/engine/effects'
 import { SMOOTHING_PROFILES } from '#lib/engine/smooth'
 import type { Calibration } from '#lib/engine/protocol'
@@ -283,6 +284,49 @@ export interface BorderConfig {
 }
 
 /**
+ * How a region of the picture becomes one LED colour.
+ *
+ * `lib/engine/sample.ts` has carried Hyperion's seven reductions, its pixel
+ * decimation and its k-means accuracy level since it was written, and the
+ * engine called it with a hardcoded `'mean'` and no options - so six of the
+ * seven were unreachable. This block is what reaches them.
+ *
+ * Every default here reproduces exactly what the engine did before the block
+ * existed, so a rig that never opens this page sees no change.
+ */
+export interface SamplingConfig {
+  /**
+   * Which reduction. `mean` is the one to use and the default: on LINEAR input
+   * it is the area average, the colour a diffuser held over that region would
+   * give. The others are Hyperion parity - `meanSquared` is an approximation of
+   * `mean` from the wrong side and does nothing useful here - except the
+   * dominant modes, which are a real choice: they return the region's most
+   * common colour rather than its average, so a mostly-dark frame with one
+   * bright object follows the object instead of washing to grey.
+   */
+  mode: SampleMode
+  /**
+   * 0..3: read every 1st, 2nd, 3rd or 4th pixel of each region along both axes
+   * - Hyperion's `reducedPixelSetFactorFactor`. The plan calls this class of
+   * knob the difference between hardware that keeps up and hardware that does
+   * not, and the downscale is our measured bottleneck, so it is worth reaching.
+   */
+  reducedPixelSetFactor: number
+  /**
+   * 0..4: `dominantAdvanced` clusters each region into `accuracyLevel + 1`
+   * groups.
+   *
+   * Kept even while a mode that ignores it is selected, unlike the calibration
+   * bytes and the host dither, which are REFUSED where they would do nothing.
+   * The difference is what the value is: those two are payload that the chosen
+   * frame format has no room for, while this is a preference the user returns
+   * to the moment they pick a dominant mode again. Dropping it would lose a
+   * setting rather than prevent a lie.
+   */
+  accuracyLevel: number
+}
+
+/**
  * The two layers that are not started by a person.
  *
  * The priority muxer has reserved a background slot since it was written -
@@ -331,6 +375,8 @@ export interface EngineConfig {
   smoothing: SmoothingConfig
   color: ColorConfig
   border: BorderConfig
+  /** How a region becomes one LED colour. */
+  sampling: SamplingConfig
   /** What the strip falls back to when nothing else is showing. */
   background: LayerConfig
   /** What it shows for a moment when the engine starts. */
@@ -409,6 +455,16 @@ export const DEFAULT_BORDER: Readonly<BorderConfig> = Object.freeze({
   blurRemovePx: BORDER_DEFAULTS.blurRemovePx
 })
 
+/** Exactly what the engine did before the sampling block existed. */
+export const DEFAULT_SAMPLING: Readonly<SamplingConfig> = Object.freeze({
+  mode: 'mean' as SampleMode,
+  reducedPixelSetFactor: SAMPLER_DEFAULTS.reducedPixelSetFactor,
+  accuracyLevel: SAMPLER_DEFAULTS.accuracyLevel
+})
+
+/** 0..3, Hyperion's disabled / low / medium / high. */
+export const MAX_PIXEL_SET_FACTOR = 3
+
 /**
  * Threshold ceiling.
  *
@@ -475,6 +531,7 @@ export const DEFAULT_ENGINE_CONFIG: Readonly<EngineConfig> = Object.freeze({
   smoothing: DEFAULT_SMOOTHING,
   color: DEFAULT_COLOR,
   border: DEFAULT_BORDER,
+  sampling: DEFAULT_SAMPLING,
   background: DEFAULT_BACKGROUND,
   startup: DEFAULT_STARTUP
 })
@@ -565,6 +622,13 @@ function readLayerKind (value: unknown, path: string): LayerConfig['kind'] {
     throw new ConfigError(path, `must be one of ${LAYER_KINDS.join(', ')}, got ${describe(value)}`)
   }
   return value
+}
+
+function readSampleMode (value: unknown, path: string): SampleMode {
+  if (typeof value !== 'string' || !SAMPLE_MODES.includes(value as SampleMode)) {
+    throw new ConfigError(path, `must be one of ${SAMPLE_MODES.join(', ')}, got ${describe(value)}`)
+  }
+  return value as SampleMode
 }
 
 function readBorderMode (value: unknown, path: string): BorderMode {
@@ -892,6 +956,21 @@ export function parseEngineConfig (value: unknown): EngineConfig {
     blurRemovePx: integer(borderRaw.blurRemovePx ?? DEFAULT_BORDER.blurRemovePx, 'border.blurRemovePx', 0, BLUR_REMOVE_MAX)
   }
 
+  // Absent means the defaults, which are exactly the old hardcoded behaviour -
+  // a config stored before this block existed must still load unchanged.
+  const samplingRaw = raw.sampling === undefined ? {} : object(raw.sampling, 'config.sampling')
+  const sampling: SamplingConfig = {
+    mode: samplingRaw.mode === undefined ? DEFAULT_SAMPLING.mode : readSampleMode(samplingRaw.mode, 'sampling.mode'),
+    reducedPixelSetFactor: integer(
+      samplingRaw.reducedPixelSetFactor ?? DEFAULT_SAMPLING.reducedPixelSetFactor,
+      'sampling.reducedPixelSetFactor', 0, MAX_PIXEL_SET_FACTOR
+    ),
+    accuracyLevel: integer(
+      samplingRaw.accuracyLevel ?? DEFAULT_SAMPLING.accuracyLevel,
+      'sampling.accuracyLevel', 0, MAX_ACCURACY_LEVEL
+    )
+  }
+
   const background = readLayer(raw.background, 'background', DEFAULT_BACKGROUND)
   const startupBase = readLayer(raw.startup, 'startup', DEFAULT_STARTUP)
   const startupRaw = raw.startup === undefined ? {} : object(raw.startup, 'config.startup')
@@ -904,7 +983,7 @@ export function parseEngineConfig (value: unknown): EngineConfig {
   }
 
   const config: EngineConfig = {
-    layout, blacklist, colorOrder, output, capture, smoothing, color, border, background, startup
+    layout, blacklist, colorOrder, output, capture, smoothing, color, border, sampling, background, startup
   }
 
   // The generators own their rules; ask them. A layout that cannot be built is
@@ -954,6 +1033,7 @@ export const MATRIX_ENGINE_CONFIG: Readonly<EngineConfig> = Object.freeze({
   smoothing: DEFAULT_SMOOTHING,
   color: DEFAULT_COLOR,
   border: DEFAULT_BORDER,
+  sampling: DEFAULT_SAMPLING,
   background: DEFAULT_BACKGROUND,
   startup: DEFAULT_STARTUP
 })

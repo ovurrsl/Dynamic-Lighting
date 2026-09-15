@@ -203,6 +203,25 @@ export interface EngineStats {
     /** Border detect, sample, adjust, hand to the smoother. */
     sample: number
   }
+  /**
+   * How regions are being reduced to LED colours, and what the sampler wants
+   * to say about it.
+   *
+   * `warnings` is the part worth carrying over a message boundary: the sampler
+   * reports the large-region guard and a clamped accuracy level, and Hyperion's
+   * equivalent is a log line that a user of its web UI never sees
+   * (docs/hyperion-port-plan.md, defect #10). Reporting it here is the whole
+   * difference between "the strip looks soft" and "the regions are so large
+   * that every second pixel is being skipped".
+   *
+   * Optional for the same reason as `stageMs`: the panel is a hosted page and
+   * the extension is installed separately, so an older extension answers
+   * without it.
+   */
+  sampling?: {
+    mode: string
+    warnings: readonly string[]
+  }
   /** Frames the smoother emitted per second over the last two seconds. */
   outputFps: number
   link: {

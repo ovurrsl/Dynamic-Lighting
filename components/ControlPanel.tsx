@@ -8,6 +8,7 @@ import { AutoLayersCard } from '#components/AutoLayersCard'
 import { CalibrationCard } from '#components/CalibrationCard'
 import { CapabilitiesCard } from '#components/CapabilitiesCard'
 import { CaptureCard } from '#components/CaptureCard'
+import { SamplingCard } from '#components/SamplingCard'
 import { ColourAdjustCard } from '#components/ColourAdjustCard'
 import { ColourCard } from '#components/ColourCard'
 import { BoardNetworkCard } from '#components/BoardNetworkCard'
@@ -62,7 +63,7 @@ function sectionBody (id: SectionId, enabled: boolean) {
     case 'colour': return <ColourCard enabled={enabled} />
     case 'strips': return <InstancesCard />
     case 'layout': return <LayoutSection />
-    case 'capture': return <CaptureCard />
+    case 'capture': return <CaptureSection />
     case 'picture': return <PictureSection />
     case 'calibration': return <CalibrationCard />
     case 'profiles': return <ProfilesSection />
@@ -110,6 +111,23 @@ function OverviewSection () {
     <div className="flex flex-col gap-6">
       <OverviewCard />
       <LayersCard />
+    </div>
+  )
+}
+
+/**
+ * What the screen gives us, and how a region of it becomes one LED colour.
+ *
+ * The two belong together: the analysis grid decides how many pixels a region
+ * holds, and the sampling mode decides what is done with them. Reading the
+ * grid's "cells per LED" on one page and choosing the reduction on another
+ * would split one decision across two.
+ */
+function CaptureSection () {
+  return (
+    <div className="flex flex-col gap-6">
+      <CaptureCard />
+      <SamplingCard />
     </div>
   )
 }

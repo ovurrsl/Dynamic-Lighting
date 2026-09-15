@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ConfigError, DEFAULT_BORDER, DEFAULT_CAPTURE, DEFAULT_COLOR, DEFAULT_ENGINE_CONFIG, DEFAULT_SMOOTHING, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, switchTransport, type EngineConfig } from '#lib/engine/config'
+import { MAX_ACCURACY_LEVEL, SAMPLE_MODES } from '#lib/engine/sample'
+import { ConfigError, DEFAULT_BORDER, DEFAULT_CAPTURE, DEFAULT_COLOR, DEFAULT_ENGINE_CONFIG, DEFAULT_SAMPLING, DEFAULT_SMOOTHING, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, MAX_PIXEL_SET_FACTOR, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, switchTransport, type EngineConfig } from '#lib/engine/config'
 import { DARK_RECT, REFERENCE_LAYOUT, classicLayout, matrixLayout } from '#lib/engine/layout'
 import { SMOOTHING_PROFILES, profileOf } from '#lib/engine/smooth'
 
@@ -525,4 +526,59 @@ test('a config saved before this option existed still loads', () => {
   const parsed = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { format: 'Awa' } })
   assert.equal(parsed.output.dither, undefined)
   assert.equal(serialiseEngineConfig(parsed).includes('dither'), false)
+})
+
+test('the sampling block defaults to exactly what the engine did before it existed', () => {
+  // The whole point of the defaults: a rig that never opens this page must not
+  // change behaviour because the setting now has a name.
+  const parsed = parseEngineConfig(DEFAULT_ENGINE_CONFIG)
+  assert.equal(parsed.sampling.mode, 'mean')
+  assert.equal(parsed.sampling.reducedPixelSetFactor, 0)
+  assert.equal(parsed.sampling.accuracyLevel, 2)
+
+  // And a config stored before the block existed still loads.
+  const { sampling, ...older } = DEFAULT_ENGINE_CONFIG as EngineConfig
+  assert.deepEqual(parseEngineConfig(older).sampling, DEFAULT_SAMPLING)
+})
+
+test('every reduction the sampler implements is accepted, and nothing else is', () => {
+  for (const mode of SAMPLE_MODES) {
+    const parsed = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, sampling: { mode } })
+    assert.equal(parsed.sampling.mode, mode)
+  }
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, sampling: { mode: 'median' } }),
+    /must be one of/
+  )
+})
+
+test('the decimation and accuracy levels are bounded at the sampler\'s own limits', () => {
+  // Out of range is refused here rather than clamped in the sampler and
+  // reported as a warning the user then has to notice.
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, sampling: { reducedPixelSetFactor: 4 } }),
+    /reducedPixelSetFactor/
+  )
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, sampling: { accuracyLevel: MAX_ACCURACY_LEVEL + 1 } }),
+    /accuracyLevel/
+  )
+  const top = parseEngineConfig({
+    ...DEFAULT_ENGINE_CONFIG,
+    sampling: { reducedPixelSetFactor: MAX_PIXEL_SET_FACTOR, accuracyLevel: MAX_ACCURACY_LEVEL }
+  })
+  assert.equal(top.sampling.reducedPixelSetFactor, MAX_PIXEL_SET_FACTOR)
+  assert.equal(top.sampling.accuracyLevel, MAX_ACCURACY_LEVEL)
+})
+
+test('an accuracy level is KEPT under a mode that ignores it', () => {
+  // Deliberately unlike the calibration bytes and the host dither, which are
+  // refused where they do nothing: those are payload the wire format cannot
+  // carry, this is a preference the user returns to. Dropping it would lose a
+  // setting rather than prevent a lie.
+  const parsed = parseEngineConfig({
+    ...DEFAULT_ENGINE_CONFIG,
+    sampling: { mode: 'mean', accuracyLevel: 4 }
+  })
+  assert.equal(parsed.sampling.accuracyLevel, 4)
 })

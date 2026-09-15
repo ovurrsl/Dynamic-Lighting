@@ -314,6 +314,30 @@ var BORDER_DEFAULTS = Object.freeze({
 });
 var UNKNOWN_BORDER = Object.freeze({ unknown: true, topBottom: 0, leftRight: 0 });
 
+// lib/engine/sample.ts
+var SAMPLE_MODES = Object.freeze([
+  "mean",
+  "meanSquared",
+  "unicolorMean",
+  "dominant",
+  "unicolorDominant",
+  "dominantAdvanced",
+  "unicolorDominantAdvanced"
+]);
+var SAMPLER_DEFAULTS = Object.freeze({
+  reducedPixelSetFactor: 0,
+  accuracyLevel: 2
+});
+var MAX_ACCURACY_LEVEL = 4;
+var KMEANS_CONVERGENCE = 1 / 255;
+var CLUSTER_SEEDS = Object.freeze([
+  Object.freeze({ r: 0, g: 0, b: 0 }),
+  Object.freeze({ r: 0, g: 1, b: 0 }),
+  Object.freeze({ r: 1, g: 1, b: 1 }),
+  Object.freeze({ r: 1, g: 0, b: 0 }),
+  Object.freeze({ r: 1, g: 1, b: 0 })
+]);
+
 // lib/engine/effects.ts
 var EFFECT_KINDS = [
   "rainbow",
@@ -429,6 +453,12 @@ var DEFAULT_BORDER = Object.freeze({
   threshold: BORDER_DEFAULTS.threshold,
   blurRemovePx: BORDER_DEFAULTS.blurRemovePx
 });
+var DEFAULT_SAMPLING = Object.freeze({
+  mode: "mean",
+  reducedPixelSetFactor: SAMPLER_DEFAULTS.reducedPixelSetFactor,
+  accuracyLevel: SAMPLER_DEFAULTS.accuracyLevel
+});
+var MAX_PIXEL_SET_FACTOR = 3;
 var BORDER_THRESHOLD_MAX = 0.2;
 var BLUR_REMOVE_MAX = 8;
 var DEFAULT_BACKGROUND = Object.freeze({
@@ -461,6 +491,7 @@ var DEFAULT_ENGINE_CONFIG = Object.freeze({
   smoothing: DEFAULT_SMOOTHING,
   color: DEFAULT_COLOR,
   border: DEFAULT_BORDER,
+  sampling: DEFAULT_SAMPLING,
   background: DEFAULT_BACKGROUND,
   startup: DEFAULT_STARTUP
 });
@@ -504,6 +535,12 @@ function readLayer(value, path, fallback) {
 function readLayerKind(value, path) {
   if (value !== "color" && value !== "effect") {
     throw new ConfigError(path, `must be one of ${LAYER_KINDS.join(", ")}, got ${describe(value)}`);
+  }
+  return value;
+}
+function readSampleMode(value, path) {
+  if (typeof value !== "string" || !SAMPLE_MODES.includes(value)) {
+    throw new ConfigError(path, `must be one of ${SAMPLE_MODES.join(", ")}, got ${describe(value)}`);
   }
   return value;
 }
@@ -774,6 +811,22 @@ function parseEngineConfig(value) {
     threshold: boundedFraction(borderRaw.threshold, "border.threshold", 0, BORDER_THRESHOLD_MAX, DEFAULT_BORDER.threshold),
     blurRemovePx: integer(borderRaw.blurRemovePx ?? DEFAULT_BORDER.blurRemovePx, "border.blurRemovePx", 0, BLUR_REMOVE_MAX)
   };
+  const samplingRaw = raw.sampling === void 0 ? {} : object(raw.sampling, "config.sampling");
+  const sampling = {
+    mode: samplingRaw.mode === void 0 ? DEFAULT_SAMPLING.mode : readSampleMode(samplingRaw.mode, "sampling.mode"),
+    reducedPixelSetFactor: integer(
+      samplingRaw.reducedPixelSetFactor ?? DEFAULT_SAMPLING.reducedPixelSetFactor,
+      "sampling.reducedPixelSetFactor",
+      0,
+      MAX_PIXEL_SET_FACTOR
+    ),
+    accuracyLevel: integer(
+      samplingRaw.accuracyLevel ?? DEFAULT_SAMPLING.accuracyLevel,
+      "sampling.accuracyLevel",
+      0,
+      MAX_ACCURACY_LEVEL
+    )
+  };
   const background = readLayer(raw.background, "background", DEFAULT_BACKGROUND);
   const startupBase = readLayer(raw.startup, "startup", DEFAULT_STARTUP);
   const startupRaw = raw.startup === void 0 ? {} : object(raw.startup, "config.startup");
@@ -795,6 +848,7 @@ function parseEngineConfig(value) {
     smoothing,
     color,
     border,
+    sampling,
     background,
     startup
   };
@@ -825,6 +879,7 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   smoothing: DEFAULT_SMOOTHING,
   color: DEFAULT_COLOR,
   border: DEFAULT_BORDER,
+  sampling: DEFAULT_SAMPLING,
   background: DEFAULT_BACKGROUND,
   startup: DEFAULT_STARTUP
 });

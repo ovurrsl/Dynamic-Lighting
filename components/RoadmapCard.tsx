@@ -38,8 +38,8 @@ const ITEMS: Array<{ title: MessageKey, body: MessageKey, state: State }> = [
   { title: 'roadmap.audio.title', body: 'roadmap.audio.body', state: 'done' },
   { title: 'roadmap.capture.title', body: 'roadmap.capture.body', state: 'done' },
   { title: 'roadmap.priority.title', body: 'roadmap.priority.body', state: 'done' },
-  { title: 'roadmap.events.title', body: 'roadmap.events.body', state: 'next' },
-  { title: 'roadmap.instances.title', body: 'roadmap.instances.body', state: 'planned' },
+  { title: 'roadmap.events.title', body: 'roadmap.events.body', state: 'done' },
+  { title: 'roadmap.instances.title', body: 'roadmap.instances.body', state: 'done' },
   { title: 'roadmap.udp.title', body: 'roadmap.udp.body', state: 'never' },
   { title: 'roadmap.spi.title', body: 'roadmap.spi.body', state: 'never' }
 ]

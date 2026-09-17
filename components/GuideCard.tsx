@@ -1,8 +1,11 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { Card, Surface } from '@heroui/react'
 
 import { useTranslate } from '#components/Preferences'
+import { currentEnvironment, detectCapabilities, outputRoutes } from '#lib/capabilities'
+import { hashForSection } from '#lib/sections'
 import type { MessageKey } from '#lib/i18n/strings'
 
 const REPO = 'https://github.com/ovurrsl/Dynamic-Lighting'
@@ -49,6 +52,33 @@ const LIMITS: MessageKey[] = ['guide.limits.session', 'guide.limits.drm']
 export function GuideCard () {
   const t = useTranslate()
 
+  /**
+   * Whether THIS browser has any local-device route at all (serial, HID, USB).
+   *
+   * The five steps below are all "download the extension, pair the serial
+   * port" - which is simply wrong advice on a browser with no Web Serial, not
+   * a longer path. Safari and Firefox declined to implement it on every
+   * platform, and on iOS there is no extension host to load one into either.
+   * Those browsers are not unsupported - lib/page-host.ts exists specifically
+   * to run the engine in this page for them - but a guide that never says so
+   * sends someone through five steps that cannot work for their browser.
+   *
+   * Measured the same way the Device page measures it, not sniffed from the
+   * user agent: a UA string says what a browser CLAIMS to be, not what it can
+   * do, and this project has been burned by trusting a claim over asking three
+   * times already.
+   */
+  const [hasLocalDevice, setHasLocalDevice] = useState<boolean | null>(null)
+  useEffect(() => {
+    // Specifically serial/HID/USB - the routes an EXTENSION reaches. `network`
+    // is deliberately excluded: WebSocket exists in every browser, extension or
+    // not, so checking outputRoutes() as a whole would say "yes" everywhere and
+    // never show this box at all.
+    const local: ReadonlySet<string> = new Set(['serial', 'hid', 'usb'])
+    const routes = outputRoutes(detectCapabilities(currentEnvironment()))
+    setHasLocalDevice(routes.some((id) => local.has(id)))
+  }, [])
+
   return (
     <Card variant="default">
       <Card.Header>
@@ -58,7 +88,20 @@ export function GuideCard () {
       <Card.Content className="flex flex-col gap-6">
         <p className="text-sm text-muted">{t('guide.why')}</p>
 
-        <ol className="flex flex-col gap-4">
+        {hasLocalDevice === false && (
+          <Surface className="flex flex-col gap-2 rounded-xl p-3 text-sm" variant="secondary">
+            <p className="font-medium">{t('guide.noExtension.title')}</p>
+            <p className="text-muted">{t('guide.noExtension.body')}</p>
+            <a
+              className="self-start text-sm underline underline-offset-4"
+              href={hashForSection('device')}
+            >
+              {t('guide.noExtension.link')}
+            </a>
+          </Surface>
+        )}
+
+        <ol className={`flex flex-col gap-4 ${hasLocalDevice === false ? 'opacity-60' : ''}`}>
           {STEPS.map((step) => (
             <li key={step.title} className="flex flex-col gap-2">
               <h3 className="text-sm font-semibold">{t(step.title)}</h3>

@@ -18,3 +18,17 @@ test('the reported version matches package.json', () => {
     'data/version.ts and package.json disagree - update data/version.ts'
   )
 })
+
+/**
+ * The extension reports APP_VERSION in every pong and status reply, and Chrome
+ * shows manifest.json's own `version` on chrome://extensions. A user comparing
+ * the two would otherwise be the first to learn they had drifted.
+ */
+test('the extension manifest carries the same version', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../extension/manifest.json', import.meta.url), 'utf8'))
+  assert.equal(
+    manifest.version,
+    APP_VERSION,
+    'extension/manifest.json and data/version.ts disagree - release them together'
+  )
+})

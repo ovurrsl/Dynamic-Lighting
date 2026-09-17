@@ -147,6 +147,9 @@ Kullanım:
    dokümanından açar. Seçim Chrome oturumu boyunca geçerlidir; kalıcı
    yapılamaz, bu bir tarayıcı sınırıdır.
 
+Popup Chrome'un arayüz dilini izler (`extension/_locales`: Türkçe ve İngilizce,
+diğer diller İngilizce'ye düşer); panel on iki dil konuşur.
+
 Port eşleşmemişse motor **cihazsız (loopback) modda** çalışır: kareler
 üretilir, firmware'in kullanacağı referans ayrıştırıcıdan geçirilir ve sayılır.
 Yani hat, kart gelmeden bugün ölçülebilir. Paneldeki **Cihaz** kartı eklentiden

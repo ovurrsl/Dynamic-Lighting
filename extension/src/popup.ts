@@ -8,7 +8,20 @@ import type { Message } from '#lib/extension/messages'
  *
  * Choosing a screen does NOT happen here. The engine document opens that picker
  * itself - see offscreen.ts openCapture for why nothing else works.
+ *
+ * Every string the popup shows comes from _locales/<lang>/messages.json through
+ * chrome.i18n, the platform's own mechanism: Chrome picks the language from its
+ * UI locale and falls back to the manifest's default_locale (English, which is
+ * also the panel's fallback). The popup used to be Turkish only, in a product
+ * whose panel speaks twelve languages.
  */
+
+const msg = (key: string, ...substitutions: string[]): string => chrome.i18n.getMessage(key, substitutions)
+
+for (const element of document.querySelectorAll<HTMLElement>('[data-msg]')) {
+  const text = msg(element.dataset.msg ?? '')
+  if (text !== '') element.textContent = text
+}
 
 const status = document.getElementById('status') as HTMLDivElement
 const say = (text: string): void => { status.textContent = text }
@@ -17,13 +30,13 @@ document.getElementById('serial')?.addEventListener('click', async () => {
   try {
     const port = await navigator.serial.requestPort()
     const info = port.getInfo()
-    say(`Port eşleşti (VID ${info.usbVendorId?.toString(16) ?? '?'}, PID ${info.usbProductId?.toString(16) ?? '?'}).\nMotor bağlanıyor…`)
+    say(msg('statusPaired', info.usbVendorId?.toString(16) ?? '?', info.usbProductId?.toString(16) ?? '?'))
     // The permission now belongs to the extension origin; tell the engine to
     // look again with getPorts() and open it.
     const message: Message = { type: 'ambiflux/serial', target: 'sw' }
-    chrome.runtime.sendMessage(message, (response: unknown) => say(`Seri: ${JSON.stringify(response)}`))
+    chrome.runtime.sendMessage(message, (response: unknown) => say(msg('statusSerialReply', JSON.stringify(response))))
   } catch (error) {
-    say(`Port seçilmedi: ${error instanceof Error ? error.message : String(error)}`)
+    say(msg('statusNoPort', error instanceof Error ? error.message : String(error)))
   }
 })
 
@@ -32,12 +45,12 @@ document.getElementById('start')?.addEventListener('click', () => {
   // this popup cannot be used there (see offscreen.ts startPicked). All this
   // button does is ask.
   const message: Message = { type: 'ambiflux/start', target: 'sw' }
-  say('Ekran seçici açılıyor…')
+  say(msg('statusPickerOpening'))
   chrome.runtime.sendMessage(message, (response: unknown) => {
     const body = response as { state?: string, error?: string } | undefined
     say(body?.state === 'running'
-      ? 'Yakalama çalışıyor.'
-      : `Başlatılamadı: ${body?.error ?? JSON.stringify(response)}`)
+      ? msg('statusCaptureRunning')
+      : msg('statusStartFailed', body?.error ?? JSON.stringify(response)))
   })
 })
 
@@ -51,14 +64,14 @@ document.getElementById('selftest')?.addEventListener('click', () => {
   chrome.runtime.sendMessage(message, (response: unknown) => {
     const body = response as { state?: string, error?: string } | undefined
     say(body?.state === 'running'
-      ? 'Sınama çalışıyor: motor üretilmiş bir resmi işliyor.'
-      : `Sınama başlatılamadı: ${body?.error ?? JSON.stringify(response)}`)
+      ? msg('statusSelfTestRunning')
+      : msg('statusSelfTestFailed', body?.error ?? JSON.stringify(response)))
   })
 })
 
 document.getElementById('stop')?.addEventListener('click', () => {
   const message: Message = { type: 'ambiflux/stop', target: 'sw' }
-  chrome.runtime.sendMessage(message, (response: unknown) => say(`Durduruldu: ${JSON.stringify(response)}`))
+  chrome.runtime.sendMessage(message, (response: unknown) => say(msg('statusStopped', JSON.stringify(response))))
 })
 
 /**
@@ -72,5 +85,5 @@ chrome.runtime.sendMessage({ type: 'ambiflux/prepare', target: 'sw' } satisfies 
 
 const ping: Message = { type: 'ambiflux/ping', target: 'sw' }
 chrome.runtime.sendMessage(ping, (response: Message | undefined) => {
-  if (response?.type === 'ambiflux/pong') say(`Motor: ${response.engine} · v${response.version}`)
+  if (response?.type === 'ambiflux/pong') say(msg('statusEngine', response.engine, response.version))
 })

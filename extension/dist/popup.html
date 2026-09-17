@@ -10,9 +10,14 @@
   #status { color: #9a9a9a; margin-top: 10px; font-size: 12px; white-space: pre-line; }
 </style>
 <strong>AmbiFlux</strong>
-<button id="serial">Seri portu eşleştir</button>
-<button id="start">Yakalamayı başlat</button>
-<button id="stop">Durdur</button>
-<button id="selftest">Ekransız sına</button>
+<!--
+  The labels here are the English fallback and are replaced on load from
+  _locales/<lang>/messages.json (popup.ts), because Chrome substitutes
+  __MSG_key__ in the manifest and in CSS but never in HTML.
+-->
+<button id="serial" data-msg="pairSerial">Pair serial port</button>
+<button id="start" data-msg="startCapture">Start capture</button>
+<button id="stop" data-msg="stop">Stop</button>
+<button id="selftest" data-msg="selfTest">Test without a screen</button>
 <div id="status">…</div>
 <script type="module" src="popup.js"></script>

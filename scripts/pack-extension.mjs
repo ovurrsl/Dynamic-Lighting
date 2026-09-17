@@ -26,6 +26,7 @@ mkdirSync(`${stage}/ambiflux-extension`, { recursive: true })
 for (const file of ['manifest.json', 'offscreen.html', 'offscreen.js', 'popup.html', 'popup.js', 'sw.js']) {
   cpSync(`${dist}/${file}`, `${stage}/ambiflux-extension/${file}`)
 }
+cpSync(`${dist}/_locales`, `${stage}/ambiflux-extension/_locales`, { recursive: true })
 
 rmSync(`extension/${zip}`, { force: true })
 // Written straight to extension/, since `stage` lives inside it.

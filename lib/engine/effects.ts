@@ -73,6 +73,15 @@ export interface EffectSpec {
   color?: { r: number, g: number, b: number }
 }
 
+/**
+ * The effects whose look comes from `spec.color`. The panel shows a colour
+ * picker for these and only these: a picker beside the rainbow would be a
+ * setting that does nothing, which is worse than no picker. Derived from the
+ * render cases below - the ones that read `baseLinear` - and tested against
+ * them, so the list cannot drift from the code.
+ */
+export const COLOURED_EFFECTS: readonly EffectKind[] = Object.freeze(['breathe', 'candle', 'twinkle', 'scan', 'chase', 'comet'])
+
 export const SPEED_MIN = 0.05
 export const SPEED_MAX = 8
 export const DEFAULT_SPEED = 1

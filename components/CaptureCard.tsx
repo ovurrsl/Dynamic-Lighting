@@ -330,7 +330,7 @@ export function CaptureCard () {
       )}
 
       <div className="flex flex-wrap items-center gap-3">
-        <Button isDisabled={problem !== null || saving || draft === null} onPress={apply}>
+        <Button aria-label={`${t('capture.apply')} — ${t('nav.capture')}`} isDisabled={problem !== null || saving || draft === null} onPress={apply}>
           {t('capture.apply')}
         </Button>
         <span className="text-xs text-muted">{t('capture.restart')}</span>

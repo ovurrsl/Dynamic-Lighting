@@ -69,7 +69,7 @@ test('every listed language has the whole core set, not a different half each', 
   // operate the panel. A language missing a button label would break that
   // silently, so the set is asserted rather than assumed.
   const core = [
-    'app.tagline', 'app.lighting', 'app.language', 'app.theme',
+    'app.tagline', 'app.language', 'app.theme',
     'theme.system', 'theme.light', 'theme.dark',
     'colour.title', 'colour.pick', 'colour.brightness',
     'preview.title', 'layout.title', 'layout.showScreen', 'layout.releaseScreen',

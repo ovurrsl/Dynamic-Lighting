@@ -64,7 +64,7 @@ function StripPreview ({ config, color, brightness }: { config: EngineConfig, co
  * lit by hand - and burying it under the engine's status would hide it from
  * exactly the person who has nothing else working yet.
  */
-export function ColourCard ({ enabled }: { enabled: boolean }) {
+export function ColourCard () {
   const t = useTranslate()
   const { config } = useEngineConfig()
   const { probe, host, pageCapable, setColor: sendColor } = useEngine()
@@ -195,7 +195,7 @@ export function ColourCard ({ enabled }: { enabled: boolean }) {
           <Card.Description>{t('preview.description')}</Card.Description>
         </Card.Header>
         <Card.Content className="flex flex-col gap-4">
-          <StripPreview brightness={enabled ? brightness : 0} color={color} config={config} />
+          <StripPreview brightness={brightness} color={color} config={config} />
           <Surface className="rounded-xl p-3 font-mono text-xs" variant="secondary">
             <div className="flex justify-between">
               <span className="text-muted">{t('preview.selected')}</span>

@@ -1081,7 +1081,7 @@ export function LayoutCard ({
         )}
 
         <div className="flex flex-wrap gap-2">
-          <Button isDisabled={!resolved.ok || saving} onPress={apply}>
+          <Button aria-label={`${t('layout.apply')} — ${t('layout.title')}`} isDisabled={!resolved.ok || saving} onPress={apply}>
             {t(saving ? 'layout.applying' : 'layout.apply')}
           </Button>
           <Button

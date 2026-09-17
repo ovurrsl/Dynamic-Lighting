@@ -176,7 +176,7 @@ export function BorderCard () {
         </Surface>
 
         <div className="flex flex-wrap gap-2">
-          <Button isDisabled={saving} onPress={apply}>
+          <Button aria-label={`${t('border.apply')} — ${t('border.title')}`} isDisabled={saving} onPress={apply}>
             {t(saving ? 'border.applying' : 'border.apply')}
           </Button>
           <Button variant="secondary" onPress={() => { patch({ ...DEFAULT_BORDER }) }}>

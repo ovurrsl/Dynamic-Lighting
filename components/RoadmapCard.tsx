@@ -3,6 +3,7 @@
 import { Card, Surface } from '@heroui/react'
 
 import { useTranslate } from '#components/Preferences'
+import { EFFECT_KINDS } from '#lib/engine/effects'
 import type { MessageKey } from '#lib/i18n/strings'
 
 /**
@@ -20,9 +21,14 @@ import type { MessageKey } from '#lib/i18n/strings'
  * finding out.
  */
 
-type State = 'done' | 'next' | 'planned' | 'never'
+/**
+ * Two states, not four. 'next' and 'planned' existed while the list still had
+ * things ahead of it; every item is now built or ruled out, and a state no
+ * item can have is a promise the page cannot keep.
+ */
+type State = 'done' | 'never'
 
-const ITEMS: Array<{ title: MessageKey, body: MessageKey, state: State }> = [
+const ITEMS: Array<{ title: MessageKey, body: MessageKey, state: State, values?: Record<string, number> }> = [
   // Reordered 2026-09-14. An iPhone was shown capturing its own screen and
   // feeding our sampler - and iOS Safari has no Web Serial, WebUSB, WebHID or
   // Web Bluetooth, so a captured frame there has nowhere to go. The output
@@ -34,7 +40,9 @@ const ITEMS: Array<{ title: MessageKey, body: MessageKey, state: State }> = [
   { title: 'roadmap.sink.title', body: 'roadmap.sink.body', state: 'done' },
   { title: 'roadmap.wled.title', body: 'roadmap.wled.body', state: 'done' },
   { title: 'roadmap.host.title', body: 'roadmap.host.body', state: 'done' },
-  { title: 'roadmap.effects.title', body: 'roadmap.effects.body', state: 'done' },
+  // Counted from the engine's own list, so the sentence cannot fall behind it
+  // again: it said "seven" while twelve were shipping.
+  { title: 'roadmap.effects.title', body: 'roadmap.effects.body', state: 'done', values: { count: EFFECT_KINDS.length } },
   { title: 'roadmap.audio.title', body: 'roadmap.audio.body', state: 'done' },
   { title: 'roadmap.capture.title', body: 'roadmap.capture.body', state: 'done' },
   { title: 'roadmap.priority.title', body: 'roadmap.priority.body', state: 'done' },
@@ -46,8 +54,6 @@ const ITEMS: Array<{ title: MessageKey, body: MessageKey, state: State }> = [
 
 const STATE_KEY: Record<State, MessageKey> = {
   done: 'roadmap.state.done',
-  next: 'roadmap.state.next',
-  planned: 'roadmap.state.planned',
   never: 'roadmap.state.never'
 }
 
@@ -62,26 +68,20 @@ export function RoadmapCard () {
       </Card.Header>
       <Card.Content className="flex flex-col gap-4">
         <ol className="flex flex-col gap-4">
-          {ITEMS.map((item, at) => (
+          {ITEMS.map((item) => (
             <li key={item.title} className="flex flex-col gap-1">
               <div className="flex flex-wrap items-baseline gap-2">
-                <span className="font-mono text-xs text-muted">
-                  {item.state === 'never' ? '—' : item.state === 'done' ? '✓' : String(at + 1).padStart(2, '0')}
-                </span>
+                <span className="font-mono text-xs text-muted">{item.state === 'never' ? '—' : '✓'}</span>
                 <h3 className="text-sm font-semibold">{t(item.title)}</h3>
                 <span
                   className={`rounded-full border px-2 py-0.5 text-xs ${
-                    item.state === 'done'
-                      ? 'border-success/50 text-success'
-                      : item.state === 'next'
-                        ? 'border-default/50'
-                        : 'border-default/25 text-muted'
+                    item.state === 'done' ? 'border-success/50 text-success' : 'border-default/25 text-muted'
                   }`}
                 >
                   {t(STATE_KEY[item.state])}
                 </span>
               </div>
-              <p className="text-sm text-muted">{t(item.body)}</p>
+              <p className="text-sm text-muted">{t(item.body, item.values)}</p>
             </li>
           ))}
         </ol>

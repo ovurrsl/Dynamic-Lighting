@@ -260,7 +260,7 @@ export function SamplingCard () {
         )}
 
         <div className="flex flex-wrap gap-2">
-          <Button isDisabled={saving} onPress={apply}>
+          <Button aria-label={`${t('sampling.apply')} — ${t('sampling.title')}`} isDisabled={saving} onPress={apply}>
             {t(saving ? 'sampling.applying' : 'sampling.apply')}
           </Button>
           <Button variant="secondary" onPress={() => { patch({ ...DEFAULT_SAMPLING }) }}>

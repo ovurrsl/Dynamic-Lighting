@@ -359,6 +359,7 @@ var EFFECT_KINDS = [
 function isEffectKind(value) {
   return typeof value === "string" && EFFECT_KINDS.includes(value);
 }
+var COLOURED_EFFECTS = Object.freeze(["breathe", "candle", "twinkle", "scan", "chase", "comet"]);
 var SPEED_MIN = 0.05;
 var SPEED_MAX = 8;
 var DEFAULT_SPEED = 1;

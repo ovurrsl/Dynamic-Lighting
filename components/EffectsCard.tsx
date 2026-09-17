@@ -6,6 +6,7 @@ import { Button, Card, ColorArea, ColorPicker, ColorSlider, ColorSwatch, Label, 
 import { useEngine } from '#components/Engine'
 import { useTranslate } from '#components/Preferences'
 import {
+  COLOURED_EFFECTS,
   DEFAULT_BRIGHTNESS,
   DEFAULT_SPEED,
   EFFECT_KINDS,
@@ -29,7 +30,10 @@ import type { MessageKey } from '#lib/i18n/strings'
  * worse than not offering it.
  */
 
-const COLOURED: ReadonlySet<EffectKind> = new Set<EffectKind>(['breathe', 'candle', 'comet'])
+// From the engine, not a local copy: the copy here listed three effects while
+// six read the colour, so twinkle, scan and chase ran in the default orange
+// with no way to change it.
+const COLOURED: ReadonlySet<EffectKind> = new Set<EffectKind>(COLOURED_EFFECTS)
 
 const DEFAULT_COLOR = { r: 255, g: 160, b: 60 }
 

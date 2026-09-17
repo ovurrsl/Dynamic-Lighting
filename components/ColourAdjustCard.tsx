@@ -191,7 +191,7 @@ export function ColourAdjustCard () {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button isDisabled={saving} onPress={apply}>
+          <Button aria-label={`${t('adjust.apply')} — ${t('adjust.title')}`} isDisabled={saving} onPress={apply}>
             {t(saving ? 'adjust.applying' : 'adjust.apply')}
           </Button>
           <Button variant="secondary" onPress={() => { patch({ ...DEFAULT_COLOR }) }}>

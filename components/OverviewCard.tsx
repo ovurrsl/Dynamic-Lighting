@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import { Button, Card, Surface } from '@heroui/react'
 
+import { linkLabel } from '#components/DeviceCard'
 import { useEngine } from '#components/Engine'
 import { useEngineConfig } from '#components/EngineConfig'
 import { LedFrame } from '#components/LedFrame'
@@ -136,12 +137,8 @@ export function OverviewCard () {
                   )}
                   <Stat label={t('device.stat.output')} value={`${fmt(stats.outputFps)} fps`} />
                   <Stat label={t('layout.leds', { count: stats.leds })} value="" />
-                  <Stat
-                    label={t('device.stat.link')}
-                    value={t(stats.link.mode === 'port'
-                      ? 'device.link.port'
-                      : stats.link.mode === 'loopback' ? 'device.link.loopback' : 'device.link.none')}
-                  />
+                  {/* The device page's wording, so a WiFi link is not "not connected" here. */}
+                  <Stat label={t('device.stat.link')} value={linkLabel(t, stats.link)} />
                 </Surface>
               )}
             </>

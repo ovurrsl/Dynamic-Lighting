@@ -157,7 +157,7 @@ export function InstancesCard () {
 
               <div className="flex flex-wrap items-center gap-3 text-xs text-muted">
                 <span>{t('strips.leds', { count: configLedCount(instance.config) })}</span>
-                <span>· {instance.config.output.transport}</span>
+                <span>· {t(`output.transport.${instance.config.output.transport}`)}</span>
                 {instance.config.output.host !== undefined && <span>· {instance.config.output.host}</span>}
                 {live !== undefined && (
                   <span className="flex items-center gap-1.5">

@@ -204,7 +204,7 @@ export function SmoothingCard () {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button isDisabled={saving} onPress={apply}>
+          <Button aria-label={`${t('smoothing.apply')} — ${t('smoothing.title')}`} isDisabled={saving} onPress={apply}>
             {t(saving ? 'smoothing.applying' : 'smoothing.apply')}
           </Button>
           <Button

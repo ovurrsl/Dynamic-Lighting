@@ -11,6 +11,7 @@ import { layoutFromCorners, stepWalk, type CalibratedLayout } from '#lib/engine/
 import { configLedCount, type EngineConfig } from '#lib/engine/config'
 import { deriveColorOrder, type SeenChannel } from '#lib/engine/order'
 import { WIZARD_COLORS, type PatternKind, type PatternSpec } from '#lib/engine/patterns'
+import { PRIORITY } from '#lib/engine/runtime'
 import type { MessageKey } from '#lib/i18n/strings'
 
 /**
@@ -82,7 +83,7 @@ interface Wizard {
 
 export function CalibrationCard () {
   const t = useTranslate()
-  const { probe, host, pageCapable, stats, runPattern, saveConfig, stop: stopEngine } = useEngine()
+  const { probe, host, pageCapable, stats, runPattern, saveConfig, clearLayer } = useEngine()
   const { config, setConfig } = useEngineConfig()
   const [notice, setNotice] = useState<string | null>(null)
   const [wizard, setWizard] = useState<Wizard | null>(null)
@@ -99,13 +100,16 @@ export function CalibrationCard () {
   }, [runPattern])
 
   const stop = useCallback(async (): Promise<void> => {
-    // Black first, then stop: stopping alone leaves the strip holding whatever
-    // the last pattern frame was, and a strip stuck on full white after a power
-    // test is alarming in a way that is entirely our fault.
-    await runPattern({ kind: 'off' })
-    await stopEngine()
-    setNotice(null)
-  }, [runPattern, stopEngine])
+    // The PATTERN layer goes, and only that: a pattern is a measurement laid
+    // over whatever was showing, and ending it must give that back - the
+    // capture the user left running, or the colour underneath. Stopping the
+    // whole engine here, as this used to, cost them the screen they had picked
+    // for the sake of a wizard. With nothing underneath the engine goes idle
+    // and sends its own black frame, so a strip is never left on full white
+    // after the power test.
+    const result = await clearLayer(PRIORITY.pattern)
+    setNotice(result.error ?? null)
+  }, [clearLayer])
 
   const answer = useCallback((seen: SeenChannel) => {
     setWizard((current) => {

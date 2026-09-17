@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Button, Surface, Switch } from '@heroui/react'
+import { Button, Surface } from '@heroui/react'
 
 import { AudioCard } from '#components/AudioCard'
 import { AutoLayersCard } from '#components/AutoLayersCard'
@@ -24,6 +24,7 @@ import { InstancesCard, StripPicker } from '#components/InstancesCard'
 import { LayoutCard } from '#components/LayoutCard'
 import { OverviewCard } from '#components/OverviewCard'
 import { PreferencesMenu } from '#components/PreferencesMenu'
+import { patternLabel } from '#components/labels'
 import { useTranslate } from '#components/Preferences'
 import { ProfilesCard } from '#components/ProfilesCard'
 import { RoadmapCard } from '#components/RoadmapCard'
@@ -57,10 +58,10 @@ import type { MessageKey } from '#lib/i18n/strings'
  * plus one component - not another card wedged into an ever-longer column.
  */
 
-function sectionBody (id: SectionId, enabled: boolean) {
+function sectionBody (id: SectionId) {
   switch (id) {
     case 'overview': return <OverviewSection />
-    case 'colour': return <ColourCard enabled={enabled} />
+    case 'colour': return <ColourCard />
     case 'strips': return <InstancesCard />
     case 'layout': return <LayoutSection />
     case 'capture': return <CaptureSection />
@@ -199,7 +200,7 @@ function describeRate (stats: EngineStats, t: (key: MessageKey) => string): stri
   // as showing a component tag.
   if (stats.audio !== undefined) return t(`audio.kind.${stats.audio.kind}` as MessageKey)
   if (stats.effect !== undefined) return t(`effects.kind.${stats.effect}` as MessageKey)
-  if (stats.pattern !== undefined) return stats.pattern
+  if (stats.pattern !== undefined) return patternLabel(stats.pattern, t)
   // No capture layer means `deliveredFps` counts nothing, and "0 fps" beside a
   // strip that is visibly lit reads as a fault. Naming what is actually
   // showing is both true and more use - and this now covers the background and
@@ -310,7 +311,6 @@ export function ControlPanel () {
 
 function Shell () {
   const t = useTranslate()
-  const [isEnabled, setIsEnabled] = useState(true)
   const [menuOpen, setMenuOpen] = useState(false)
   /**
    * Starts on the default and is corrected from the hash after mount, for the
@@ -385,16 +385,14 @@ function Shell () {
               <p className="truncate text-sm text-muted">{t(section.descriptionKey)}</p>
             </div>
           </div>
+          {/*
+            No "Lighting" switch here any more. It looked like a master switch
+            for the strip and blanked one preview on one page - a control that
+            promises more than it does is worse than none. Stopping the strip
+            is the overview's Stop button, and it really stops it.
+          */}
           <div className="flex flex-wrap items-end gap-4">
             <PreferencesMenu />
-            <Switch className="pb-2" isSelected={isEnabled} size="md" onChange={setIsEnabled}>
-              <Switch.Content>
-                <Switch.Control>
-                  <Switch.Thumb />
-                </Switch.Control>
-                {t('app.lighting')}
-              </Switch.Content>
-            </Switch>
           </div>
         </header>
 
@@ -408,7 +406,7 @@ function Shell () {
           </Surface>
         )}
 
-        <main className="flex-1 p-4 lg:p-6">{sectionBody(current, isEnabled)}</main>
+        <main className="flex-1 p-4 lg:p-6">{sectionBody(current)}</main>
       </div>
     </div>
   )

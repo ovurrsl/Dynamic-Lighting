@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { Button, Card, Surface } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
+import { audioInputLabel, audioKindLabel, effectLabel, patternLabel } from '#components/labels'
 import { useTranslate } from '#components/Preferences'
 import type { MessageKey } from '#lib/i18n/strings'
 import type { EngineState, EngineStats } from '#lib/extension/messages'
@@ -41,7 +42,8 @@ const LINK_STATE_KEY = {
   error: 'device.link.state.error'
 } as const satisfies Record<NonNullable<EngineStats['link']['state']>, MessageKey>
 
-function linkLabel (t: (key: MessageKey) => string, link: EngineStats['link']): string {
+/** One wording for the link, shared with the overview so the two never disagree. */
+export function linkLabel (t: (key: MessageKey) => string, link: EngineStats['link']): string {
   const base = t(LINK_KEY[link.mode]) + (link.port !== undefined ? ` ${link.port}` : '')
   const dialling = (link.mode === 'websocket' || link.mode === 'wled') && link.state !== undefined
   return dialling ? `${base} — ${t(LINK_STATE_KEY[link.state as keyof typeof LINK_STATE_KEY])}` : base
@@ -176,11 +178,14 @@ export function DeviceCard () {
                 {stats.audio !== undefined && (
                   <Stat
                     label={t('device.stat.audio')}
-                    value={`${stats.audio.kind} / ${stats.audio.input} ${(stats.audio.level * 100).toFixed(0)}%`}
+                    value={`${audioKindLabel(stats.audio.kind, t)} / ${audioInputLabel(stats.audio.input, t)} ${(stats.audio.level * 100).toFixed(0)}%`}
                   />
                 )}
                 {stats.effect !== undefined && (
-                  <Stat label={t('device.stat.effect')} value={stats.effect} />
+                  <Stat label={t('device.stat.effect')} value={effectLabel(stats.effect, t)} />
+                )}
+                {stats.pattern !== undefined && (
+                  <Stat label={t('layers.component.pattern')} value={patternLabel(stats.pattern, t)} />
                 )}
                 {stats.sourceKind !== undefined && (
                   <Stat

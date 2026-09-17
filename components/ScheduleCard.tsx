@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button, Card, Input, Label, ListBox, Select, Surface, Switch, TextField } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
+import { HexColorField } from '#components/HexColorField'
 import { useTranslate } from '#components/Preferences'
 import { EFFECT_KINDS, type EffectKind } from '#lib/engine/effects'
 import {
@@ -66,9 +67,12 @@ const toDraft = (rule: ScheduleRule): Draft => ({
   id: rule.id,
   enabled: rule.enabled,
   time: formatMinute(rule.atMinute),
-  days: [...rule.days],
-  action: rule.action,
-  instanceId: rule.instanceId ?? ALL_STRIPS
+  days: [...rule.days].sort((a, b) => a - b),
+  // A copy: the draft is edited in place by `patch`, and the engine's own
+  // rule object must not change under it before Save.
+  action: JSON.parse(JSON.stringify(rule.action)) as ScheduleAction,
+  // A blank strip name is "every strip" to the parser; it is the same here.
+  instanceId: rule.instanceId === undefined || rule.instanceId.trim() === '' ? ALL_STRIPS : rule.instanceId
 })
 
 /**
@@ -204,7 +208,10 @@ export function ScheduleCard () {
                   className="w-52"
                   value={draft.action.spec.kind}
                   onChange={(value) => {
-                    patch(draft.id, { action: { kind: 'effect', spec: { kind: value as EffectKind } } })
+                    // Only the kind changes: a speed, brightness or colour the
+                    // rule already carries survives the switch.
+                    const spec = draft.action.kind === 'effect' ? draft.action.spec : {}
+                    patch(draft.id, { action: { kind: 'effect', spec: { ...spec, kind: value as EffectKind } } })
                   }}
                 >
                   <Label>{t('schedule.effect')}</Label>
@@ -226,18 +233,13 @@ export function ScheduleCard () {
               )}
 
               {draft.action.kind === 'color' && (
-                <TextField
+                <HexColorField
                   className="w-32"
-                  value={hex(draft.action.color)}
-                  variant="secondary"
-                  onChange={(value) => {
-                    const parsed = fromHex(value)
-                    if (parsed !== null) patch(draft.id, { action: { kind: 'color', color: parsed } })
-                  }}
-                >
-                  <Label>{t('schedule.color')}</Label>
-                  <Input placeholder="#ffb43c" />
-                </TextField>
+                  label={t('schedule.color')}
+                  placeholder="#ffb43c"
+                  value={draft.action.color}
+                  onChange={(color) => { patch(draft.id, { action: { kind: 'color', color } }) }}
+                />
               )}
 
               {/*
@@ -385,14 +387,4 @@ function defaultAction (kind: ScheduleAction['kind'], previous: ScheduleAction):
     default:
       return previous.kind === 'color' ? previous : { kind: 'color', color: { r: 255, g: 180, b: 60 } }
   }
-}
-
-const hex = (color: { r: number, g: number, b: number }): string =>
-  `#${[color.r, color.g, color.b].map((v) => v.toString(16).padStart(2, '0')).join('')}`
-
-function fromHex (text: string): { r: number, g: number, b: number } | null {
-  const match = /^#?([0-9a-f]{6})$/i.exec(text.trim())
-  if (match === null) return null
-  const value = Number.parseInt(match[1] as string, 16)
-  return { r: (value >> 16) & 255, g: (value >> 8) & 255, b: value & 255 }
 }

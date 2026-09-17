@@ -1,10 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { Button, Card, Input, Label, ListBox, Select, Slider, Surface, Switch, TextField } from '@heroui/react'
+import { Button, Card, Label, ListBox, Select, Slider, Surface, Switch } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
 import { useEngineConfig } from '#components/EngineConfig'
+import { HexColorField, hexOf } from '#components/HexColorField'
 import { useTranslate } from '#components/Preferences'
 import {
   STARTUP_MS_MAX,
@@ -113,7 +114,7 @@ export function AutoLayersCard () {
         </Layer>
 
         <div className="flex flex-wrap gap-2">
-          <Button isDisabled={saving} onPress={apply}>
+          <Button aria-label={`${t('auto.apply')} — ${t('auto.title')}`} isDisabled={saving} onPress={apply}>
             {t(saving ? 'auto.applying' : 'auto.apply')}
           </Button>
         </div>
@@ -180,19 +181,14 @@ function Layer ({ title, note, layer, onChange, children }: {
 
         {layer.kind === 'color'
           ? (
-            <TextField
+            <HexColorField
               className="w-32"
               isDisabled={!layer.enabled}
-              value={hex(layer.color)}
-              variant="secondary"
-              onChange={(value) => {
-                const parsed = fromHex(value)
-                if (parsed !== null) onChange({ ...layer, color: parsed })
-              }}
-            >
-              <Label>{t('auto.colour')}</Label>
-              <Input placeholder="#ffaa64" />
-            </TextField>
+              label={t('auto.colour')}
+              placeholder="#ffaa64"
+              value={layer.color}
+              onChange={(color) => { onChange({ ...layer, color }) }}
+            />
             )
           : (
             <Select
@@ -223,7 +219,7 @@ function Layer ({ title, note, layer, onChange, children }: {
           <span
             aria-hidden
             className="mb-1 size-6 rounded-full border border-default/40"
-            style={{ background: hex(layer.color) }}
+            style={{ background: hexOf(layer.color) }}
           />
         )}
       </div>
@@ -231,14 +227,4 @@ function Layer ({ title, note, layer, onChange, children }: {
       {children}
     </Surface>
   )
-}
-
-const hex = (color: { r: number, g: number, b: number }): string =>
-  `#${[color.r, color.g, color.b].map((v) => v.toString(16).padStart(2, '0')).join('')}`
-
-function fromHex (text: string): { r: number, g: number, b: number } | null {
-  const match = /^#?([0-9a-f]{6})$/i.exec(text.trim())
-  if (match === null) return null
-  const value = Number.parseInt(match[1] as string, 16)
-  return { r: (value >> 16) & 255, g: (value >> 8) & 255, b: value & 255 }
 }

@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { DEFAULT_ENGINE_CONFIG, resolveLayout, type EngineConfig } from '#lib/engine/config'
 import {
+  COLOURED_EFFECTS,
   EFFECT_KINDS,
   SPEED_MAX,
   SPEED_MIN,
@@ -447,4 +448,26 @@ test('every listed effect renders without allocating a surprise', () => {
     createEffect({ kind }, geometry, () => 0).render(out, 500)
     assert.ok([...out].every((v) => v >= 0 && v <= 1), `${kind} wrote valid linear light`)
   }
+})
+
+test('COLOURED_EFFECTS is exactly the set whose frames change with spec.color', () => {
+  // The panel shows a colour picker for these and only these. The list used to
+  // live in the card as a hand copy of three names while six effects read the
+  // colour, so twinkle, scan and chase ran in the default orange with no way
+  // to change it. Derived here from the renderers themselves.
+  const reads: string[] = []
+  for (const kind of EFFECT_KINDS) {
+    const red = createEffect({ kind, color: { r: 255, g: 0, b: 0 } }, GEOMETRY, () => 0)
+    const blue = createEffect({ kind, color: { r: 0, g: 0, b: 255 } }, GEOMETRY, () => 0)
+    const a = frame()
+    const b = frame()
+    let differs = false
+    for (const ms of [0, 300, 1200, 5000, 9000]) {
+      red.render(a, ms)
+      blue.render(b, ms)
+      for (let i = 0; i < a.length; i++) if (Math.abs((a[i] as number) - (b[i] as number)) > 1e-6) differs = true
+    }
+    if (differs) reads.push(kind)
+  }
+  assert.deepEqual([...reads].sort(), [...COLOURED_EFFECTS].sort())
 })

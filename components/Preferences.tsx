@@ -84,11 +84,22 @@ export function PreferencesProvider ({ children }: { children: React.ReactNode }
   const [locale, setLocaleState] = useState<Locale>(DEFAULT_LOCALE)
   const [theme, setThemeState] = useState<Theme>(DEFAULT_THEME)
   const [systemDark, setSystemDark] = useState(true)
+  /**
+   * Whether the stored preference and the system query have been read.
+   *
+   * Until they have, `resolved` is the server's guess - "system", assumed
+   * dark - and applying it to the document would undo what the inline script
+   * in app/layout.tsx set from the real values before first paint: one frame
+   * of dark on a light system, on every load, precisely the flash that script
+   * exists to prevent. The theme is applied only once this is true.
+   */
+  const [ready, setReady] = useState(false)
 
   // After mount, and only then: see above.
   useEffect(() => {
     setLocaleState(readStoredLocale())
     setThemeState(readStoredTheme())
+    setReady(true)
   }, [])
 
   /**
@@ -108,8 +119,8 @@ export function PreferencesProvider ({ children }: { children: React.ReactNode }
   const resolved = resolveTheme(theme, systemDark)
 
   useEffect(() => {
-    applyTheme(document.documentElement, resolved)
-  }, [resolved])
+    if (ready) applyTheme(document.documentElement, resolved)
+  }, [ready, resolved])
 
   // `lang` drives hyphenation, spell-check and what a screen reader's voice
   // sounds like, so it has to track the chosen language rather than stay on the

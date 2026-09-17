@@ -31,7 +31,7 @@ import {
  */
 export function InstancesCard () {
   const t = useTranslate()
-  const { instances, activeId, setActiveId, saveInstances, pool } = useEngine()
+  const { instances, activeId, setActiveId, saveInstances, pool, storageProblem } = useEngine()
   const [draft, setDraft] = useState<Instance[] | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -84,6 +84,18 @@ export function InstancesCard () {
         <Card.Description>{t('strips.description')}</Card.Description>
       </Card.Header>
       <Card.Content className="flex flex-col gap-5">
+        {/*
+          Said BEFORE the list, because the list below is the fallback and
+          the next Save writes it over the stored one. Both hosts substitute
+          the reference rig for a stored list they cannot read; neither used
+          to say so.
+        */}
+        {storageProblem !== null && (
+          <Surface className="rounded-xl p-3 text-sm text-warning" variant="secondary">
+            {t('strips.storageProblem', { reason: storageProblem })}
+          </Surface>
+        )}
+
         {list.map((instance, index) => {
           const live = report(instance.id)
           const selected = instance.id === activeId
@@ -191,6 +203,15 @@ export function InstancesCard () {
           <Surface className="rounded-xl p-3 text-sm" variant="secondary">{notice}</Surface>
         )}
 
+        {/*
+          How many pickers the user was actually shown. More than one means
+          two strips disagree about their source, which is either the desk/TV
+          arrangement working as intended or a strip pointed at the wrong
+          source - and this is the number that says which.
+        */}
+        {pool !== null && pool.captures > 1 && (
+          <p className="text-xs text-muted">{t('strips.captures', { count: pool.captures })}</p>
+        )}
         <p className="text-xs text-muted">{t('strips.captureNote')}</p>
         <p className="text-xs text-muted">{t('strips.serialNote')}</p>
       </Card.Content>

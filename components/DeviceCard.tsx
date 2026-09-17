@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { Button, Card, Surface } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
@@ -51,8 +52,13 @@ const fmt = (n: number, digits = 1): string => (Number.isFinite(n) ? n.toFixed(d
  */
 export function DeviceCard () {
   const t = useTranslate()
-  const { probe, host, state, stats, version, reprobe, stop } = useEngine()
+  const { probe, host, state, stats, version, reprobe, stop, pairSerial } = useEngine()
   const detail = describeDetail(stats?.link.detail)
+  // Asked of the browser after mount, never at render: the server has no
+  // navigator and a mismatch here is a hydration error.
+  const [canPair, setCanPair] = useState(false)
+  const [pairNotice, setPairNotice] = useState<string | null>(null)
+  useEffect(() => { setCanPair(typeof navigator !== 'undefined' && 'serial' in navigator) }, [])
 
   return (
     <Card variant="default">
@@ -94,6 +100,35 @@ export function DeviceCard () {
                 </Button>
               )}
             </div>
+
+            {/*
+              Only in the page host, and only where Web Serial exists (Chromium).
+              The extension's port is paired from its popup because the grant
+              belongs to the extension's origin; this page needs a grant of its
+              own, and until this button existed a page-host strip on the USB
+              transport could never obtain one - the runtime's comment claimed
+              a panel button that was not there.
+            */}
+            {host === 'page' && canPair && (
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onPress={() => {
+                    setPairNotice(null)
+                    void pairSerial().then((problem) => {
+                      setPairNotice(problem === null ? t('device.pair.done') : t('device.pair.failed', { reason: problem }))
+                    })
+                  }}
+                >
+                  {t('device.pair')}
+                </Button>
+                <span className="text-xs text-muted">{t('device.pair.note')}</span>
+              </div>
+            )}
+            {pairNotice !== null && (
+              <Surface className="rounded-xl p-3 text-sm" variant="secondary">{pairNotice}</Surface>
+            )}
 
             {stats !== null && (
               <Surface className="grid grid-cols-2 gap-x-6 gap-y-1 rounded-xl p-3 font-mono text-xs sm:grid-cols-3" variant="secondary">

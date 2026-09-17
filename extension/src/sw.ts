@@ -130,7 +130,7 @@ async function setInstances (value: unknown): Promise<{ instances: Instance[], e
   try {
     parsed = parseInstances(value)
   } catch (error) {
-    return { instances: await loadInstances(), error: error instanceof Error ? error.message : String(error) }
+    return { instances: await loadInstances(), error: describe(error) }
   }
   // Stored first, then taken: a write that fails must not leave memory, the
   // storage and the engine document disagreeing while the panel is told it
@@ -204,6 +204,8 @@ async function setConfig (value: unknown, id?: string): Promise<{ config: Engine
  * builds it on `onStartup`, and why saving a rule builds it too.
  */
 let schedule: ScheduleRule[] | null = null
+/** Why the stored rules could not be read, when they could not - reported with the (empty) list. */
+let scheduleProblem: string | undefined
 
 async function loadSchedule (): Promise<ScheduleRule[]> {
   if (schedule !== null) return schedule
@@ -211,12 +213,18 @@ async function loadSchedule (): Promise<ScheduleRule[]> {
     const stored = await chrome.storage.local.get(SCHEDULE_KEY)
     const raw = stored[SCHEDULE_KEY]
     schedule = raw === undefined ? [] : parseRules(raw)
-  } catch {
+  } catch (error) {
     // Rules this version cannot read are rules that would never fire anyway;
-    // an empty schedule is at least an honest one.
+    // an empty schedule is at least an honest one - once the panel is told.
+    scheduleProblem = describe(error)
     schedule = []
   }
   return schedule
+}
+
+/** An error as one sentence, without the "Error: " a String() would prefix. */
+function describe (error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**
@@ -234,6 +242,7 @@ async function setSchedule (value: unknown): Promise<{ rules: ScheduleRule[], er
   }
   await chrome.storage.local.set({ [SCHEDULE_KEY]: parsed })
   schedule = parsed
+  scheduleProblem = undefined
 
   // Unlike a configuration change, a rule has to reach a LIVE engine or it
   // cannot fire, so saving one builds the document rather than waiting for the
@@ -296,7 +305,7 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
       return false
 
     case 'ambiflux/status':
-      status().then(sendResponse, (error: unknown) => sendResponse({ error: String(error) }))
+      status().then(sendResponse, (error: unknown) => sendResponse({ error: describe(error) }))
       return true
 
     case 'ambiflux/config':
@@ -306,14 +315,14 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
           config: result.config,
           ...(result.error === undefined ? {} : { error: result.error })
         } satisfies Message),
-        (error: unknown) => sendResponse({ type: 'ambiflux/config-reply', config: null, error: String(error) } satisfies Message)
+        (error: unknown) => sendResponse({ type: 'ambiflux/config-reply', config: null, error: describe(error) } satisfies Message)
       )
       return true
 
     case 'ambiflux/config-get':
       loadConfig(message.instance).then(
         (current) => sendResponse({ type: 'ambiflux/config-reply', config: current } satisfies Message),
-        (error: unknown) => sendResponse({ type: 'ambiflux/config-reply', config: null, error: String(error) } satisfies Message)
+        (error: unknown) => sendResponse({ type: 'ambiflux/config-reply', config: null, error: describe(error) } satisfies Message)
       )
       return true
 
@@ -324,7 +333,7 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
           instances: result.instances,
           ...(result.error === undefined ? {} : { error: result.error })
         } satisfies Message),
-        (error: unknown) => sendResponse({ type: 'ambiflux/instances-reply', instances: null, error: String(error) } satisfies Message)
+        (error: unknown) => sendResponse({ type: 'ambiflux/instances-reply', instances: null, error: describe(error) } satisfies Message)
       )
       return true
 
@@ -337,7 +346,7 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
           instances: list,
           ...(instancesProblem === undefined ? {} : { error: instancesProblem })
         } satisfies Message),
-        (error: unknown) => sendResponse({ type: 'ambiflux/instances-reply', instances: null, error: String(error) } satisfies Message)
+        (error: unknown) => sendResponse({ type: 'ambiflux/instances-reply', instances: null, error: describe(error) } satisfies Message)
       )
       return true
 
@@ -348,7 +357,7 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
           rules: result.rules,
           ...(result.error === undefined ? {} : { error: result.error })
         } satisfies Message),
-        (error: unknown) => sendResponse({ type: 'ambiflux/schedule-reply', rules: [], error: String(error) } satisfies Message)
+        (error: unknown) => sendResponse({ type: 'ambiflux/schedule-reply', rules: [], error: describe(error) } satisfies Message)
       )
       return true
 
@@ -356,15 +365,19 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
     // opens the schedule page must not be the reason the document exists.
     case 'ambiflux/schedule-get':
       loadSchedule().then(
-        (rules) => sendResponse({ type: 'ambiflux/schedule-reply', rules } satisfies Message),
-        (error: unknown) => sendResponse({ type: 'ambiflux/schedule-reply', rules: [], error: String(error) } satisfies Message)
+        (rules) => sendResponse({
+          type: 'ambiflux/schedule-reply',
+          rules,
+          ...(scheduleProblem === undefined ? {} : { error: scheduleProblem })
+        } satisfies Message),
+        (error: unknown) => sendResponse({ type: 'ambiflux/schedule-reply', rules: [], error: describe(error) } satisfies Message)
       )
       return true
 
     case 'ambiflux/prepare':
       ensureOffscreen().then(
         () => sendResponse({ ready: true }),
-        (error: unknown) => sendResponse({ ready: false, error: String(error) })
+        (error: unknown) => sendResponse({ ready: false, error: describe(error) })
       )
       return true
 
@@ -378,7 +391,7 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
     case 'ambiflux/serial':
     case 'ambiflux/control':
       relayToOffscreen({ ...message, target: 'offscreen' })
-        .then(sendResponse, (error: unknown) => sendResponse({ error: String(error) }))
+        .then(sendResponse, (error: unknown) => sendResponse({ error: describe(error) }))
       return true // async response
 
     case 'ambiflux/stop':
@@ -386,7 +399,7 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
       // tell it so.
       offscreenExists()
         .then((alive) => alive ? chrome.runtime.sendMessage({ ...message, target: 'offscreen' }) : { state: 'idle' })
-        .then(sendResponse, (error: unknown) => sendResponse({ error: String(error) }))
+        .then(sendResponse, (error: unknown) => sendResponse({ error: describe(error) }))
       return true
 
     // The offscreen document reports upward; the worker keeps the latest so a

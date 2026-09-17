@@ -178,11 +178,17 @@ export async function saveSchedule (rules: ScheduleRule[]): Promise<{ rules: Sch
   }
 }
 
-export async function fetchSchedule (): Promise<ScheduleRule[]> {
+/**
+ * The stored rules, and the reason they could not be read when they could not:
+ * the worker answers with an empty list AND the parse error in that case, and
+ * a panel that dropped the error would show an empty schedule with nothing
+ * saying the stored one is unreadable - and overwrite it on the next Save.
+ */
+export async function fetchSchedule (): Promise<{ rules: ScheduleRule[], error?: string }> {
   try {
-    return readSchedule(await send({ type: 'ambiflux/schedule-get', target: 'sw' })).rules
-  } catch {
-    return []
+    return readSchedule(await send({ type: 'ambiflux/schedule-get', target: 'sw' }))
+  } catch (error) {
+    return { rules: [], error: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -321,12 +327,14 @@ export async function sendControl (control: ControlRequest, instance?: string): 
  * extension is a different program, and a panel that showed whatever it sent
  * would show nonsense instead of saying it could not read it.
  */
-export async function fetchInstances (): Promise<Instance[] | null> {
+export async function fetchInstances (): Promise<{ instances: Instance[] | null, error?: string }> {
   try {
-    const reply = await send({ type: 'ambiflux/instances-get', target: 'sw' })
-    return readInstances(reply).instances
-  } catch {
-    return null
+    // A list AND an error is the worker saying the stored one could not be
+    // read and the reference rig is standing in - which the panel has to show
+    // before its next Save overwrites the stored list for good.
+    return readInstances(await send({ type: 'ambiflux/instances-get', target: 'sw' }))
+  } catch (error) {
+    return { instances: null, error: error instanceof Error ? error.message : String(error) }
   }
 }
 

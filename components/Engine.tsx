@@ -118,6 +118,21 @@ export interface Engine {
   saveInstances: (instances: readonly Instance[]) => Promise<SaveResult>
   /** Per-strip state and statistics, when the host reports them. */
   pool: PoolStats | null
+  /**
+   * Why the stored strip list could not be read, when it could not. The
+   * reference rig stands in either way; what changes is that the strips page
+   * says so before its next Save overwrites the stored list for good.
+   */
+  storageProblem: string | null
+  /** The same for the stored rules. */
+  scheduleProblem: string | null
+  /**
+   * Pairs a serial port for the PAGE host. Web Serial grants a port to the
+   * origin that asked, so the extension's grant is the extension's and this
+   * page needs its own; every strip on the USB transport reopens its link
+   * afterwards. Null on success, otherwise the reason.
+   */
+  pairSerial: () => Promise<string | null>
 }
 
 /**
@@ -152,6 +167,8 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
   const [instances, setInstances] = useState<Instance[]>(defaultInstances)
   const [activeId, setActiveIdState] = useState<string>(() => (defaultInstances()[0] as Instance).id)
   const [pool, setPool] = useState<PoolStats | null>(null)
+  const [storageProblem, setStorageProblem] = useState<string | null>(null)
+  const [scheduleProblem, setScheduleProblem] = useState<string | null>(null)
 
   /**
    * The strip every per-strip control addresses.
@@ -182,20 +199,28 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
   const pageEngine = useCallback((): PageEngine => {
     if (pageRef.current === null) {
       const stored = loadStoredInstances()
+      // Kept, not dropped: an unreadable stored list is replaced by the
+      // defaults on purpose, and the strips page has to say so before its next
+      // Save overwrites the stored one - config-store's contract, which this
+      // used to discard.
+      setStorageProblem(stored.problem ?? null)
       const built = createPageEngine(absorb, stored.instances)
       // The page's engines are memory, and a reload empties them. The rules
       // come back from storage as they are BUILT rather than when the schedule
       // card happens to be open, because a rule that only fires while you are
       // watching it is not a schedule.
-      const rules = loadStoredSchedule().rules
-      if (rules.length > 0) {
+      const loadedRules = loadStoredSchedule()
+      let rulesProblem: string | null = loadedRules.problem ?? null
+      if (loadedRules.rules.length > 0) {
         try {
-          built.pool.setSchedule(rules)
-        } catch {
+          built.pool.setSchedule(loadedRules.rules)
+        } catch (error) {
           // Written by an older version and no longer valid. The engines run
-          // without them; the card shows what they actually have.
+          // without them; the card shows what they actually have, and why.
+          rulesProblem = error instanceof Error ? error.message : String(error)
         }
       }
+      setScheduleProblem(rulesProblem)
       pageRef.current = built
     }
     return pageRef.current
@@ -216,13 +241,24 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
    */
   useEffect(() => {
     if (host === 'page') {
-      setInstances(pageRef.current?.pool.instances() ?? loadStoredInstances().instances)
+      if (pageRef.current !== null) {
+        setInstances(pageRef.current.pool.instances())
+        return
+      }
+      const stored = loadStoredInstances()
+      setInstances(stored.instances)
+      setStorageProblem(stored.problem ?? null)
       return
     }
     if (probe?.available !== true) return
     let cancelled = false
-    void fetchInstances().then((list) => {
-      if (!cancelled && list !== null) setInstances(list)
+    void fetchInstances().then((reply) => {
+      if (cancelled) return
+      if (reply.instances !== null) setInstances(reply.instances)
+      // A list WITH an error is the worker's "the stored one could not be
+      // read"; an error with no list is the worker being unreachable, which
+      // the probe already reports.
+      setStorageProblem(reply.instances !== null && reply.error !== undefined ? reply.error : null)
     })
     return () => { cancelled = true }
   }, [host, probe])
@@ -240,13 +276,22 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
       // with no rules does not get one. A visitor WITH rules does, because
       // otherwise they would fire only once something else happened to start
       // the engine - which on a quiet evening is never.
-      const wanted = pageRef.current !== null || loadStoredSchedule().rules.length > 0
+      const loaded = loadStoredSchedule()
+      const wanted = pageRef.current !== null || loaded.rules.length > 0
       setSchedule(wanted ? pageEngine().pool.schedule() : [])
+      // With nothing to build the engines for, the problem would otherwise only
+      // be read inside pageEngine() - which is exactly the case where the stored
+      // rules were unreadable and there is nothing to build for.
+      if (!wanted) setScheduleProblem(loaded.problem ?? null)
       return
     }
     if (probe?.available !== true) return
     let cancelled = false
-    void fetchSchedule().then((rules) => { if (!cancelled) setSchedule(rules) })
+    void fetchSchedule().then((reply) => {
+      if (cancelled) return
+      setSchedule(reply.rules)
+      setScheduleProblem(reply.error ?? null)
+    })
     return () => { cancelled = true }
   }, [host, probe, pageEngine])
 
@@ -460,12 +505,14 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
       // would give two answers to one question.
       const reply = await saveSchedule(rules)
       setSchedule(reply.rules)
+      if (reply.error === undefined) setScheduleProblem(null)
       return reply.error === undefined ? {} : { error: reply.error }
     }
     try {
       const applied = pageEngine().pool.setSchedule(rules)
       setSchedule(applied)
       const problem = storeSchedule(applied)
+      if (problem === null) setScheduleProblem(null)
       return problem === null ? {} : { notStored: problem }
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) }
@@ -483,12 +530,14 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
     if (hostRef.current !== 'page') {
       const reply = await saveInstancesInExtension(next)
       if (reply.instances !== null) setInstances(reply.instances)
+      if (reply.error === undefined) setStorageProblem(null)
       return reply.error === undefined ? {} : { error: reply.error }
     }
     try {
       const applied = pageEngine().pool.setInstances(next)
       setInstances(applied)
       const problem = storeInstances(applied)
+      if (problem === null) setStorageProblem(null)
       return problem === null ? {} : { notStored: problem }
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) }
@@ -532,6 +581,23 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
     }
   }, [activeEngine])
 
+  const pairSerial = useCallback(async (): Promise<string | null> => {
+    if (hostRef.current !== 'page') return 'eklenti simgesinden eşleştir'
+    const serial = (navigator as { serial?: { requestPort: () => Promise<unknown> } }).serial
+    if (serial === undefined) return 'bu tarayıcıda Web Serial yok'
+    try {
+      await serial.requestPort()
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+    // The permission now belongs to this page's origin. Every strip on the
+    // USB transport looks again with getPorts(), exactly as the extension's
+    // engine does after its popup pairs one.
+    const engines = pageEngine().pool.engines().filter((engine) => engine.config().output.transport === 'serial')
+    await Promise.all(engines.map(async (engine) => { await engine.relink() }))
+    return null
+  }, [pageEngine])
+
   const setActiveId = useCallback((id: string) => {
     setActiveIdState(id)
     // The numbers on screen belong to the strip that was selected a moment ago;
@@ -545,12 +611,14 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
       probe, host, pageCapable, setHost, state, stats, version, busy,
       reprobe, start, selfTest, stop, runPattern, runEffect, runAudio, setColor, clearLayer,
       schedule, saveSchedule: saveScheduleRules, saveConfig, sendControl,
-      instances, activeId, setActiveId, saveInstances: saveInstanceList, pool
+      instances, activeId, setActiveId, saveInstances: saveInstanceList, pool,
+      storageProblem, scheduleProblem, pairSerial
     }),
     [probe, host, pageCapable, setHost, state, stats, version, busy,
       reprobe, start, selfTest, stop, runPattern, runEffect, runAudio, setColor, clearLayer,
       schedule, saveScheduleRules, saveConfig, sendControl,
-      instances, activeId, setActiveId, saveInstanceList, pool]
+      instances, activeId, setActiveId, saveInstanceList, pool,
+      storageProblem, scheduleProblem, pairSerial]
   )
 
   return <EngineContext value={value}>{children}</EngineContext>

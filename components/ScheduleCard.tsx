@@ -88,7 +88,7 @@ function freeId (drafts: readonly Draft[]): string {
 
 export function ScheduleCard () {
   const t = useTranslate()
-  const { probe, host, pageCapable, schedule, saveSchedule, instances } = useEngine()
+  const { probe, host, pageCapable, schedule, saveSchedule, instances, scheduleProblem } = useEngine()
   const [drafts, setDrafts] = useState<Draft[] | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -154,6 +154,11 @@ export function ScheduleCard () {
         <Card.Description>{t('schedule.description')}</Card.Description>
       </Card.Header>
       <Card.Content className="flex flex-col gap-5">
+        {scheduleProblem !== null && (
+          <Surface className="rounded-xl p-3 text-sm text-warning" variant="secondary">
+            {t('schedule.storageProblem', { reason: scheduleProblem })}
+          </Surface>
+        )}
         {list.length === 0 && <p className="text-sm text-muted">{t('schedule.empty')}</p>}
 
         {list.map((draft) => (

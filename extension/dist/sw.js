@@ -1094,7 +1094,7 @@ async function setInstances(value) {
   try {
     parsed = parseInstances(value);
   } catch (error) {
-    return { instances: await loadInstances(), error: error instanceof Error ? error.message : String(error) };
+    return { instances: await loadInstances(), error: describe2(error) };
   }
   await chrome.storage.local.set({ [INSTANCES_KEY]: parsed });
   instances = parsed;
@@ -1132,16 +1132,21 @@ async function setConfig(value, id) {
   return { config: parsed };
 }
 var schedule = null;
+var scheduleProblem;
 async function loadSchedule() {
   if (schedule !== null) return schedule;
   try {
     const stored = await chrome.storage.local.get(SCHEDULE_KEY);
     const raw = stored[SCHEDULE_KEY];
     schedule = raw === void 0 ? [] : parseRules(raw);
-  } catch {
+  } catch (error) {
+    scheduleProblem = describe2(error);
     schedule = [];
   }
   return schedule;
+}
+function describe2(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 async function setSchedule(value) {
   let parsed;
@@ -1152,6 +1157,7 @@ async function setSchedule(value) {
   }
   await chrome.storage.local.set({ [SCHEDULE_KEY]: parsed });
   schedule = parsed;
+  scheduleProblem = void 0;
   if (parsed.length > 0) await ensureOffscreen();
   if (await offscreenExists()) {
     try {
@@ -1195,7 +1201,7 @@ function handle(message, sendResponse) {
       });
       return false;
     case "ambiflux/status":
-      status().then(sendResponse, (error) => sendResponse({ error: String(error) }));
+      status().then(sendResponse, (error) => sendResponse({ error: describe2(error) }));
       return true;
     case "ambiflux/config":
       setConfig(message.config, message.instance).then(
@@ -1204,13 +1210,13 @@ function handle(message, sendResponse) {
           config: result.config,
           ...result.error === void 0 ? {} : { error: result.error }
         }),
-        (error) => sendResponse({ type: "ambiflux/config-reply", config: null, error: String(error) })
+        (error) => sendResponse({ type: "ambiflux/config-reply", config: null, error: describe2(error) })
       );
       return true;
     case "ambiflux/config-get":
       loadConfig(message.instance).then(
         (current) => sendResponse({ type: "ambiflux/config-reply", config: current }),
-        (error) => sendResponse({ type: "ambiflux/config-reply", config: null, error: String(error) })
+        (error) => sendResponse({ type: "ambiflux/config-reply", config: null, error: describe2(error) })
       );
       return true;
     case "ambiflux/instances":
@@ -1220,7 +1226,7 @@ function handle(message, sendResponse) {
           instances: result.instances,
           ...result.error === void 0 ? {} : { error: result.error }
         }),
-        (error) => sendResponse({ type: "ambiflux/instances-reply", instances: null, error: String(error) })
+        (error) => sendResponse({ type: "ambiflux/instances-reply", instances: null, error: describe2(error) })
       );
       return true;
     // Answered from storage like the schedule, and for the same reason: a panel
@@ -1232,7 +1238,7 @@ function handle(message, sendResponse) {
           instances: list,
           ...instancesProblem === void 0 ? {} : { error: instancesProblem }
         }),
-        (error) => sendResponse({ type: "ambiflux/instances-reply", instances: null, error: String(error) })
+        (error) => sendResponse({ type: "ambiflux/instances-reply", instances: null, error: describe2(error) })
       );
       return true;
     case "ambiflux/schedule":
@@ -1242,21 +1248,25 @@ function handle(message, sendResponse) {
           rules: result.rules,
           ...result.error === void 0 ? {} : { error: result.error }
         }),
-        (error) => sendResponse({ type: "ambiflux/schedule-reply", rules: [], error: String(error) })
+        (error) => sendResponse({ type: "ambiflux/schedule-reply", rules: [], error: describe2(error) })
       );
       return true;
     // Answered from storage, never by waking the engine document: a panel that
     // opens the schedule page must not be the reason the document exists.
     case "ambiflux/schedule-get":
       loadSchedule().then(
-        (rules) => sendResponse({ type: "ambiflux/schedule-reply", rules }),
-        (error) => sendResponse({ type: "ambiflux/schedule-reply", rules: [], error: String(error) })
+        (rules) => sendResponse({
+          type: "ambiflux/schedule-reply",
+          rules,
+          ...scheduleProblem === void 0 ? {} : { error: scheduleProblem }
+        }),
+        (error) => sendResponse({ type: "ambiflux/schedule-reply", rules: [], error: describe2(error) })
       );
       return true;
     case "ambiflux/prepare":
       ensureOffscreen().then(
         () => sendResponse({ ready: true }),
-        (error) => sendResponse({ ready: false, error: String(error) })
+        (error) => sendResponse({ ready: false, error: describe2(error) })
       );
       return true;
     case "ambiflux/start":
@@ -1268,11 +1278,11 @@ function handle(message, sendResponse) {
     case "ambiflux/clear-layer":
     case "ambiflux/serial":
     case "ambiflux/control":
-      relayToOffscreen({ ...message, target: "offscreen" }).then(sendResponse, (error) => sendResponse({ error: String(error) }));
+      relayToOffscreen({ ...message, target: "offscreen" }).then(sendResponse, (error) => sendResponse({ error: describe2(error) }));
       return true;
     // async response
     case "ambiflux/stop":
-      offscreenExists().then((alive) => alive ? chrome.runtime.sendMessage({ ...message, target: "offscreen" }) : { state: "idle" }).then(sendResponse, (error) => sendResponse({ error: String(error) }));
+      offscreenExists().then((alive) => alive ? chrome.runtime.sendMessage({ ...message, target: "offscreen" }) : { state: "idle" }).then(sendResponse, (error) => sendResponse({ error: describe2(error) }));
       return true;
     // The offscreen document reports upward; the worker keeps the latest so a
     // popup or page that opens later can read it without waiting for the next

@@ -98,29 +98,36 @@ extension/
     offscreen.html/.ts   motorun tamamı
     popup.ts/.html       kullanıcı hareketi isteyen iki şey: ekran seçimi, seri port
     webcodecs.d.ts       MediaStreamTrackProcessor tipleri (lib.dom'da yok)
+  _locales/              popup'ın dilleri (chrome.i18n), tr + en
   tsconfig.json          include: src/**/*.ts, types: chrome + w3c-web-serial
-  dist/                  DERLEME ÇIKTISI, .gitignore'da — yüklenen klasör bu
+  dist/                  DERLEME ÇIKTISI — DEPODA (yüklenen klasör bu); verify:extension kaynakla eşleştiğini denetler
 
 lib/engine/              saf TypeScript motor, tarayıcı API'si yok, node --test ile koşar
+  runtime.ts   motorun kendisi: host enjekte (saat, canvas, kaynak), aşamalar, muxer, bağlantı
+  pool.ts      N motor, bir yakalama (fanout.ts); instances.ts şerit listesi
   types.ts     ortak vocabulary: LedRect, LinearGrid, LedColors, Border, Clock
-  layout.ts    klasik çerçeve + matris yerleşimi, kara liste, keystone
+  layout.ts    klasik çerçeve + matris yerleşimi, kara liste, keystone; ranges.ts metin ↔ aralık
   order.ts     kanal sırası (rgb…bgr), LED başına istisna
   config.ts    tek EngineConfig, parseEngineConfig, resolveLayout
+  source.ts    kare kaynakları (MSTP akışı / video öğesi); open-source.ts, devices.ts: ekran ve yakalama kartı
   decode.ts    RGBA → doğrusal ışık (256 girişli LUT)
   border.ts    siyah kenar algılama, 4 mod, ms tabanlı histerezis
   sample.ts    bölge → LED, 7 mod, tam ızgara adresleme
   adjust.ts    8 aşamalı renk düzeltme, Oklab
-  smooth.ts    linear / decay / asimetrik yumuşatma
+  smooth.ts    linear / decay / asimetrik yumuşatma (panel yalnız asimetriği sunar)
   dither.ts    zamansal hata yayılımı, Awa/Ada yolunda encode.ts'ten çağrılıyor
-  priority.ts  kaynak arbitrajı
-  protocol.ts  Ada / Awa / Afx çerçeveleme + akış ayrıştırıcı
+  priority.ts  kaynak arbitrajı; effects.ts on iki efekt; patterns.ts test desenleri; audio.ts + audio-input.ts ses
+  schedule.ts  zaman kuralları; calibrate.ts köşelerden yerleşim; control.ts AxC kontrol kanalı
+  protocol.ts  Ada / Awa / Afx / AxC çerçeveleme + akış ayrıştırıcı
   encode.ts    LED renkleri → tel baytları, format seçimi + 8-bit dither
-  sink.ts      FrameSink: latest-wins yazıcı, bayt taşıması, loopback
-  net.ts       WebSocket ve WLED sink'leri
+  sink.ts      FrameSink: latest-wins yazıcı, bayt taşıması, loopback, release
+  net.ts       WebSocket ve WLED sink'leri; wled.ts WLED JSON; address.ts adres ayrıştırma
+  text.ts      motorun bütün cümleleri (İngilizce); panel lib/i18n/engine-text.ts ile çeviriyor
   stats.ts     varış ölçer, p50/p99/max
 
+lib/page-host.ts            aynı motorun sayfa içi host'u (Safari/Firefox/iOS)
 lib/extension/messages.ts   panel ↔ sw ↔ offscreen mesaj sözleşmesi (iki taraf da derler)
-lib/config-store.ts         panelin localStorage kopyası
+lib/config-store.ts         panelin localStorage kopyası (şeritler, zamanlama)
 lib/extension-client.ts     panelin eklenti tarafı
 data/extension.ts           EXTENSION_ID
 components/LayoutCard.tsx   yerleşim editörü
@@ -140,7 +147,8 @@ bir önizleme, motor yanlışken doğru olabilir.
 npm install
 npm run typecheck            # panel + kütüphane
 npm run typecheck:extension  # DOM + chrome + Web Serial tipleriyle
-npm test                     # 381 test, node --test, DERLEME YOK
+npm test                     # node --test, DERLEME YOK (sayı: README'deki verify çıktısı)
+npm run verify               # typecheck ×2 + test + build + dist kaynakla eşleşiyor mu
 npm run build:extension      # esbuild → extension/dist
 npm run pack:extension       # + yüklenebilir zip
 npm run dev                  # panel
@@ -310,7 +318,7 @@ Tek durum makinesi, üç baytlık magic ile dağıtım. `lib/engine/protocol.ts`
 | `Ada` | `n×3` 8-bit | — | Adalight geriye dönük |
 | `Awa`/`AwA` | `n×3` 8-bit | 3 bayt Fletcher | AWA uyumu |
 | **`Afx`** | `n×6` **16-bit BE doğrusal** | 3 bayt Fletcher | **ürün yolu** |
-| `AxC` | TLV | 3 bayt Fletcher | config, sürüm, NVS (henüz yok) |
+| `AxC` | TLV | 3 bayt Fletcher | config, sürüm, NVS, WiFi kimlik bilgileri (firmware + `lib/engine/control.ts`) |
 
 Başlık hepsinde aynı: `hi`, `lo`, `chk`; `ledCount = (hi<<8|lo) + 1`,
 `chk = hi ^ lo ^ 0x55`. `HEADER_SIZE=6`, `TRAILER_SIZE=3`, `MAX_LEDS=65536`.
@@ -341,7 +349,10 @@ tetikliyor.
 
 ## 8. Yapılandırma modeli
 
-`lib/engine/config.ts`. Tek tip: `EngineConfig = { layout, blacklist, colorOrder }`.
+`lib/engine/config.ts`. Tek tip: `EngineConfig = { layout, blacklist, colorOrder,
+output, capture, sampling, smoothing, color, border, background, startup }` —
+ilk üçü ilk günden, gerisi paneldeki kartlar birer birer bağlandıkça eklendi;
+her bölüm yokken varsayılanına düşer, eski bir kayıt yine yüklenir.
 
 **Doğrulama inşa ederek yapılıyor.** `parseEngineConfig` alan tiplerini ve
 aralıklarını yerel kontrol ediyor, gerisini `classicLayout`/`matrixLayout`/
@@ -530,10 +541,10 @@ Bunlar daha önce düşünülüp elenmiş ya da başkasının kodunda görülmü
 - Panele giden hiçbir şey "bağlandı" numarası yapmaz: eklenti yoksa **yok**
   yazar.
 
-**Ticari taraf:** `LICENCE_SIGNING_KEY` asla depoya girmez. Lisans **fail
-open** — sunucu erişilemezse `notAfter`'a kadar çalış, sonra *yine de çalış*
-ama uyar. Bir aydınlatma ürününü barındırma faturası yüzünden sert durdurmak
-chargeback ve tek yıldız üretir.
+**Ticari taraf (tarihsel):** lisans sunucusu, aktivasyon ve
+`LICENCE_SIGNING_KEY` PR #6 ile söküldü; uygulama açık kaynak (Apache-2.0),
+hesap ve sunucu deposu yok. Eski "fail open" kararı artık uygulanacak bir
+şey değil; burada yalnız kaydı kalsın diye duruyor.
 
 ---
 
@@ -705,7 +716,7 @@ tüm zinciri** ölçen tek yöntem bu.
 | (u) | `AxC` kontrol kanalı, host tarafı | **yapıldı** — `lib/engine/control.ts`; WiFi kimlik bilgileri Cihaz sayfasından |
 | (v) | Motoru host'tan ayır | **yapıldı** — `lib/engine/runtime.ts`; offscreen 875 → 199 satır |
 | (w) | Sayfa host'u | **yapıldı** — `lib/page-host.ts`; üç kare rotası gerçek tarayıcıda ölçüldü |
-| (x) | Efekt motoru | **yapıldı** — `lib/engine/effects.ts`, yedi efekt, kendi paneli, CPython yok |
+| (x) | Efekt motoru | **yapıldı** — `lib/engine/effects.ts`, on iki efekt, kendi paneli, CPython yok |
 | (y) | Ses görselleştirici | **yapıldı** — `lib/engine/audio{,-input}.ts`, üç görselleştirici, iki giriş, iOS dahil |
 | (z) | Yakalama kartı girişi | **yapıldı** — `lib/engine/devices.ts`, kaynak seçici Yakalama sayfasında |
 | (aa) | Öncelik katmanları | **yapıldı** — muxer motora bağlandı, katman listesi Genel bakış'ta, renk kaynağı gerçek |

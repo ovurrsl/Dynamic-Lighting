@@ -15,11 +15,10 @@ next-env.d.ts
 *.tsbuildinfo
 
 # ── Secrets ────────────────────────────────────────────────────────
-# LICENCE_SIGNING_KEY can mint valid licences. It belongs in the host's
-# environment variables, never in the repo.
+# The application reads no environment variable and keeps no secret (the
+# licence server is gone). A .env someone creates locally still stays out.
 .env
 .env.*
-!.env.example
 
 # ── Local development data ─────────────────────────────────────────
 server/.data/

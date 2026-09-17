@@ -45,4 +45,3 @@ var ping = { type: "ambiflux/ping", target: "sw" };
 chrome.runtime.sendMessage(ping, (response) => {
   if (response?.type === "ambiflux/pong") say(msg("statusEngine", response.engine, response.version));
 });
-//# sourceMappingURL=popup.js.map

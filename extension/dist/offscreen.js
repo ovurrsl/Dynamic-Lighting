@@ -6147,4 +6147,3 @@ function reading(reply, type, field) {
   if (reply.type !== type) return void 0;
   return reply[field];
 }
-//# sourceMappingURL=offscreen.js.map

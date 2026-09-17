@@ -21,7 +21,9 @@ await build({
   format: 'esm',
   target: 'chrome116',
   platform: 'browser',
-  sourcemap: true,
+  // External: the map files are deleted before commit, and a sourceMappingURL
+  // comment pointing at a file that is not there is a 404 in every devtools.
+  sourcemap: 'external',
   minify: false,
   logLevel: 'info'
 })

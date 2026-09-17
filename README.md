@@ -17,9 +17,10 @@ Depo kökü **tek bir Next.js uygulaması.** Workspace yok, alt paket yok.
 |---|---|---|
 | `app/` | Route handler'lar (API) + kontrol paneli sayfası | **çalışıyor** |
 | `lib/api/` | Kalan iki uç nokta (`/healthz`, `/v1/version`) | **çalışıyor** |
-| `lib/engine/` | Motor: yerleşim, örnekleme, kenar, düzeltme, yumuşatma, dither, protokol, seri yazıcı — saf TypeScript, tarayıcı API'si yok | **çalışıyor**, testli |
+| `lib/engine/` | Motor: yerleşim, örnekleme, kenar, düzeltme, yumuşatma, dither, protokol, efektler, ses, öncelik katmanları, zamanlama, çıkışlar (seri, WebSocket, WLED) — saf TypeScript, tarayıcı API'si yok | **çalışıyor**, testli |
 | `lib/extension/` | Panel ile eklentinin ortak mesaj sözleşmesi | **çalışıyor** |
-| `extension/` | Chrome eklentisi (MV3): yakalama + hat + seri port, offscreen document'ta | **derleniyor**, gerçek ekranda henüz ölçülmedi |
+| `lib/page-host.ts` | Aynı motorun sayfanın içinde çalışan host'u — Safari, Firefox, iOS ve eklentisiz deneme | **çalışıyor**, tarayıcıda ölçüldü |
+| `extension/` | Chrome eklentisi (MV3): yakalama + hat + seri port, offscreen document'ta | **çalışıyor**, sahte ekranla canlı ölçüldü; gerçek GPU'da küçültme maliyeti ölçülmedi |
 | `components/` | HeroUI v3 ekranları, kullanım kılavuzu dahil | **çalışıyor** |
 | `lib/sections.ts` | Panelin gezinme yapısı — veri olarak, testli | **çalışıyor** |
 | `lib/i18n/` | 12 dil; Türkçe ve İngilizce tam, diğerleri ortak çekirdek + İngilizce yedek | **çalışıyor**, testli |
@@ -32,7 +33,7 @@ Depo kökü **tek bir Next.js uygulaması.** Workspace yok, alt paket yok.
 | `docs/design-brief.md` | Bütün ekranların tasarım brief'i: içerik, durumlar, HeroUI bileşen ve token sözlüğü | tasarım |
 | `docs/hyperion-watch.md` | Hyperion'un yeni commit'leri ve her biri için verilen karar | takip |
 | `docs/extension-handoff.md` | Eklentinin mimarisi, protokolü, ölçülenler, ve §12'de sıradaki işin tamamı + durum tablosu | plan |
-| `AmbiFluxNanoR4LampArray/` | Eski HID LampArray firmware'i | ESP32-S3'e yeniden yazılacak |
+| `AmbiFluxNanoR4LampArray/` | Eski HID LampArray firmware'i (Nano R4). Yerine `firmware/` geçti; tarihsel kayıt | eski |
 
 WinUI 3 masaüstü uygulaması **silindi** — Windows Dynamic Lighting kapsamdan
 çıktı. Git geçmişinde duruyor (`fa622c5` ve öncesi).
@@ -95,7 +96,7 @@ değişirse mantık yerinde kalıyor.
 ## Hızlı başlangıç
 
 ```bash
-npm install
+npm install       # Node 22.18+ (.nvmrc): testler TypeScript'i Node'un kendi tip sıyırmasıyla koşuyor
 npm test          # ağ, veritabanı ya da build gerekmez
 npm run typecheck
 npm run dev       # http://localhost:3000
@@ -103,19 +104,31 @@ npm run build
 ```
 
 ```bash
+npm run verify           # typecheck (panel + eklenti) + test + build + extension/dist kaynakla eşleşiyor mu
+npm run bench            # ızgaradan sonraki aşamaların maliyeti, bu makinede
 npm run hyperion:watch   # hyperion.ng'de son incelemeden beri ne değişti
 ```
 
 Yapılandırılacak ortam değişkeni yok. Panel açılır açılmaz çalışıyor; kaydettiği
 her şey tarayıcının kendi deposunda.
 
-## Motor: tarayıcı eklentisi
+## Motor: tarayıcı eklentisi — ya da sayfanın kendisi
 
-Ekranı takip eden kısım barındırılan sayfada değil, bir Chrome eklentisinde
-çalışıyor. Sebebi tek monitör: sekme arka plana düşünce Chromium render'ı
-durduruyor, oysa eklentinin **offscreen document**'ı hiç render edilmiyor,
-dolayısıyla hiç kısıtlanmıyor. Ölçümü ve alternatiflerin neden kaybettiği
+Ekranı takip eden kısım Chromium'da bir eklentide çalışıyor. Sebebi tek
+monitör: sekme arka plana düşünce Chromium render'ı durduruyor, oysa
+eklentinin **offscreen document**'ı hiç render edilmiyor, dolayısıyla hiç
+kısıtlanmıyor. Ölçümü ve alternatiflerin neden kaybettiği
 `docs/hyperion-port-plan.md` §2'de.
+
+Aynı motor (`lib/engine/runtime.ts`) **sayfanın içinde de** çalışıyor
+(`lib/page-host.ts`): Safari ve Firefox'ta, iOS'ta ve hiçbir şey kurmadan
+denemek için. Kısıtı arayüzde yazılı — gizlenen ya da küçültülen bir sekme
+kısıtlanır — ve tarayıcının iki kuralı geçerli: ekran yakalama yalnız HTTPS'te
+ya da `localhost`'ta var, ve HTTPS bir sayfa yerel ağdaki karta düz `ws://`
+açamaz (yalnız `wss://` köprü; localhost'ta çalıştırılan panel `ws://`
+kullanabilir). Sayfa host'u şeride USB'den değil WiFi'dan ulaşır (bizim
+firmware'in WebSocket'i ya da bir WLED); Chromium'da seri port da Cihaz
+sayfasından eşleştirilebilir.
 
 ```bash
 npm run typecheck:extension   # DOM + chrome + Web Serial tipleriyle
@@ -170,7 +183,7 @@ Neredeyse yok, ve bu bilinçli. Uygulamanın tamamı tarayıcıda çalışıyor.
 | Uç nokta | Ne yapar |
 |---|---|
 | `GET /healthz` | Canlılık |
-| `GET /v1/version` | Dağıtılmış sürüm; eklenti kendi derlemesiyle karşılaştırıyor |
+| `GET /v1/version` | Dağıtılmış sürüm — destek sorusu için: hangi panel yayında. (Eklenti bunu okumuyor; sürüm eşleşmesi `test/version.test.ts` ile derlemede tutuluyor.) |
 | `* /v1/*` (eşleşmeyen) | JSON 404 — API istemcisi HTML hata sayfası almamalı |
 
 Hesap yok, oturum yok, veritabanı yok. Profiller `localStorage`'da duruyor ve

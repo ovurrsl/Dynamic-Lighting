@@ -12,9 +12,10 @@ import { json, withErrorHandling } from '#lib/http'
 export const healthz = withErrorHandling(async (): Promise<Response> => json({ status: 'ok' }))
 
 /**
- * What is deployed. Kept because the extension checks it against its own build
- * to tell someone their panel and their engine have drifted apart, which is a
- * real support question and a cheap answer.
+ * What is deployed. Kept for the support question "which panel is live" - a
+ * cheap answer to a real question. The extension does NOT read it (an earlier
+ * version of this comment said so and was wrong); the two versions are held
+ * equal at build time instead (test/version.test.ts).
  */
 export const version = withErrorHandling(async (): Promise<Response> =>
   json({ name: 'ambiflux', version: APP_VERSION }))

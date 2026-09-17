@@ -1397,4 +1397,3 @@ function currentStats() {
 export {
   currentStats
 };
-//# sourceMappingURL=sw.js.map

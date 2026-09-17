@@ -12,6 +12,13 @@ import { allocLedColors } from '#lib/engine/types'
  * fast attack with a slow release keeps flashes and cuts crisp while still
  * hiding the frame-to-frame shimmer that makes an unsmoothed strip unwatchable.
  *
+ * ONLY `asymmetric` is reachable from the panel (the three profiles and the
+ * two sliders on the Picture page; lib/engine/config.ts `smoothing`). The two
+ * ports stay here, tested, as the reference the asymmetric mode was judged
+ * against and for a host that wants Hyperion's exact behaviour - offering a
+ * symmetric 150 ms filter as a setting would be offering the thing this
+ * engine exists to improve on.
+ *
  * Two design rules hold for every mode, and they are where this departs from
  * Hyperion's structure rather than its maths:
  *

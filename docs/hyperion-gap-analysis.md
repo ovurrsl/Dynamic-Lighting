@@ -378,9 +378,10 @@ katmanını ve ağ sürücüsünü yukarı taşıdı — bir iPhone ekranı okuy
    sayfa host'u telefon, ikinci makine ya da eklentisiz tarayıcı için dürüst;
    tek monitörde tam ekran oyun için değil. Panelde Cihaz sayfasında bu
    cümlenin kendisi yazıyor.
-4. **Efekt motoru — ✅ 2026-09-14.** `lib/engine/effects.ts`: yedi efekt
-   (gökkuşağı, renk lekeleri, nefes, mum, kuyruklu yıldız, polis, plazma),
-   kendi paneli, iki host'ta da çalışıyor.
+4. **Efekt motoru — ✅ 2026-09-14, on ikiye çıktı 2026-09-16.** `lib/engine/effects.ts`:
+   on iki efekt (gökkuşağı, renk lekeleri, nefes, mum, kuyruklu yıldız, polis,
+   plazma, parıltı, tarama, silme, takip, ateş), kendi paneli, iki host'ta da
+   çalışıyor. Sayı `EFFECT_KINDS.length`'ten okunuyor; panel de öyle.
 
    **Hyperion'un yaptığını yapmadık.** Onun efekt motoru `Effect.cpp` içinde
    **CPython 3 gömüyor** (`PyImport_ImportModule`), efektler Python betiği

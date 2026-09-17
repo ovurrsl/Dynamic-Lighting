@@ -5,8 +5,9 @@
   "description": "Screen-following ambilight: hosted control plane, browser capture engine and ESP32-S3 firmware",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=20.9"
+    "node": ">=22.18"
   },
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -19,7 +20,7 @@
     "hyperion:watch": "node scripts/hyperion-watch.mjs",
     "bench": "node scripts/bench-pipeline.ts",
     "verify": "npm run typecheck && npm run typecheck:extension && npm test && npm run build && npm run verify:extension",
-    "verify:extension": "npm run build:extension && rm -f extension/dist/*.map && { git diff --quiet -- extension/dist || { echo 'extension/dist kaynakla eşleşmiyor: build:extension çıktısını commit et'; git diff --stat -- extension/dist; exit 1; }; }"
+    "verify:extension": "npm run build:extension && rm -f extension/dist/*.map && { [ -z \"$(git status --porcelain -- extension/dist)\" ] || { echo 'extension/dist kaynakla eşleşmiyor: build:extension çıktısını commit et'; git status --short -- extension/dist; exit 1; }; }"
   },
   "dependencies": {
     "@heroui/react": "~3.2.5",

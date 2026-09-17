@@ -1,9 +1,10 @@
 # Dağıtım
 
 Depo kökü tek bir Next.js uygulaması. Yapılandırılacak ortam değişkeni,
-bağlanacak veritabanı ve saklanacak gizli anahtar yok — uygulamanın tamamı
+bağlanacak veritabanı ve saklanacak gizli anahtar **yok** — uygulamanın tamamı
 tarayıcıda çalışıyor, sunucu yalnızca statik sayfayı ve iki küçük uç noktayı
-veriyor.
+veriyor. (Lisans, aktivasyon, Supabase ve `/readyz` PR #6 ile söküldü; bu
+dosyanın eski sürümü onları anlatıyordu ve yanlıştı.)
 
 ## Vercel (birincil)
 
@@ -17,9 +18,21 @@ giden push üretime, diğer dallar preview deployment'a gidiyor.
 | Build command | `next build` (varsayılan) |
 | Output | `.next` (varsayılan) |
 | Root directory | `/` |
+| Ortam değişkeni | hiç |
 
-Hiçbirini elle ayarlamak gerekmiyor — `next.config.ts` kasten minimal, tam da bu
-yüzden.
+Hiçbirini elle ayarlamak gerekmiyor — `next.config.ts` kasten minimal. İçindeki
+tek şey güvenlik başlıkları: `frame-ancestors 'none'`, `X-Frame-Options: DENY`,
+`nosniff`, `strict-origin-when-cross-origin` ve kamera/konum/ödeme için
+`Permissions-Policy`. Script CSP yok (Next'in inline runtime'ı nonce ister, bu
+ayrı bir iş) ve HSTS yok (Vercel kendi alan adlarında zaten ekliyor; özel bir
+alan adında düşünülmeli).
+
+### Eklentinin origin listesi
+
+Eklenti, paneli yalnız `extension/manifest.json`'daki `externally_connectable`
+origin'lerinden dinler. Panel başka bir alan adına taşınırsa o liste de değişmeli
+ve eklenti yeniden paketlenmeli; aksi halde panel eklentiyi "kurulu değil"
+görür. Yerelde geliştirmek için `http://localhost:3000/*` listede.
 
 ### Ticari kullanım: Hobby planı yetmiyor
 
@@ -30,58 +43,38 @@ sayfasından, birebir:
 > commercial usage of the platform requires either a Pro or Enterprise plan.
 
 Tanım geniş — *"Advertising the sale of a product or service"* bile ticari
-sayılıyor. AmbiFlux'ın indirme/satış sayfası bunu yapıyor, yani **Pro gerekiyor.**
-Bu teknik bir kısıt değil, sözleşme kısıtı; ihlal edilirse hesap askıya alınıyor.
+sayılıyor. Uygulama artık açık kaynak ve satış sayfası yok; yine de bir gün
+donanım kiti satılırsa bu satır geçerli olur. Teknik bir kısıt değil, sözleşme
+kısıtı; ihlal edilirse hesap askıya alınıyor.
 
 ### Soğuk başlatma
 
-Vercel'de statik panel CDN'den geliyor, yani arka uç uykuda olsa bile arayüz
-anında açılıyor. Fonksiyon soğuk başlatması yalnız API çağrısını etkiliyor.
+Statik panel CDN'den geliyor; uç noktalar da statik cevap veriyor ve hiçbir
+şeye bağlanmıyor, yani soğuk başlatmanın kullanıcıya görünen bir maliyeti yok.
 
-Bu, Hostinger'a göre gerçek bir iyileşme: orada tüm Node süreci uyanana kadar
-HTML dahil tek bayt çıkmıyor.
+## Kendi makinende (Safari / Firefox / iOS için de)
 
-### Neden MySQL değil Postgres
+```bash
+npm ci
+npm run build
+npm start          # http://localhost:3000
+```
 
-Karar kapasiteyle ilgili değil — iş yükü günde birkaç lisans çağrısı, ikisi de
-fazlasıyla yeter. Belirleyici olan **serverless'ten erişilebilirlik:**
-
-- Serverless fonksiyon çağrılar arasında bağlantı havuzu tutamıyor. Her çağrı
-  kendi bağlantısını açardı, ve paylaşımlı barındırmada tavan dar: Hostinger'ın
-  yayınladığı limitlere göre MySQL **kullanıcı başına 25-200 eşzamanlı bağlantı**
-  (plana göre; giriş paketlerinde 25), global tavan 500. Bir trafik dalgası bunu
-  tüketir.
-- Uzaktan MySQL erişimi paylaşımlı barındırmada genelde kaynak adres kısıtına
-  bağlı, Vercel'in çıkış adresleri ise sabit değil. Bunu kendi panelinde
-  doğrulaman gerekir — ama üstteki havuz sorunu tek başına yeterli sebep.
-
-Supabase HTTP üzerinden konuşuyor. Yanlış yapılacak bir havuz yok, yani **aynı
-kod** uzun ömürlü bir `next start` sürecinde de, istek başına bir fonksiyonda da
-değişmeden çalışıyor. `lib/storage/supabase.ts` istemciyi tembel yüklüyor, tıpkı
-`mysql2`'nin yüklendiği gibi — `/healthz` sürücüye hiç dokunmuyor.
+Sayfa host'u (motorun eklentisiz, sayfanın içinde çalışan hâli) ekranı yalnız
+güvenli bir bağlamda yakalayabiliyor: HTTPS ya da `localhost`. Localhost'ta
+çalıştırılan panel yerel ağdaki bir karta `ws://` ile doğrudan ulaşır; HTTPS'te
+barındırılan panel ise karta yalnız `wss://` ile (ağındaki, kartın arkasında
+durduğu bir TLS köprüsü) ulaşır — bu tarayıcının karışık içerik kuralı.
+Ayrıntı: `docs/firmware-and-devices.md` §4 ve paneldeki Cihaz sayfası.
 
 ## Doğrulama
 
 ```bash
-curl https://<alan-adın>/healthz            # veritabanına dokunmaz
-curl https://<alan-adın>/readyz             # veritabanını ve yapılandırmayı kontrol eder
-curl https://<alan-adın>/v1/version         # lisans açık anahtarını döner
+curl https://<alan-adın>/healthz            # {"status":"ok"}
+curl https://<alan-adın>/v1/version         # {"name":"ambiflux","version":"…"}
 curl https://<alan-adın>/v1/nope            # JSON 404 dönmeli, HTML değil
+curl -I https://<alan-adın>/                # güvenlik başlıkları
 ```
 
-`/readyz` üç farklı şey söyleyebiliyor ve ayrımı önemli:
-
-| Yanıt | Anlamı |
-|---|---|
-| `{"status":"ok"}` | Her şey yerinde |
-| `{"status":"misconfigured","problems":[...]}` | Ortam değişkeni eksik/yanlış — hangisi olduğunu söylüyor |
-| `{"status":"degraded"}` | Yapılandırma doğru, veritabanına ulaşılamıyor |
-
-Bu ayrım Fastify'dan gelen bir şeyin yerini alıyor: orada yanlış yapılandırılmış
-uygulama açılmayı reddediyordu ve operatör bunu açılış log'unda görüyordu.
-Serverless'te açılış anı yok, yani bu olmadan eksik bir ortam değişkeninin tek
-belirtisi okunacak hiçbir şey olmayan 500'ler olurdu.
-
-Ölçülen davranış: geçerli yapılandırma ama erişilemez veritabanı ile uygulama
-açılıyor, `/` paneli sunuyor, `/healthz` ve `/v1/version` 200 dönüyor, `/readyz`
-`degraded` bildiriyor. Yanlış yapılandırılmış bir veritabanı siteyi düşürmüyor.
+Yerelde tek komut: `npm run verify` — typecheck (panel + eklenti), testler,
+`next build` ve `extension/dist`'in kaynakla eşleştiği kontrolü.

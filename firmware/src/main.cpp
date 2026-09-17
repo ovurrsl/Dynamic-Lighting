@@ -5,7 +5,10 @@
 #include <esp_timer.h>
 
 #include <atomic>
+#include <stdio.h>
+#include <string.h>
 
+#include "afx_buffer.h"
 #include "afx_config.h"
 #include "afx_idle.h"
 #include "afx_net.h"
@@ -23,15 +26,16 @@
 #if defined(AMBIFLUX_NET)
 #include <WiFi.h>
 #include <esp_http_server.h>
+#include <lwip/sockets.h>
 #endif
 
 /**
  * AmbiFlux firmware. The only layer that touches the board.
  *
  * Everything with an algorithm in it lives in lib/afx and is tested on the
- * host (`pio test -e native`, 37 tests). What is left here is wiring, and that
- * is on purpose: this file cannot be tested, so it should be as close to empty
- * of decisions as possible.
+ * host (`pio test -e native`; the README carries the count). What is left here
+ * is wiring, and that is on purpose: this file cannot be tested, so it should
+ * be as close to empty of decisions as possible.
  *
  * Two tasks, pinned:
  *
@@ -116,7 +120,8 @@ NeoPixelBus<NeoGrbFeature, AmbifluxMethod> strip(kMaxLeds, kDataPin);
  * Lock-free, allocation-free, and with no `noInterrupts()` anywhere: the
  * serial task always has a buffer to write that the output task is not
  * reading, so a host that outruns the output rate drops a stale frame by
- * itself instead of tearing one.
+ * itself instead of tearing one. The arrangement lives in lib/afx where it is
+ * tested (afx_buffer.h); the version that lived here had a race.
  */
 struct Keyframe {
   uint16_t colours[kMaxLeds * 3];    // linear 16-bit
@@ -124,10 +129,7 @@ struct Keyframe {
   uint32_t sequence = 0;             // carried end to end, for latency work
 };
 
-Keyframe buffers[3];
-std::atomic<uint8_t> latestReady{255};
-uint8_t writeSlot = 0;
-uint8_t showingSlot = 255;
+afx::TripleBuffer<Keyframe> frames;
 
 /** What the output task is gliding from and to. */
 uint16_t current[kMaxLeds * 3];
@@ -135,8 +137,14 @@ uint16_t target[kMaxLeds * 3];
 /**
  * What this board is driving. Loaded from NVS at boot, changed over AxC, and
  * saved only when asked - a flash write per frame would wear the part out.
+ *
+ * A change is APPLIED BY THE OUTPUT TASK, at the top of a frame: the control
+ * channel runs on whichever task read the message - the serial reader, or the
+ * socket server - and rebuilding the limiter and the idle state from there
+ * while render() was reading them tore both. The flag is the hand-over.
  */
 afx::DeviceConfig config;
+std::atomic<bool> configDirty{false};
 Preferences prefs;
 constexpr const char *kPrefsNamespace = "ambiflux";
 constexpr const char *kPrefsKey = "cfg";
@@ -166,6 +174,16 @@ afx::NetworkConfig netConfig;
 constexpr const char *kNetPrefsKey = "net";
 httpd_handle_t httpServer = nullptr;
 std::atomic<uint32_t> wsClients{0};
+/** The one socket that may drive the strip (see `max_open_sockets`), or -1. */
+std::atomic<int> wsClientFd{-1};
+/**
+ * A network change is applied from the MAIN LOOP, never from the task that
+ * received it. The control channel can arrive over the socket itself, and
+ * `httpd_stop` called from inside the server's own handler waits for that
+ * handler's task to exit - which it is - for ever.
+ */
+std::atomic<bool> netDirty{false};
+std::atomic<bool> netSaveDue{false};
 bool wifiStarted = false;
 #endif
 afx::Interpolator interpolator;
@@ -209,7 +227,9 @@ void IRAM_ATTR onOutputTimer (void *) { outputDue = true; }
 // Defined further down, beside the NVS handle they use; the control channel is
 // what calls them, and it is declared first.
 void applyConfig ();
+void applyConfigNow ();
 void saveConfig ();
+void replyControl (const char *json);
 #if defined(AMBIFLUX_NET)
 void applyNetwork ();
 void saveNetwork ();
@@ -271,13 +291,21 @@ void handleControl (const uint8_t *tlv, size_t length) {
   if (changed) applyConfig();
   if (save) saveConfig();
 #if defined(AMBIFLUX_NET)
-  if (netChanged) applyNetwork();
-  if (netChanged && save) saveNetwork();
-  if (netChanged) report = true;
+  if (netChanged) {
+    // Deferred to the main loop (see `netDirty`): this may be running inside
+    // the socket server's own task.
+    if (save) netSaveDue.store(true, std::memory_order_release);
+    netDirty.store(true, std::memory_order_release);
+    report = true;
+  }
 #endif
 
   if (report || changed || refused > 0) {
-    Serial.printf(
+    // On the stack, not static: the serial task and the socket task can both
+    // be in here at once, and a shared buffer would interleave two answers.
+    char reply[512];
+    int at = snprintf(
+        reply, sizeof(reply),
         "{\"axc\":\"config\",\"v\":\"%s\",\"leds\":%u,\"budgetMa\":%u,"
         "\"idle\":%u,\"benchOnBoot\":%d,\"maxLeds\":%u,\"refused\":%u,\"saved\":%d",
         AMBIFLUX_VERSION, static_cast<unsigned>(config.ledCount),
@@ -288,12 +316,45 @@ void handleControl (const uint8_t *tlv, size_t length) {
     // The SSID and the address, never the passphrase. The board has no reason
     // to read one back, and a credential printed on a telemetry line ends up in
     // whatever log the panel or a support ticket happens to keep.
-    Serial.printf(",\"net\":{\"enabled\":%d,\"ssid\":\"%s\",\"ip\":\"%s\",\"path\":\"%s\"}",
-                  netConfig.enabled ? 1 : 0, netConfig.ssid,
-                  WiFi.isConnected() ? WiFi.localIP().toString().c_str() : "", kWsPath);
+    if (at > 0 && at < static_cast<int>(sizeof(reply))) {
+      at += snprintf(reply + at, sizeof(reply) - static_cast<size_t>(at),
+                     ",\"net\":{\"enabled\":%d,\"ssid\":\"%s\",\"ip\":\"%s\",\"path\":\"%s\"}",
+                     netConfig.enabled ? 1 : 0, netConfig.ssid,
+                     WiFi.isConnected() ? WiFi.localIP().toString().c_str() : "", kWsPath);
+    }
 #endif
-    Serial.print("}\n");
+    if (at > 0 && at < static_cast<int>(sizeof(reply)) - 2) {
+      reply[at++] = '}';
+      reply[at++] = '\n';
+      reply[at] = '\0';
+      replyControl(reply);
+    }
   }
+}
+
+/**
+ * The control channel's answer, down EVERY link that carries our bytes.
+ *
+ * It used to go to the serial port alone, so a board driven over WiFi answered
+ * its configuration on a cable nobody was watching. The socket gets it as a
+ * text frame - the pixel path is binary, so a client can tell them apart
+ * without parsing anything.
+ */
+void replyControl (const char *json) {
+  Serial.print(json);
+#if defined(AMBIFLUX_NET)
+  const int fd = wsClientFd.load(std::memory_order_acquire);
+  if (fd >= 0 && httpServer != nullptr) {
+    httpd_ws_frame_t frame = {};
+    frame.type = HTTPD_WS_TYPE_TEXT;
+    frame.payload = reinterpret_cast<uint8_t *>(const_cast<char *>(json));
+    frame.len = strlen(json);
+    // Synchronous on the calling task, which is fine from the serial reader
+    // and from the socket handler alike; a send that fails is a client that
+    // has gone, and close_fn will say so.
+    httpd_ws_send_frame_async(httpServer, fd, &frame);
+  }
+#endif
 }
 
 #if defined(AMBIFLUX_NET)
@@ -324,7 +385,7 @@ void publish (const Parser::Frame &frame) {
   }
   if (frame.count == 0 || frame.count > kMaxLeds) return;
   AFX_PUBLISH_GUARD;
-  Keyframe &slot = buffers[writeSlot];
+  Keyframe &slot = frames.writable();
   slot.count = frame.count;
   slot.sequence = ++frameSequence;
 
@@ -342,9 +403,7 @@ void publish (const Parser::Frame &frame) {
     }
   }
 
-  latestReady.store(writeSlot, std::memory_order_release);
-  writeSlot = static_cast<uint8_t>((writeSlot + 1) % 3);
-  if (writeSlot == showingSlot) writeSlot = static_cast<uint8_t>((writeSlot + 1) % 3);
+  frames.publish();
   telemetry.framesRx++;
 }
 
@@ -406,8 +465,13 @@ constexpr size_t kWsMaxFrame = kMaxLeds * 6 + afx::kCalibrationSize + 16;
 
 esp_err_t wsHandler (httpd_req_t *req) {
   if (req->method == HTTP_GET) {
-    // The handshake. Nothing to read yet.
-    wsClients.fetch_add(1, std::memory_order_relaxed);
+    // The handshake. Nothing to read yet. This client is now THE client (the
+    // server holds one socket, and a new connection purges the old one), and
+    // the parser starts clean: the previous client's half-frame must not be
+    // glued onto this one's first bytes.
+    wsClientFd.store(httpd_req_to_sockfd(req), std::memory_order_release);
+    wsClients.store(1, std::memory_order_relaxed);
+    netParser.reset();
     return ESP_OK;
   }
 
@@ -418,7 +482,12 @@ esp_err_t wsHandler (httpd_req_t *req) {
   // stack allocation.
   esp_err_t err = httpd_ws_recv_frame(req, &ws, 0);
   if (err != ESP_OK) return err;
-  if (ws.len == 0 || ws.len > kWsMaxFrame) return ESP_OK;   // ignored, not fatal
+  if (ws.len == 0) return ESP_OK;
+  // A frame larger than any picture we accept is not ours. Returning OK here
+  // used to leave its bytes unread in the socket, and the next receive parsed
+  // them as a frame header - garbage from then on. Failing closes the
+  // connection, and the client's own sink reconnects with backoff.
+  if (ws.len > kWsMaxFrame) return ESP_FAIL;
 
   /*
    * One static buffer, which is safe because `esp_http_server` dispatches every
@@ -443,6 +512,22 @@ esp_err_t wsHandler (httpd_req_t *req) {
   return ESP_OK;
 }
 
+/**
+ * A socket went away. Ours if it was the driving client, in which case the
+ * count and the reply target are cleared here - the handler is never told
+ * about a close, so this is the only place that knows.
+ *
+ * A custom close function owns the close() itself; the default one did that
+ * and nothing else.
+ */
+void onSocketClosed (httpd_handle_t, int fd) {
+  int expected = fd;
+  if (wsClientFd.compare_exchange_strong(expected, -1, std::memory_order_acq_rel)) {
+    wsClients.store(0, std::memory_order_relaxed);
+  }
+  close(fd);
+}
+
 void startServer () {
   if (httpServer != nullptr) return;
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -455,8 +540,18 @@ void startServer () {
   config.core_id = 0;
   config.task_priority = 3;
   config.stack_size = 8192;
-  config.max_open_sockets = 4;
+  /*
+   * ONE socket, and the newest connection wins.
+   *
+   * There is one strip and one stream parser feeding it; two clients pushing
+   * bytes into that parser interleave their frames and desynchronise both,
+   * and two hosts driving one strip would flicker between two pictures. With
+   * the LRU purge on, a reconnecting panel - or a second device taking over -
+   * evicts the stale connection rather than being refused by it.
+   */
+  config.max_open_sockets = 1;
   config.lru_purge_enable = true;
+  config.close_fn = onSocketClosed;
   if (httpd_start(&httpServer, &config) != ESP_OK) {
     httpServer = nullptr;
     return;
@@ -471,6 +566,7 @@ void stopServer () {
   if (httpServer == nullptr) return;
   httpd_stop(httpServer);
   httpServer = nullptr;
+  wsClientFd.store(-1, std::memory_order_release);
   wsClients.store(0, std::memory_order_relaxed);
 }
 
@@ -530,17 +626,25 @@ void serviceNetwork (uint32_t nowMs) {
 /** One output frame: glide, mix with idle, dither, limit, show. */
 void render () {
   const uint32_t nowUs = static_cast<uint32_t>(esp_timer_get_time());
-  const uint32_t nowMs = nowUs / 1000;
+  // The same clock the frame arrivals are stamped with (millis() is
+  // esp_timer's own count on this core), under the one name, so the idle
+  // timeout and the bench clock never compare two different bases.
+  const uint32_t nowMs = millis();
 
-  const uint8_t ready = latestReady.exchange(255, std::memory_order_acquire);
-  if (ready != 255) {
-    const Keyframe &frame = buffers[ready];
-    showingSlot = ready;
-    ledCount = frame.count;
+  // A configuration change is applied here, on the task that reads the
+  // stages, and nowhere else (see `configDirty`).
+  if (configDirty.exchange(false, std::memory_order_acq_rel)) applyConfigNow();
+
+  if (const Keyframe *frame = frames.take()) {
     // Where we are NOW becomes the start of the next glide, so a frame that
-    // arrives mid-glide does not snap.
-    for (uint16_t i = 0; i < ledCount * 3; i++) current[i] = target[i];
-    for (uint16_t i = 0; i < ledCount * 3; i++) target[i] = frame.colours[i];
+    // arrives mid-glide does not snap. That means the value being SHOWN this
+    // instant - the old code copied the previous target instead, which is
+    // exactly the snap the comment promised not to make.
+    const uint32_t shown = interpolator.progress(nowUs);
+    const uint16_t channels = static_cast<uint16_t>((frame->count > ledCount ? frame->count : ledCount) * 3);
+    for (uint16_t i = 0; i < channels; i++) current[i] = afx::glide(current[i], target[i], shown);
+    ledCount = frame->count;
+    for (uint16_t i = 0; i < ledCount * 3; i++) target[i] = frame->colours[i];
     interpolator.arrived(nowUs);
   }
 
@@ -623,10 +727,13 @@ void render () {
 
 void reportTelemetry (uint32_t nowMs) {
   const afx::Stats &stats = parser.stats;
+  // Every specifier has its argument, in order: "bench" was missing from the
+  // format for a while, so "up" printed the bench flag and the uptime fell
+  // off the end. -Werror=format in platformio.ini is what now refuses that.
   Serial.printf(
       "{\"t\":%lu,\"v\":\"%s\",\"leds\":%u,\"rx\":%lu,\"shown\":%lu,\"short\":%lu,"
-      "\"resyncs\":%lu,\"badChk\":%lu,\"countMismatch\":%lu,\"scale\":%.3f,\"host\":%d,\"up\":%lu}\n",
-      static_cast<unsigned long>(nowMs), AMBIFLUX_VERSION, ledCount,
+      "\"resyncs\":%lu,\"badChk\":%lu,\"countMismatch\":%lu,\"scale\":%.3f,\"host\":%d,\"bench\":%d,\"up\":%lu}\n",
+      static_cast<unsigned long>(nowMs), AMBIFLUX_VERSION, static_cast<unsigned>(ledCount),
       static_cast<unsigned long>(telemetry.framesRx),
       static_cast<unsigned long>(telemetry.framesShown),
       static_cast<unsigned long>(telemetry.shortFrames),
@@ -648,14 +755,26 @@ void reportTelemetry (uint32_t nowMs) {
 #endif
 }
 
+/** Asks the output task to pick the configuration up at its next frame. */
 void applyConfig () {
+  configDirty.store(true, std::memory_order_release);
+}
+
+/**
+ * Pushes the configuration into the stages that were built from it, IN PLACE.
+ *
+ * Runs on the output task (or in setup(), before there is one). The stages
+ * keep their state: a limiter mid-attack stays attacked, a crossfade in
+ * progress keeps its place - a settings change is not a reboot.
+ */
+void applyConfigNow () {
   afx::PowerModel model;
   model.budgetMa = static_cast<float>(config.budgetMa);
-  limiter = afx::PowerLimiter(model);
+  limiter.setModel(model);
 
   afx::IdlePolicy policy;
   policy.idleBrightness = config.idleBrightness;
-  idleState = afx::IdleState(policy);
+  idleState.setPolicy(policy);
 
   ledCount = config.ledCount;
 }
@@ -672,7 +791,7 @@ void loadConfig () {
   // A blob this build cannot read leaves the defaults standing rather than
   // half-applying itself; deserialiseConfig does not touch `config` on failure.
   if (read == sizeof(blob)) afx::deserialiseConfig(blob, read, config);
-  applyConfig();
+  applyConfigNow();                   // setup(): no output task exists yet
 }
 
 }  // namespace
@@ -710,6 +829,12 @@ void loop () {
   }
   const uint32_t nowMs = millis();
 #if defined(AMBIFLUX_NET)
+  // Network changes land here, on the main loop, whichever task asked: the
+  // save first, so a reboot mid-association comes back with the new network.
+  if (netDirty.exchange(false, std::memory_order_acq_rel)) {
+    if (netSaveDue.exchange(false, std::memory_order_acq_rel)) saveNetwork();
+    applyNetwork();
+  }
   serviceNetwork(nowMs);
 #endif
   if (nowMs - lastReport >= kTelemetryMs) {

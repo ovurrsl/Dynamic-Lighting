@@ -100,6 +100,19 @@ void test_the_idle_rainbow_spreads_along_the_strip (void) {
   TEST_ASSERT_TRUE(r0 != r1 || g0 != g1 || b0 != b1);
 }
 
+void test_a_new_policy_keeps_the_host_state (void) {
+  // A brightness change over the control channel used to replace the whole
+  // object: the strip forgot the host for a frame and restarted its fade.
+  afx::IdleState state;
+  state.frameArrived(1000);
+  TEST_ASSERT_TRUE(state.hostActive(1500));
+  afx::IdlePolicy policy;
+  policy.idleBrightness = 200;
+  state.setPolicy(policy);
+  TEST_ASSERT_TRUE(state.hostActive(1500));
+  TEST_ASSERT_EQUAL_UINT8(200, state.idleBrightness(1500));
+}
+
 int main (int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_hue_covers_the_wheel_without_a_gap);
@@ -109,6 +122,7 @@ int main (int, char **) {
   RUN_TEST(test_a_board_that_has_never_seen_a_host_stays_lit);
   RUN_TEST(test_the_rainbow_fades_out_rather_than_running_forever);
   RUN_TEST(test_the_idle_rainbow_spreads_along_the_strip);
+  RUN_TEST(test_a_new_policy_keeps_the_host_state);
   UNITY_END();
   return 0;
 }

@@ -77,10 +77,17 @@ class Interpolator {
   uint32_t durationUs_ = kMinUs;
 };
 
-/** One channel, 16-bit, `t` in 0..65536. Held at the target once t saturates. */
+/**
+ * One channel, 16-bit, `t` in 0..65536. Held at the target once t saturates.
+ *
+ * The product is 64-bit on purpose: a full-range span (65535) times a `t`
+ * past the halfway point (32768 and up) is over 2^31, and in 32 bits that
+ * wrapped negative - so a black-to-white glide turned into garbage colours for
+ * its second half, on every frame that crossed the middle.
+ */
 inline uint16_t glide (uint16_t from, uint16_t to, uint32_t t) {
-  const int32_t span = static_cast<int32_t>(to) - static_cast<int32_t>(from);
-  return static_cast<uint16_t>(static_cast<int32_t>(from) + ((span * static_cast<int32_t>(t)) >> 16));
+  const int64_t span = static_cast<int64_t>(to) - static_cast<int64_t>(from);
+  return static_cast<uint16_t>(static_cast<int64_t>(from) + ((span * static_cast<int64_t>(t)) >> 16));
 }
 
 // ---------------------------------------------------------------------------
@@ -116,13 +123,22 @@ class Dither {
   /**
    * One channel. `value16` is 0..65535; the returned byte is the duty to show
    * this frame, and the remainder is carried so the TIME AVERAGE of the output
-   * is exactly `value16 / 257`.
+   * is exactly `value16 / 256` - 0xFF00 is a steady 255.
+   *
+   * Above 0xFF00 the average would exceed a byte, and there the output is
+   * HELD at full duty: the sum of the carry and the value overflows sixteen
+   * bits, and letting the top byte wrap sent 0 or 1 for a channel the host had
+   * set to full white. A white screen blinked black, once every few frames,
+   * for exactly the LEDs that were brightest.
    */
   uint8_t step (size_t channel, uint16_t value16) {
     const uint32_t sum = static_cast<uint32_t>(carry_[channel]) + value16;
-    const uint8_t out = static_cast<uint8_t>(sum >> 8);
+    if (sum >= 0x10000u) {
+      carry_[channel] = 0xff;
+      return 0xff;
+    }
     carry_[channel] = static_cast<uint8_t>(sum & 0xff);
-    return out;
+    return static_cast<uint8_t>(sum >> 8);
   }
 
  private:
@@ -168,6 +184,15 @@ class PowerLimiter {
   void reset () { scale_ = 1.0f; }
   /** The filter's continuous state; `quantised()` is what the pixels get. */
   float scale () const { return scale_; }
+  /**
+   * A new budget, keeping the filter's state.
+   *
+   * The configuration used to be applied by constructing a new limiter over
+   * the old one, from the control task, while the output task was reading it:
+   * a torn object mid-frame, and a scale snapped back to 1.0 - a bright scene
+   * under a tight budget jumped to full for the frames it took to attack again.
+   */
+  void setModel (const PowerModel &model) { model_ = model; }
 
   /** `dutySum` is the sum of all channel bytes; `leds` the strip length. */
   float update (uint32_t dutySum, uint16_t leds, float dtSeconds) {

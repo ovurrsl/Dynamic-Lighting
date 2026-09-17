@@ -172,6 +172,43 @@ void test_the_scale_is_quantised (void) {
   TEST_ASSERT_FLOAT_WITHIN(0.001f, steps, static_cast<float>(static_cast<int>(steps + 0.5f)));
 }
 
+void test_full_scale_is_held_at_full_and_never_wraps_to_black (void) {
+  // 0xFFFF is what the host sends for linear 1.0, and 0xFF01..0xFFFF plus a
+  // carry overflowed the byte: full white blinked black on exactly the LEDs
+  // that were brightest.
+  Dither<2> d;
+  for (unsigned i = 0; i < 600; i++) {
+    TEST_ASSERT_EQUAL_UINT8(255, d.step(0, 0xFFFF));
+    TEST_ASSERT_EQUAL_UINT8(255, d.step(1, 0xFF01));
+  }
+}
+
+void test_glide_does_not_overflow_on_a_full_span (void) {
+  // 65535 * 49152 is over 2^31: in 32 bits the second half of a black-to-white
+  // glide wrapped negative.
+  TEST_ASSERT_EQUAL_UINT16(49151, glide(0, 65535, 49152));
+  TEST_ASSERT_EQUAL_UINT16(16383, glide(65535, 0, 49152));   // floors downhill, as the shift always did
+  TEST_ASSERT_EQUAL_UINT16(65535, glide(0, 65535, 65536));
+}
+
+void test_a_new_budget_keeps_the_limiter_where_it_was (void) {
+  // Applying a configuration must not snap the scale back to 1.0 - under a
+  // tight budget that is a flash to full for the frames it takes to attack.
+  PowerLimiter limiter;
+  const float attacked = limiter.update(108u * 3u * 255u, 108, 0.008f);
+  TEST_ASSERT_TRUE(attacked < 0.3f);
+  PowerModel bigger;
+  bigger.budgetMa = 3000.0f;
+  limiter.setModel(bigger);
+  TEST_ASSERT_EQUAL_FLOAT(attacked, limiter.quantised());
+  // And the new budget is what governs from here: still white, still over
+  // 3 A, so it stays limited - but higher than under 1.5 A.
+  float scale = 0.0f;
+  for (unsigned i = 0; i < 400; i++) scale = limiter.update(108u * 3u * 255u, 108, 0.008f);
+  TEST_ASSERT_TRUE(scale > attacked);
+  TEST_ASSERT_TRUE(scale < 0.6f);
+}
+
 int main (int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_dither_time_average_reaches_the_value_between_two_bytes);
@@ -191,6 +228,9 @@ int main (int, char **) {
   RUN_TEST(test_it_attacks_instantly_and_releases_slowly);
   RUN_TEST(test_the_dead_band_keeps_a_scene_on_the_budget_from_shimmering);
   RUN_TEST(test_the_scale_is_quantised);
+  RUN_TEST(test_full_scale_is_held_at_full_and_never_wraps_to_black);
+  RUN_TEST(test_glide_does_not_overflow_on_a_full_span);
+  RUN_TEST(test_a_new_budget_keeps_the_limiter_where_it_was);
   UNITY_END();
   return 0;
 }

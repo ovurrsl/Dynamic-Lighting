@@ -5,14 +5,16 @@ yok ve olmayacak — eski sketch (`AmbiFluxNanoR4LampArray/`) onu yapıyordu ve
 bu onun yerine geçiyor.
 
 ```bash
-pio test -e native               # 37 test, karta gerek yok
+pio test -e native               # 76 test, karta gerek yok
 pio run -e nano_esp32            # derle
 pio run -e nano_esp32 -t upload  # yükle
 pio device monitor -b 921600     # telemetri
 ```
 
-Derleme doğrulandı: **RAM %19.1 (62 740 / 327 680), Flash %12.2
-(384 586 / 3 145 728)**. Davranış doğrulanmadı — burada kart yok.
+Derleme doğrulandı (2026-09-17, üç env de `-Wall -Wformat=2 -Werror=format`
+ile): `nano_esp32` **RAM %26.0 (85 332 / 327 680), Flash %30.0
+(944 046 / 3 145 728)**; `nano_esp32_net` RAM %28.0, Flash %31.1. Davranış
+doğrulanmadı — burada kart yok.
 
 > **Derleme tuzağı.** `esptool` güncel `click` ile kırılıyor:
 > `TypeError: ParamType.get_metavar() missing 1 required positional argument`.
@@ -27,14 +29,27 @@ Host'ta koşuyor, o yüzden test ediliyor:
 
 | Dosya | Ne | Test |
 |---|---|---|
-| `afx_protocol.h` | Ada/Awa/Afx/AxC ayrıştırıcı, Fletcher, resync | 13 |
-| `afx_render.h` | interpolasyon, sigma-delta dither, güç sınırlayıcı | 17 |
-| `afx_idle.h` | host var/yok, çapraz geçişler, boşta gökkuşağı | 7 |
+| `afx_protocol.h` | Ada/Awa/Afx/AxC ayrıştırıcı, Fletcher, resync | 15 |
+| `afx_render.h` | interpolasyon, sigma-delta dither, güç sınırlayıcı | 20 |
+| `afx_idle.h` | host var/yok, çapraz geçişler, boşta gökkuşağı | 8 |
 | `afx_patterns.h` | tezgâh koşumu: yürüyüş, kanallar, rampa, beyaz, flaş | 8 |
 | `afx_config.h` | cihaz yapılandırması: TLV ayrıştırma, doğrulama, NVS blob'u | 11 |
+| `afx_net.h` | ağ yapılandırması: SSID/parola TLV'leri, doğrulama, NVS blob'u | 10 |
+| `afx_buffer.h` | seri/ağ görevi ile çıkış görevi arasındaki kilitsiz üçlü tampon | 4 |
 
 `src/main.cpp` — yalnız kablolama. Test edilemediği için mümkün olduğunca
-karar içermiyor.
+karar içermiyor. Kalan kararlar orada yazılı ve gerekçeli: yapılandırma
+değişikliği çıkış görevinin kare başında **yerinde** uygulanıyor (sınırlayıcı
+ve boşta durumu bayrakla devralınıyor, başka bir görevden yeniden kurulmuyor);
+ağ değişikliği ana döngüde uygulanıyor (soketin kendi işleyicisinden
+`httpd_stop` çağırmak sonsuza kadar beklerdi); `AxC` cevabı hem seri porta hem
+soket istemcisine (metin çerçevesi) gidiyor.
+
+Denetimde bulunup düzeltilen ve artık testte olan üç aritmetik hata: dither'ın
+`0xFF01…0xFFFF` girişinde baytı 0/1'e sararak tam beyazı siyaha kırpması,
+`glide`'ın tam aralıklı geçişin ikinci yarısında 32 bit taşması, ve telemetri
+`printf`'inin bir eksik belirteci (`-Werror=format` bunu artık derlemede
+reddediyor).
 
 Tasarımın gerekçeleri `../docs/hyperion-port-plan.md`'de. Kısaca:
 
@@ -114,6 +129,12 @@ ulaşmanın orada kalan tek yolu ağ.
   kuralı ve magic dağıtımı bir kez kapsanıyor.
 - Ayrıştırıcı **ayrı bir örnek**: akış ayrıştırıcısı tek bir akışın durum
   makinesi, iki kaynaktan beslemek ikisini birden desenkronize ederdi.
+- **Tek soket, en yeni bağlantı kazanır** (`max_open_sockets = 1`, LRU
+  temizleme açık). Tek şerit ve tek ayrıştırıcı var; iki istemci aynı
+  ayrıştırıcıya bayt itseydi kareleri iç içe geçerdi. Yeniden bağlanan panel
+  bayat bağlantıyı düşürür, ondan reddedilmez; her el sıkışmada ayrıştırıcı
+  sıfırlanır. Bir kareden büyük WebSocket çerçevesi bağlantıyı kapatır (okumadan
+  bırakmak sonraki alımı çöpten başlatıyordu).
 - Üçlü tamponun yazarı ağ derlemesinde bir mutex'le korunuyor. Kilitsiz tampon
   tek yazarlı olduğu için doğru; ikinci bir kaynak onu yırtardı.
 - Sunucu IDF'in kendi `esp_http_server`'ı. Üçüncü parti bir kütüphane değil —

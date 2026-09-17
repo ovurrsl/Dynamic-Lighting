@@ -54,6 +54,13 @@ class IdleState {
  public:
   explicit IdleState (const IdlePolicy &policy = IdlePolicy()) : policy_(policy) {}
 
+  /**
+   * A new policy, keeping the state: whether a host is present and how far a
+   * crossfade has got. Replacing the whole object for a brightness change made
+   * the strip forget the host for a frame and restart its fade.
+   */
+  void setPolicy (const IdlePolicy &policy) { policy_ = policy; }
+
   void frameArrived (uint32_t nowMs) {
     lastFrameMs_ = nowMs;
     haveFrame_ = true;

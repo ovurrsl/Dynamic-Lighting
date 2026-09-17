@@ -335,6 +335,41 @@ test('twinkle lights some LEDs and not others, and not all at once', () => {
   assert.ok(sawSpread, 'at some instant some LEDs are lit and others are dark')
 })
 
+test('fire varies across the strip, not just over time - the property that tells it apart from candle', () => {
+  // candle already covers "one flame flickering everywhere at once". If fire
+  // only did that too it would not be a second effect, just a recolour.
+  const geometry = GEOMETRY
+  const effect = createEffect({ kind: 'fire' }, geometry, () => 0)
+  const out = allocLedColors(geometry.count)
+
+  let sawSpread = false
+  for (const at of [0, 200, 900, 1700, 3300]) {
+    effect.render(out, at)
+    const levels = levelsOf(out)
+    if (Math.max(...levels) - Math.min(...levels) > 0.15) sawSpread = true
+  }
+  assert.ok(sawSpread, 'at some instant the strip has both hotter and cooler LEDs')
+})
+
+test('fire never turns green or blue-dominant - it is a heat ramp, not a hue wheel', () => {
+  // A plasma-style hue sweep passes through every colour; a fire has to look
+  // like fire at every instant, which rules out reusing `hue()` for this one.
+  const geometry = GEOMETRY
+  const effect = createEffect({ kind: 'fire' }, geometry, () => 0)
+  const out = allocLedColors(geometry.count)
+
+  for (const at of [0, 500, 1500, 4000, 9000]) {
+    effect.render(out, at)
+    for (let i = 0; i < out.length; i += 3) {
+      const r = out[i] as number
+      const g = out[i + 1] as number
+      const b = out[i + 2] as number
+      assert.ok(g <= r + 1e-6, `fire at ${at} had green (${g}) exceed red (${r})`)
+      assert.ok(b <= g + 1e-6, `fire at ${at} had blue (${b}) exceed green (${g})`)
+    }
+  }
+})
+
 test('twinkle repeats exactly, because it is seeded', () => {
   // Otherwise "the twinkle looks wrong" and "the twinkle has a bug" cannot be
   // told apart.

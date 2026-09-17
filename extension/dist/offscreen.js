@@ -1324,7 +1324,8 @@ var EFFECT_KINDS = [
   "twinkle",
   "scan",
   "wipe",
-  "chase"
+  "chase",
+  "fire"
 ];
 function isEffectKind(value) {
   return typeof value === "string" && EFFECT_KINDS.includes(value);
@@ -1565,6 +1566,19 @@ function createEffect(spec, geometry, clock2) {
           out[at] = on && left ? brightness : 0;
           out[at + 1] = 0;
           out[at + 2] = on && !left ? brightness : 0;
+        }
+        break;
+      }
+      case "fire": {
+        for (let i = 0; i < count; i++) {
+          const pos = along[i];
+          const rise = noiseAt(flicker, pos * 5 - t * 1.6);
+          const flick = noiseAt(flicker, t * 6 + perLed[i] * 11);
+          const heat = clamp012(rise * 0.75 + flick * 0.25);
+          const at = i * 3;
+          out[at] = clamp012(heat * 3) * brightness;
+          out[at + 1] = clamp012(heat * 3 - 1) * 0.8 * brightness;
+          out[at + 2] = clamp012(heat * 3 - 2) * 0.3 * brightness;
         }
         break;
       }

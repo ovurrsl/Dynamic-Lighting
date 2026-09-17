@@ -49,7 +49,8 @@ export const EFFECT_KINDS = [
   'twinkle',
   'scan',
   'wipe',
-  'chase'
+  'chase',
+  'fire'
 ] as const
 
 export type EffectKind = (typeof EFFECT_KINDS)[number]
@@ -429,6 +430,34 @@ export function createEffect (spec: EffectSpec, geometry: EffectGeometry, clock:
           out[at] = on && left ? brightness : 0
           out[at + 1] = 0
           out[at + 2] = on && !left ? brightness : 0
+        }
+        break
+      }
+
+      case 'fire': {
+        // A heat field that RISES along the wire, not a synced flicker: this
+        // is what tells it apart from `candle`, which is one flame everywhere
+        // at once. Two noise octaves sampled at a position that scrolls
+        // upward over time - the classic Fire2012 look, without the per-frame
+        // cooling array that would need state living outside this closure.
+        // `along` rather than the index, so the rise looks continuous even
+        // where the rig's edges have different LED densities.
+        for (let i = 0; i < count; i++) {
+          const pos = along[i] as number
+          const rise = noiseAt(flicker, pos * 5 - t * 1.6)
+          const flick = noiseAt(flicker, t * 6 + (perLed[i] as number) * 11)
+          // Weighted toward the slow rise: the fast term keeps it from
+          // looking like one wave travelling in lockstep.
+          const heat = clamp01(rise * 0.75 + flick * 0.25)
+          // Black -> red -> orange -> pale yellow, the classic fire ramp, each
+          // channel already clamped to 0..1 BEFORE brightness is applied - the
+          // ramp overshoots heat on purpose (red saturates a third of the way
+          // up the range) and multiplying by brightness first would let a
+          // bright frame push past the ceiling every other effect here holds to.
+          const at = i * 3
+          out[at] = clamp01(heat * 3) * brightness
+          out[at + 1] = clamp01(heat * 3 - 1) * 0.8 * brightness
+          out[at + 2] = clamp01(heat * 3 - 2) * 0.3 * brightness
         }
         break
       }

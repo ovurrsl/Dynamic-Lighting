@@ -350,7 +350,8 @@ var EFFECT_KINDS = [
   "twinkle",
   "scan",
   "wipe",
-  "chase"
+  "chase",
+  "fire"
 ];
 function isEffectKind(value) {
   return typeof value === "string" && EFFECT_KINDS.includes(value);

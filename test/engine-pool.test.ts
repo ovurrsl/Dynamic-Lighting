@@ -287,3 +287,30 @@ test('disposing lets go of the schedulers, not just the engines', async () => {
   assert.deepEqual(pool.schedule(), [])
   for (const engine of engines) assert.deepEqual(engine.schedule(), [], 'every strip let go of its rules')
 })
+
+test('Stop then Start opens the capture again rather than joining the dead one', async () => {
+  // Measured on the panel before the fix: the second self-test after a Stop
+  // reported "the capture ended on its own" and delivered no frame, because
+  // the pool re-attached to a fanout whose track had been stopped.
+  const { host, opened, stopped } = fakeHost()
+  const pool = createEnginePool(host)
+  await pool.start()
+  pool.stop()
+  await Promise.resolve()
+  assert.deepEqual(stopped, ['screen:60'])
+  assert.equal(pool.stats().captures, 0, 'a stopped capture is not counted as open')
+
+  await pool.start()
+  assert.deepEqual(opened, ['screen:60', 'screen:60'], 'a second picker, because the first capture is gone')
+  assert.equal(pool.engines()[0]?.state(), 'running')
+  assert.equal(pool.stats().captures, 1)
+  await pool.dispose()
+})
+
+test('starting with every strip switched off says so', async () => {
+  const { host, opened } = fakeHost()
+  const pool = createEnginePool(host, updateInstance(defaultInstances(), 'instance-1', { enabled: false }))
+  await assert.rejects(pool.start(), /hiçbir şerit açık değil/)
+  assert.deepEqual(opened, [], 'no picker was shown')
+  await pool.dispose()
+})

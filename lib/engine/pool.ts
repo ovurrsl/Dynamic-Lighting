@@ -157,7 +157,9 @@ export function createEnginePool (
           ...(error === undefined ? {} : { error })
         }
       }),
-      captures: fanouts.size
+      // Only the captures that are actually open: a fanout whose last consumer
+      // left is kept in the map until the next `share` discards it.
+      captures: [...fanouts.values()].filter((fan) => !fan.ended()).length
     }
   }
 
@@ -263,6 +265,10 @@ export function createEnginePool (
 
   async function startEach (run: (engine: Engine) => Promise<void>): Promise<void> {
     const enabled = slots.filter((slot) => slot.instance.enabled)
+    // Said rather than silently done: a Start with every strip switched off
+    // used to return with the state idle and nothing on the page explaining
+    // why the press did nothing.
+    if (enabled.length === 0) throw new Error('hiçbir şerit açık değil')
     // Together rather than one at a time: the whole point of `share` is that
     // simultaneous starts collapse onto one picker, and starting them in
     // sequence would open the second capture before the first had a consumer.

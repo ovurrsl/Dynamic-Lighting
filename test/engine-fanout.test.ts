@@ -203,3 +203,21 @@ test('stopping the fanout ends everything at once', async () => {
   assert.equal(fan.active(), 0)
   assert.equal(fan.attached(), 0)
 })
+
+test('after the last consumer leaves, the fanout is ended: nobody is attached to a stopped track', async () => {
+  // FrameSource.start is once. A fanout left "not ended" after its upstream
+  // was stopped handed the next consumer a source that could never deliver,
+  // which on the panel read as "the capture ended on its own" after a Stop.
+  const up = fakeSource()
+  const fan = createFanout(up.source)
+  const only = fan.attach()
+  only.start(() => {})
+  await only.stop()
+  assert.equal(up.stops(), 1)
+  assert.equal(fan.ended(), true, 'idle means ended, because a stopped source cannot be started again')
+
+  let told = false
+  fan.attach().start(() => {}, () => { told = true })
+  assert.equal(told, true, 'a late joiner is told, not left waiting')
+  assert.equal(up.starts(), 1, 'and the dead upstream was not started a second time')
+})

@@ -2526,6 +2526,7 @@ function createFanout(upstream) {
     if (!upstreamStarted) return;
     for (const consumer of consumers) if (consumer.started) return;
     upstreamStarted = false;
+    ended = true;
     await upstream.stop();
   }
   return {
@@ -4416,8 +4417,13 @@ function createEngine(host) {
   let audioTarget = allocLedColors(1);
   let patternTarget = allocLedColors(1);
   let colorTarget = allocLedColors(1);
+  let flashTarget = allocLedColors(1);
   let backgroundTarget = allocLedColors(1);
   let startupTarget = allocLedColors(1);
+  let baseColor = null;
+  let flashColor = null;
+  let patternSpec = null;
+  let captureGen = 0;
   function sizeBuffers(leds) {
     if (captureTarget.length === leds * 3) return;
     captureTarget = allocLedColors(leds);
@@ -4425,6 +4431,7 @@ function createEngine(host) {
     audioTarget = allocLedColors(leds);
     patternTarget = allocLedColors(leds);
     colorTarget = allocLedColors(leds);
+    flashTarget = allocLedColors(leds);
     backgroundTarget = allocLedColors(leds);
     startupTarget = allocLedColors(leds);
   }
@@ -4546,7 +4553,15 @@ function createEngine(host) {
     } catch {
     }
   }
-  async function connectLink() {
+  let linking = null;
+  function connectLink() {
+    if (linking !== null) return linking;
+    linking = connectLinkNow().finally(() => {
+      linking = null;
+    });
+    return linking;
+  }
+  async function connectLinkNow() {
     if (reconnectTimer !== null) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -4608,6 +4623,7 @@ function createEngine(host) {
       next.addEventListener("disconnect", () => {
         void dropPort(new Error("port disconnected"));
       }, { once: true });
+      if (lastError?.startsWith("seri port:") === true) lastError = void 0;
     } catch (error) {
       lastError = `seri port: ${describe3(error)}`;
       if (linkMode !== "loopback") useLoopback();
@@ -4642,7 +4658,8 @@ function createEngine(host) {
       );
       return;
     }
-    loopback = createLoopbackSink({ encoder: stages.encoder });
+    if (linkMode === "loopback") useLoopback();
+    else loopback = createLoopbackSink({ encoder: stages.encoder });
     void closePort().then(connectLink).catch(() => {
       useLoopback();
     });
@@ -4655,7 +4672,9 @@ function createEngine(host) {
   }
   async function processFrame(frame, arrivedAt) {
     let bitmap = null;
+    let released = false;
     const s = stages;
+    const mine = source;
     try {
       const t0 = clock2();
       const crop = s.config.capture.crop;
@@ -4667,6 +4686,7 @@ function createEngine(host) {
       const image = frame.image;
       bitmap = sx === 0 && sy === 0 && sw === frame.width && sh === frame.height ? await createImageBitmap(image, options) : await createImageBitmap(image, sx, sy, sw, sh, options);
       frame.release();
+      released = true;
       const t1 = clock2();
       s.ctx.drawImage(bitmap, 0, 0);
       bitmap.close();
@@ -4680,6 +4700,7 @@ function createEngine(host) {
       s.sampler.sample(s.grid, s.target, s.config.sampling.mode);
       s.adjustment.apply(s.target);
       captureTarget.set(s.target);
+      if (source !== mine) return;
       feed(PRIORITY.capture, "capture", captureTarget);
       const t4 = clock2();
       downscaleTimes.add(t1 - t0);
@@ -4690,7 +4711,7 @@ function createEngine(host) {
       tick();
     } finally {
       bitmap?.close();
-      frame.release();
+      if (!released) frame.release();
     }
   }
   function onFrame(frame, at) {
@@ -4707,15 +4728,19 @@ function createEngine(host) {
       processing = null;
     });
   }
-  function tick() {
+  function tick(fromPattern = false) {
     if (state !== "running") return;
     const s = stages;
     const now = clock2();
     endStartupIfDue(now);
     const won = muxer.tick(now);
-    if (won === null) return;
+    if (won === null) {
+      if (muxer.sources().length === 0) idleIfEmpty();
+      return;
+    }
     if (won.input.kind !== "colors") return;
     if (won.component === "pattern") {
+      if (!fromPattern) return;
       outputs.mark(now);
       s.order.apply(won.input.colors);
       writer.send(won.input.colors);
@@ -4843,7 +4868,7 @@ function createEngine(host) {
     if (p === null || state !== "running") return;
     p.render(patternTarget, clock2());
     feed(PRIORITY.pattern, "pattern", patternTarget);
-    tick();
+    tick(true);
   }
   function resetCounters() {
     arrivals.reset();
@@ -4859,7 +4884,7 @@ function createEngine(host) {
     stages.detector.reset();
     stages.smoother.reset();
   }
-  function stopAudio() {
+  function stopAudio(settle = true) {
     if (audioTimer !== null) {
       clearInterval(audioTimer);
       audioTimer = null;
@@ -4870,33 +4895,35 @@ function createEngine(host) {
     void a?.stop().catch(() => {
     });
     muxer.clear(PRIORITY.audio);
-    idleIfEmpty();
+    if (settle) idleIfEmpty();
   }
-  function stopEffect() {
+  function stopEffect(settle = true) {
     effect = null;
     effectSpec = null;
     idleEffectTimer();
     muxer.clear(PRIORITY.effect);
-    idleIfEmpty();
+    if (settle) idleIfEmpty();
   }
-  function stopPattern() {
+  function stopPattern(settle = true) {
     pattern = null;
+    patternSpec = null;
     if (patternTimer !== null) {
       clearInterval(patternTimer);
       patternTimer = null;
     }
     muxer.clear(PRIORITY.pattern);
-    idleIfEmpty();
+    if (settle) idleIfEmpty();
   }
-  function stopCapture(lost) {
+  function stopCapture(lost, settle = true) {
     if (lost) captureLost = true;
+    captureGen++;
     const s = source;
     source = null;
     sourceKind = void 0;
     void s?.stop().catch(() => {
     });
     muxer.clear(PRIORITY.capture);
-    idleIfEmpty();
+    if (settle) idleIfEmpty();
   }
   function clearLayer(priority) {
     switch (priority) {
@@ -4963,8 +4990,12 @@ function createEngine(host) {
     reconnectTimer = null;
   }
   function blackout() {
-    if (linkMode !== "none" && linkMode !== "loopback") {
-      writer.send(stages.target.fill(0));
+    if (linkMode === "none" || linkMode === "loopback") return;
+    const black2 = allocLedColors(stages.leds);
+    if (!writer.send(black2)) {
+      void writer.idle().then(() => {
+        if (state !== "running") writer.send(black2);
+      });
     }
   }
   function startClocks() {
@@ -4972,33 +5003,49 @@ function createEngine(host) {
     reportTimer ??= setInterval(report, REPORT_MS);
   }
   async function begin(open) {
-    stopCapture(false);
-    state = "starting";
+    stopCapture(false, false);
+    const gen = ++captureGen;
+    if (muxer.sources().length === 0) state = "starting";
     lastError = void 0;
     captureLost = false;
     report();
     try {
       const next = await open();
+      if (gen !== captureGen) {
+        void next.stop().catch(() => {
+        });
+        return;
+      }
       source = next;
       sourceKind = next.kind;
       resetCounters();
       sizeBuffers(stages.leds);
+      if (!muxer.has(PRIORITY.capture)) muxer.register(PRIORITY.capture, { component: "capture" });
       enterRunning();
       startClocks();
       void connectLink();
       next.start(onFrame, (error) => {
+        if (source !== next) return;
         if (error !== void 0) lastError = describe3(error);
         stopCapture(true);
       });
       report();
     } catch (error) {
-      state = "error";
       lastError = describe3(error);
+      if (gen !== captureGen) return;
+      if (muxer.sources().length > 0) {
+        state = "running";
+      } else {
+        stopClocks();
+        state = "error";
+        blackout();
+      }
       report();
     }
   }
   function stop(reason = "user") {
     if (reason === "lost") captureLost = true;
+    captureGen++;
     stopClocks();
     if (patternTimer !== null) clearInterval(patternTimer);
     if (effectTimer !== null) clearInterval(effectTimer);
@@ -5007,8 +5054,11 @@ function createEngine(host) {
     effectTimer = null;
     audioTimer = null;
     pattern = null;
+    patternSpec = null;
     effect = null;
     effectSpec = null;
+    baseColor = null;
+    flashColor = null;
     visualiser = null;
     const a = audio;
     audio = null;
@@ -5113,6 +5163,22 @@ function createEngine(host) {
       const ledsChanged = stages.leds !== next.leds;
       stages = next;
       if (outputChanged || ledsChanged) rebuildLink();
+      if (ledsChanged) {
+        sizeBuffers(next.leds);
+        if (baseColor !== null && muxer.has(PRIORITY.color)) {
+          fillLinear(colorTarget, baseColor);
+          muxer.setInput(PRIORITY.color, { kind: "colors", colors: colorTarget });
+        }
+        if (flashColor !== null && muxer.has(PRIORITY.flash)) {
+          fillLinear(flashTarget, flashColor);
+          muxer.setInput(PRIORITY.flash, { kind: "colors", colors: flashTarget });
+        }
+        if (startupUntil !== null && startupEffect === null && next.config.startup.kind === "color") {
+          fillLinear(startupTarget, next.config.startup.color);
+          muxer.setInput(HIGHEST_PRIORITY, { kind: "colors", colors: startupTarget });
+        }
+        if (pattern !== null && patternSpec !== null) pattern = createPattern(parsePatternSpec(patternSpec), next.leds, clock2);
+      }
       if (effectSpec !== null) effect = createEffect(parseEffectSpec(effectSpec), next.geometry, clock2);
       if (visualiser !== null && audio !== null) {
         visualiser = createVisualiser({
@@ -5132,7 +5198,7 @@ function createEngine(host) {
     async selfTest() {
       const open = host.openSelfTest;
       if (open === void 0) {
-        state = "error";
+        state = muxer.sources().length > 0 ? "running" : "error";
         lastError = "bu ortamda kendi kendine test yok";
         report();
         return;
@@ -5148,7 +5214,7 @@ function createEngine(host) {
      */
     runEffect(spec) {
       const parsed = parseEffectSpec(spec);
-      stopEffect();
+      stopEffect(false);
       lastError = void 0;
       effectSpec = parsed;
       sizeBuffers(stages.leds);
@@ -5169,7 +5235,7 @@ function createEngine(host) {
      */
     async runAudio(spec, input = "microphone") {
       const parsed = parseAudioSpec(spec);
-      stopAudio();
+      stopAudio(false);
       lastError = void 0;
       if (state === "idle") state = "starting";
       report();
@@ -5198,9 +5264,10 @@ function createEngine(host) {
     },
     runPattern(spec) {
       const parsed = parsePatternSpec(spec);
-      stopPattern();
+      stopPattern(false);
       lastError = void 0;
       sizeBuffers(stages.leds);
+      patternSpec = parsed;
       pattern = createPattern(parsed, stages.leds, clock2);
       enterRunning();
       void connectLink();
@@ -5237,21 +5304,17 @@ function createEngine(host) {
     setColor(color, durationMs) {
       const priority = durationMs === void 0 ? PRIORITY.color : PRIORITY.flash;
       sizeBuffers(stages.leds);
-      const r = srgbToLinear(clampByte(color.r) / 255);
-      const g = srgbToLinear(clampByte(color.g) / 255);
-      const b = srgbToLinear(clampByte(color.b) / 255);
-      for (let i = 0; i < stages.leds; i++) {
-        const at = i * 3;
-        colorTarget[at] = r;
-        colorTarget[at + 1] = g;
-        colorTarget[at + 2] = b;
-      }
+      const clamped = { r: clampByte(color.r), g: clampByte(color.g), b: clampByte(color.b) };
+      const into = durationMs === void 0 ? colorTarget : flashTarget;
+      if (durationMs === void 0) baseColor = clamped;
+      else flashColor = clamped;
+      fillLinear(into, clamped);
       muxer.clear(priority);
       muxer.register(priority, {
         component: durationMs === void 0 ? "color" : "flash",
         ...durationMs !== void 0 ? { durationMs } : {}
       });
-      muxer.setInput(priority, { kind: "colors", colors: colorTarget });
+      muxer.setInput(priority, { kind: "colors", colors: into });
       enterRunning();
       void connectLink();
       startClocks();
@@ -5259,6 +5322,7 @@ function createEngine(host) {
       report();
     },
     async relink() {
+      useLoopback();
       await closePort();
       await connectLink();
     },
@@ -5302,7 +5366,9 @@ function createEnginePool(host, initial = defaultInstances(), options = {}) {
           ...error === void 0 ? {} : { error }
         };
       }),
-      captures: fanouts.size
+      // Only the captures that are actually open: a fanout whose last consumer
+      // left is kept in the map until the next `share` discards it.
+      captures: [...fanouts.values()].filter((fan) => !fan.ended()).length
     };
   }
   async function share(key, open, config) {
@@ -5375,6 +5441,7 @@ function createEnginePool(host, initial = defaultInstances(), options = {}) {
   apply(parseInstances(structuredCloneOrCopy(initial)));
   async function startEach(run) {
     const enabled = slots.filter((slot) => slot.instance.enabled);
+    if (enabled.length === 0) throw new Error("hi\xE7bir \u015Ferit a\xE7\u0131k de\u011Fil");
     const results = await Promise.allSettled(enabled.map(async (slot) => {
       await run(slot.engine);
     }));

@@ -365,3 +365,125 @@ test('the sampler gets a chance to speak, and says nothing on a sane rig', () =>
   const h = harness()
   assert.deepEqual(h.engine.stats().sampling?.warnings, [])
 })
+
+test('a timed colour expiring as the LAST layer leaves the engine idle', async () => {
+  // Nothing calls a stopper when the muxer drops a layer on its own, so the
+  // engine used to stay "running" with no layers: timers alive, no blackout,
+  // the strip holding whatever frame came last.
+  const h = harness()
+  h.engine.setColor({ r: 255, g: 0, b: 0 }, 500)
+  assert.equal(h.engine.state(), 'running')
+  h.advance(1000)
+  await delay(30)
+  assert.equal(h.engine.state(), 'idle')
+  assert.deepEqual(layers(h.engine), [])
+})
+
+test('one effect follows another without going through idle', async () => {
+  // Replacing the only live layer used to run idleIfEmpty first: clocks
+  // stopped, a black frame, and then enterRunning() played the startup layer
+  // again. Switching effects blinked and rebooted.
+  const h = harness()
+  h.engine.applyConfig(withLayers({
+    startup: { enabled: true, kind: 'color', color: { r: 255, g: 0, b: 0 }, effect: 'rainbow', durationMs: 1000 }
+  }))
+  h.engine.runEffect({ kind: 'rainbow' })
+  assert.equal(winner(h.engine), 'startup', 'the boot layer covers the first effect')
+  h.advance(1500)
+  await delay(20)
+  assert.equal(winner(h.engine), 'effect')
+
+  const before = h.reports.length
+  h.engine.runEffect({ kind: 'comet' })
+  assert.equal(winner(h.engine), 'effect')
+  assert.ok(!layers(h.engine).some((l) => l.component === 'startup'), 'no second boot animation')
+  assert.ok(h.reports.slice(before).every((r) => r.state !== 'idle'), 'and the engine never reported idle in between')
+  h.engine.stop()
+})
+
+test('a refused capture does not take a running effect down with it', async () => {
+  // The harness's openSource throws, which stands in for a closed picker.
+  const h = harness()
+  h.engine.runEffect({ kind: 'rainbow' })
+  await h.engine.start()
+  assert.equal(h.engine.state(), 'running', 'the effect is still what the strip shows')
+  assert.equal(winner(h.engine), 'effect')
+  assert.match(h.engine.error() ?? '', /no capture/)
+  h.engine.stop()
+})
+
+test('with nothing else live, a refused capture is an error and the engine is stopped', async () => {
+  const h = harness()
+  await h.engine.start()
+  assert.equal(h.engine.state(), 'error')
+  assert.deepEqual(layers(h.engine), [])
+})
+
+test('a Stop while the picker is open wins over the answer that arrives later', async () => {
+  let resolveOpen: (source: FrameSource) => void = () => {}
+  let stops = 0
+  const late: FrameSource = { kind: 'stream', settings: () => ({}), start () {}, async stop () { stops++ } }
+  const host: EngineHost = {
+    clock: () => 0,
+    createCanvas: fakeCanvas,
+    openSource: async () => await new Promise<FrameSource>((resolve) => { resolveOpen = resolve })
+  }
+  const engine = createEngine(host)
+  const started = engine.start()
+  assert.equal(engine.state(), 'starting')
+  engine.stop()
+  resolveOpen(late)
+  await started
+  assert.equal(engine.state(), 'idle', 'the stop stands')
+  assert.equal(stops, 1, 'and the capture that arrived too late is let go')
+  assert.deepEqual(layers(engine), [])
+})
+
+test('a layout that changes the LED count keeps the loopback fed', async () => {
+  // The loopback's encoder is part of the configuration, so it was rebuilt -
+  // but only the variable: the sink and writer went on feeding the OLD one
+  // while the panel read the counters of the new one, which stayed at zero.
+  const h = harness()
+  h.engine.setColor({ r: 10, g: 20, b: 30 })
+  for (let i = 0; i < 6; i++) { h.advance(10); await delay(6) }
+  assert.ok(h.engine.stats().link.accepted > 0, 'the loopback is fed before the edit')
+
+  const bigger = withLayers({ layout: { ...DEFAULT_ENGINE_CONFIG.layout, top: 50, bottom: 50 } })
+  h.engine.applyConfig(bigger)
+  assert.equal(h.engine.stats().leds, 50 + 19 + 50 + 19)
+  for (let i = 0; i < 6; i++) { h.advance(10); await delay(6) }
+  const link = h.engine.stats().link
+  assert.equal(link.errors, 0, 'no frame was rejected by the encoder')
+  assert.equal(link.rejected, 0)
+  assert.ok(link.accepted > 0, 'and the loopback that is counted is the one being fed')
+  h.engine.stop()
+})
+
+test('a pattern reaches the link at the output rate, not at every tick', async () => {
+  // The tick runs every 4 ms and on every frame besides, and a pattern
+  // bypasses the smoother that paces everything else - so it used to go out
+  // several times per output period and the excess was counted as drops.
+  const h = harness()
+  h.engine.runPattern({ kind: 'solid', color: { r: 1, g: 0, b: 0 } })
+  await delay(100)
+  const link = h.engine.stats().link
+  h.engine.stop()
+  assert.equal(link.dropped, 0, 'a healthy link drops nothing')
+  assert.ok(link.written >= 4 && link.written <= 20, `written ${link.written} in 100 ms: expected about one per output period`)
+})
+
+test('a capture that has not delivered its first frame keeps the engine running', async () => {
+  // The idle check on an empty muxer must not fire in the gap between the
+  // picker closing and the first frame: the capture layer is registered, input
+  // or not, from the moment the source is open.
+  const quiet: FrameSource = { kind: 'stream', settings: () => ({}), start () {}, async stop () {} }
+  const host: EngineHost = { clock: () => 0, createCanvas: fakeCanvas, openSource: async () => quiet }
+  const engine = createEngine(host)
+  await engine.start()
+  await delay(40)
+  assert.equal(engine.state(), 'running', 'ten output ticks later it is still running')
+  const capture = layers(engine).find((l) => l.component === 'capture')
+  assert.ok(capture !== undefined, 'the capture layer exists from the moment the source opened')
+  assert.equal(winner(engine), null, 'and nothing is chosen until a frame arrives')
+  engine.stop()
+})

@@ -332,8 +332,31 @@ export function createEngine (host: EngineHost): Engine {
   let audioTarget = allocLedColors(1)
   let patternTarget = allocLedColors(1)
   let colorTarget = allocLedColors(1)
+  /**
+   * Its own buffer, not `colorTarget`. A flash and a base colour are live at
+   * the same time by definition - the flash sits on top and the base is what
+   * comes back - and one buffer for both painted the base with the flash's
+   * colour, so "red, then flash blue for a second" came back blue.
+   */
+  let flashTarget = allocLedColors(1)
   let backgroundTarget = allocLedColors(1)
   let startupTarget = allocLedColors(1)
+  /**
+   * What the static layers were asked to show, kept so they can be re-fed
+   * after the LED count changes: the muxer holds the buffer that was handed
+   * to it, and a layout edit that reallocates the buffers has to hand it the
+   * new ones with the same content, or the strip goes on reading a frame the
+   * encoder no longer accepts.
+   */
+  let baseColor: { r: number, g: number, b: number } | null = null
+  let flashColor: { r: number, g: number, b: number } | null = null
+  let patternSpec: unknown = null
+  /**
+   * Bumped by every stop, checked after every asynchronous open: a Stop - or a
+   * strip removed by the pool - while the picker is up must win, or the capture
+   * comes up running for a strip nobody can see.
+   */
+  let captureGen = 0
 
   function sizeBuffers (leds: number): void {
     if (captureTarget.length === leds * 3) return
@@ -342,6 +365,7 @@ export function createEngine (host: EngineHost): Engine {
     audioTarget = allocLedColors(leds)
     patternTarget = allocLedColors(leds)
     colorTarget = allocLedColors(leds)
+    flashTarget = allocLedColors(leds)
     backgroundTarget = allocLedColors(leds)
     startupTarget = allocLedColors(leds)
   }
@@ -484,7 +508,25 @@ export function createEngine (host: EngineHost): Engine {
    * iOS there is no Web Serial, no WebUSB, no WebHID and no Web Bluetooth, so a
    * captured frame there has nowhere else to go.
    */
-  async function connectLink (): Promise<void> {
+  let linking: Promise<void> | null = null
+
+  /**
+   * One link attempt at a time.
+   *
+   * Every source start asks for the link, and two sources starting together -
+   * a capture and an effect, or the pool's strips - both reached `open()` on
+   * the same serial port: the second rejected, its catch fell back to the
+   * loopback and replaced the sink the first had just opened, and `port` stayed
+   * set so the reconnect never fired. A serialised attempt makes the second
+   * caller wait for the first and then find the port already open.
+   */
+  function connectLink (): Promise<void> {
+    if (linking !== null) return linking
+    linking = connectLinkNow().finally(() => { linking = null })
+    return linking
+  }
+
+  async function connectLinkNow (): Promise<void> {
     if (reconnectTimer !== null) {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
@@ -558,6 +600,9 @@ export function createEngine (host: EngineHost): Engine {
         label
       )
       next.addEventListener('disconnect', () => { void dropPort(new Error('port disconnected')) }, { once: true })
+      // A port that is open again has nothing left to complain about; any
+      // other error (a capture's, a schedule's) is not this link's to clear.
+      if (lastError?.startsWith('seri port:') === true) lastError = undefined
     } catch (error) {
       lastError = `seri port: ${describe(error)}`
       if (linkMode !== 'loopback') useLoopback()
@@ -604,8 +649,12 @@ export function createEngine (host: EngineHost): Engine {
     }
     // The loopback's encoder is part of the configuration too - it is what
     // proves the framing - so it is rebuilt rather than left parsing the old
-    // format.
-    loopback = createLoopbackSink({ encoder: stages.encoder })
+    // format. When the loopback IS the link, the sink and the writer have to
+    // follow it: replacing only the variable left frames going to the old
+    // loopback with the old encoder while the panel read the counters of the
+    // new one, which was never fed.
+    if (linkMode === 'loopback') useLoopback()
+    else loopback = createLoopbackSink({ encoder: stages.encoder })
     void closePort().then(connectLink).catch(() => { useLoopback() })
   }
 
@@ -633,10 +682,16 @@ export function createEngine (host: EngineHost): Engine {
 
   async function processFrame (frame: SourceFrame, arrivedAt: number): Promise<void> {
     let bitmap: { close: () => void } | null = null
+    let released = false
     // Read `stages` ONCE for the whole frame. A config swap between two of these
     // lines would mix a grid of one size with a decoder built for another, which
     // is a real hazard rather than a theoretical one: the grid is configuration.
     const s = stages
+    // And the source, for the same reason: this frame belongs to the capture
+    // that was live when it arrived, and if that capture is stopped during one
+    // of the awaits below the frame must not be fed - it would register the
+    // capture layer again, with a stale picture and nothing to ever clear it.
+    const mine = source
     try {
       // The one downscale: an area average straight from the source, and the
       // crop happens HERE, as the source rectangle. Cropping later would mean
@@ -653,7 +708,11 @@ export function createEngine (host: EngineHost): Engine {
       bitmap = sx === 0 && sy === 0 && sw === frame.width && sh === frame.height
         ? await createImageBitmap(image, options)
         : await createImageBitmap(image, sx, sy, sw, sh, options)
+      // Released as soon as the bitmap exists, so the source's small frame pool
+      // gets it back before the rest of the work - and exactly once, which is
+      // the contract, rather than again in `finally`.
       frame.release()
+      released = true
       const t1 = clock()
       s.ctx.drawImage(bitmap as never, 0, 0)
       bitmap.close()
@@ -689,6 +748,7 @@ export function createEngine (host: EngineHost): Engine {
       // track fires `onEnd`, which is a fact rather than an inference. Audio
       // keeps its timeout because a live microphone delivers silence rather
       // than nothing, so a silent audio layer really is a dead input.
+      if (source !== mine) return
       feed(PRIORITY.capture, 'capture', captureTarget)
       const t4 = clock()
 
@@ -705,7 +765,7 @@ export function createEngine (host: EngineHost): Engine {
       tick()
     } finally {
       bitmap?.close()
-      frame.release()
+      if (!released) frame.release()
     }
   }
 
@@ -735,7 +795,7 @@ export function createEngine (host: EngineHost): Engine {
    * "which LED is index 7" unambiguous. Everything else is content and is
    * smoothed.
    */
-  function tick (): void {
+  function tick (fromPattern = false): void {
     if (state !== 'running') return
     const s = stages
     const now = clock()
@@ -743,10 +803,24 @@ export function createEngine (host: EngineHost): Engine {
     // has no effect timer to end it, and the tick is the only clock it gets.
     endStartupIfDue(now)
     const won = muxer.tick(now)
-    if (won === null) return
+    if (won === null) {
+      // A layer that ends on its own - a timed colour expiring, the startup
+      // deadline, the background switched off under nothing - goes through no
+      // stopper, so nothing else would notice that the LAST layer has gone.
+      // Without this the engine stayed "running" with no layers: timers alive,
+      // no blackout, and the strip holding whatever frame came last.
+      if (muxer.sources().length === 0) idleIfEmpty()
+      return
+    }
     if (won.input.kind !== 'colors') return
 
     if (won.component === 'pattern') {
+      // Sent from the pattern's own timer only. The tick runs every 4 ms and
+      // on every frame and every layer change besides, and a pattern bypasses
+      // the smoother that paces everything else - so it went to the link at
+      // several times OUTPUT_HZ and the latest-wins writer counted the excess
+      // as drops on a perfectly healthy link.
+      if (!fromPattern) return
       outputs.mark(now)
       s.order.apply(won.input.colors as LedColors)
       writer.send(won.input.colors as LedColors)
@@ -945,7 +1019,7 @@ export function createEngine (host: EngineHost): Engine {
     if (p === null || state !== 'running') return
     p.render(patternTarget, clock())
     feed(PRIORITY.pattern, 'pattern', patternTarget)
-    tick()
+    tick(true)
   }
 
   function resetCounters (): void {
@@ -970,7 +1044,15 @@ export function createEngine (host: EngineHost): Engine {
    * other, so ending an effect left the strip dark and the user picking their
    * screen again. Now whatever was underneath comes back by itself.
    */
-  function stopAudio (): void {
+  /*
+   * `settle` is false when the caller is about to put the same kind of layer
+   * straight back - runEffect replacing an effect, begin() replacing a capture.
+   * With it true, replacing the only live layer went through idleIfEmpty:
+   * clocks stopped, state idle, a black frame to the strip, and then
+   * enterRunning played the startup animation again. Switching from one
+   * effect to the next blinked black and replayed the boot sequence.
+   */
+  function stopAudio (settle = true): void {
     if (audioTimer !== null) {
       clearInterval(audioTimer)
       audioTimer = null
@@ -980,36 +1062,38 @@ export function createEngine (host: EngineHost): Engine {
     audio = null
     void a?.stop().catch(() => { /* already gone */ })
     muxer.clear(PRIORITY.audio)
-    idleIfEmpty()
+    if (settle) idleIfEmpty()
   }
 
-  function stopEffect (): void {
+  function stopEffect (settle = true): void {
     effect = null
     effectSpec = null
     // Only if nothing else is rendering: a background effect keeps the timer.
     idleEffectTimer()
     muxer.clear(PRIORITY.effect)
-    idleIfEmpty()
+    if (settle) idleIfEmpty()
   }
 
-  function stopPattern (): void {
+  function stopPattern (settle = true): void {
     pattern = null
+    patternSpec = null
     if (patternTimer !== null) {
       clearInterval(patternTimer)
       patternTimer = null
     }
     muxer.clear(PRIORITY.pattern)
-    idleIfEmpty()
+    if (settle) idleIfEmpty()
   }
 
-  function stopCapture (lost: boolean): void {
+  function stopCapture (lost: boolean, settle = true): void {
     if (lost) captureLost = true
+    captureGen++
     const s = source
     source = null
     sourceKind = undefined
     void s?.stop().catch(() => { /* already gone */ })
     muxer.clear(PRIORITY.capture)
-    idleIfEmpty()
+    if (settle) idleIfEmpty()
   }
 
   /** Clears one layer by priority, for the panel's layer list. */
@@ -1101,8 +1185,17 @@ export function createEngine (host: EngineHost): Engine {
    * than only a serial one: a WLED left on the last frame is just as stuck.
    */
   function blackout (): void {
-    if (linkMode !== 'none' && linkMode !== 'loopback') {
-      writer.send(stages.target.fill(0))
+    if (linkMode === 'none' || linkMode === 'loopback') return
+    // Its own buffer: the pipeline's target is overwritten by the next frame,
+    // and this frame may have to wait for the writer.
+    const black = allocLedColors(stages.leds)
+    // The writer is latest-wins and DROPS a frame while a send is in flight,
+    // which on a Stop is exactly when the previous frame is still being
+    // written - so the black frame was lost and the strip held the last
+    // picture. Wait for the writer instead, and still only send if nothing has
+    // started again in the meantime.
+    if (!writer.send(black)) {
+      void writer.idle().then(() => { if (state !== 'running') writer.send(black) })
     }
   }
 
@@ -1116,32 +1209,64 @@ export function createEngine (host: EngineHost): Engine {
   async function begin (open: () => Promise<FrameSource>): Promise<void> {
     // Only the CAPTURE layer is replaced: an effect or a visualiser running
     // above it keeps running, and is what the strip goes on showing until it
-    // is stopped.
-    stopCapture(false)
-    state = 'starting'
+    // is stopped - and it is not put through idle on the way, so restarting
+    // the capture over a running effect neither blacks the strip nor replays
+    // the startup layer.
+    stopCapture(false, false)
+    const gen = ++captureGen
+    // "Starting" is only a state of the whole engine when nothing else is
+    // showing. With an effect live the engine IS running, and calling it
+    // starting would have enterRunning() treat the capture as an idle edge.
+    if (muxer.sources().length === 0) state = 'starting'
     lastError = undefined
     captureLost = false
     report()
     try {
       const next = await open()
+      // A Stop, a lost capture or a strip removed by the pool while the picker
+      // was up: the answer arrived for a capture nobody wants any more.
+      if (gen !== captureGen) {
+        void next.stop().catch(() => { /* already gone */ })
+        return
+      }
       source = next
       sourceKind = next.kind
       resetCounters()
       sizeBuffers(stages.leds)
+      // The capture layer exists from the moment the source is open, not from
+      // its first frame: registered without input, the muxer lists it and does
+      // not choose it, which is the state between the picker closing and the
+      // first frame arriving. Left unregistered, the very first output tick
+      // found no layers at all and put the engine back to idle before a frame
+      // could arrive - measured on both hosts.
+      if (!muxer.has(PRIORITY.capture)) muxer.register(PRIORITY.capture, { component: 'capture' })
       enterRunning()
       startClocks()
       void connectLink()
       next.start(onFrame, (error) => {
         // An ended source is the stream dying under us - a resolution change,
         // an HDR toggle, the monitor sleeping, or the browser's own "stop
-        // sharing" - and all of those are the same event from here.
+        // sharing" - and all of those are the same event from here. Unless it
+        // is an OLD source ending late, after a restart replaced it: that one
+        // must not stop the capture that took its place.
+        if (source !== next) return
         if (error !== undefined) lastError = describe(error)
         stopCapture(true)
       })
       report()
     } catch (error) {
-      state = 'error'
       lastError = describe(error)
+      if (gen !== captureGen) return
+      // A refused picker must not take a running effect down with it - the
+      // same rule runAudio already follows. Only with nothing else live is the
+      // whole engine in error, and then it is also stopped like a stop.
+      if (muxer.sources().length > 0) {
+        state = 'running'
+      } else {
+        stopClocks()
+        state = 'error'
+        blackout()
+      }
       report()
     }
   }
@@ -1149,6 +1274,7 @@ export function createEngine (host: EngineHost): Engine {
   /** Stops EVERYTHING. The panel's Stop button, and nothing else. */
   function stop (reason: StopReason = 'user'): void {
     if (reason === 'lost') captureLost = true
+    captureGen++
     stopClocks()
     if (patternTimer !== null) clearInterval(patternTimer)
     if (effectTimer !== null) clearInterval(effectTimer)
@@ -1157,8 +1283,11 @@ export function createEngine (host: EngineHost): Engine {
     effectTimer = null
     audioTimer = null
     pattern = null
+    patternSpec = null
     effect = null
     effectSpec = null
+    baseColor = null
+    flashColor = null
     visualiser = null
     const a = audio
     audio = null
@@ -1288,6 +1417,28 @@ export function createEngine (host: EngineHost): Engine {
       // would otherwise be accepted by the panel and silently not reach the
       // device.
       if (outputChanged || ledsChanged) rebuildLink()
+      if (ledsChanged) {
+        // Every layer buffer is the old size and the muxer holds references to
+        // them. The animated layers render into fresh buffers on their next
+        // frame; the static ones - a colour, a flash, a flat startup - have to
+        // be re-fed by hand, or the strip goes on reading a frame the new
+        // encoder rejects on every tick with nothing telling the user.
+        sizeBuffers(next.leds)
+        if (baseColor !== null && muxer.has(PRIORITY.color)) {
+          fillLinear(colorTarget, baseColor)
+          muxer.setInput(PRIORITY.color, { kind: 'colors', colors: colorTarget })
+        }
+        if (flashColor !== null && muxer.has(PRIORITY.flash)) {
+          fillLinear(flashTarget, flashColor)
+          muxer.setInput(PRIORITY.flash, { kind: 'colors', colors: flashTarget })
+        }
+        if (startupUntil !== null && startupEffect === null && next.config.startup.kind === 'color') {
+          fillLinear(startupTarget, next.config.startup.color)
+          muxer.setInput(HIGHEST_PRIORITY, { kind: 'colors', colors: startupTarget })
+        }
+        // A pattern is built for a LED count, not a geometry.
+        if (pattern !== null && patternSpec !== null) pattern = createPattern(parsePatternSpec(patternSpec), next.leds, clock)
+      }
       // A running effect holds the geometry it was built with, so a layout edit
       // would otherwise leave it drawing the old rig onto the new one.
       if (effectSpec !== null) effect = createEffect(parseEffectSpec(effectSpec), next.geometry, clock)
@@ -1316,7 +1467,8 @@ export function createEngine (host: EngineHost): Engine {
     async selfTest (): Promise<void> {
       const open = host.openSelfTest
       if (open === undefined) {
-        state = 'error'
+        // Reported, not imposed: an effect that is showing keeps showing.
+        state = muxer.sources().length > 0 ? 'running' : 'error'
         lastError = 'bu ortamda kendi kendine test yok'
         report()
         return
@@ -1334,8 +1486,10 @@ export function createEngine (host: EngineHost): Engine {
     runEffect (spec: unknown): void {
       const parsed = parseEffectSpec(spec)
       // Replaces the EFFECT layer and nothing else. A capture underneath keeps
-      // running and is what comes back when this is stopped.
-      stopEffect()
+      // running and is what comes back when this is stopped - and the engine
+      // is not put through idle on the way, so one effect follows another
+      // without a black frame or a second boot animation.
+      stopEffect(false)
       lastError = undefined
       effectSpec = parsed
       sizeBuffers(stages.leds)
@@ -1360,7 +1514,7 @@ export function createEngine (host: EngineHost): Engine {
      */
     async runAudio (spec: unknown, input: AudioInputKind = 'microphone'): Promise<void> {
       const parsed = parseAudioSpec(spec)
-      stopAudio()
+      stopAudio(false)
       lastError = undefined
       if (state === 'idle') state = 'starting'
       report()
@@ -1396,9 +1550,10 @@ export function createEngine (host: EngineHost): Engine {
       // is stop anything - the capture or effect underneath is still there when
       // the pattern is cleared, which is what makes the calibration wizard
       // usable without losing the screen the user picked.
-      stopPattern()
+      stopPattern(false)
       lastError = undefined
       sizeBuffers(stages.leds)
+      patternSpec = parsed
       pattern = createPattern(parsed, stages.leds, clock)
       enterRunning()
       void connectLink()
@@ -1444,21 +1599,19 @@ export function createEngine (host: EngineHost): Engine {
       // they asked for.
       const priority = durationMs === undefined ? PRIORITY.color : PRIORITY.flash
       sizeBuffers(stages.leds)
-      const r = srgbToLinear(clampByte(color.r) / 255)
-      const g = srgbToLinear(clampByte(color.g) / 255)
-      const b = srgbToLinear(clampByte(color.b) / 255)
-      for (let i = 0; i < stages.leds; i++) {
-        const at = i * 3
-        colorTarget[at] = r
-        colorTarget[at + 1] = g
-        colorTarget[at + 2] = b
-      }
+      const clamped = { r: clampByte(color.r), g: clampByte(color.g), b: clampByte(color.b) }
+      // Each in its own buffer and remembered: the two are live together, and
+      // a layout edit has to be able to hand the muxer both again.
+      const into = durationMs === undefined ? colorTarget : flashTarget
+      if (durationMs === undefined) baseColor = clamped
+      else flashColor = clamped
+      fillLinear(into, clamped)
       muxer.clear(priority)
       muxer.register(priority, {
         component: durationMs === undefined ? 'color' : 'flash',
         ...(durationMs !== undefined ? { durationMs } : {})
       })
-      muxer.setInput(priority, { kind: 'colors', colors: colorTarget })
+      muxer.setInput(priority, { kind: 'colors', colors: into })
       enterRunning()
       void connectLink()
       startClocks()
@@ -1467,6 +1620,10 @@ export function createEngine (host: EngineHost): Engine {
     },
 
     async relink (): Promise<void> {
+      // The loopback first, so no output tick writes to a port that is being
+      // closed: that write rejected, stamped a "seri port" error, and the
+      // sentence stayed on the panel after the relink had succeeded.
+      useLoopback()
       await closePort()
       await connectLink()
     },

@@ -141,6 +141,13 @@ export function createFanout (upstream: FrameSource): Fanout {
     if (!upstreamStarted) return
     for (const consumer of consumers) if (consumer.started) return
     upstreamStarted = false
+    // An idle fanout is an ENDED fanout. `FrameSource.start` is once - a
+    // stopped track cannot be started again - so the next consumer must not
+    // be attached to this upstream: the pool checks `ended()` and opens a
+    // fresh capture instead. Left false, the second Start after a Stop joined
+    // the dead capture and read as "the capture ended on its own" with no
+    // frame ever delivered - measured on the panel, not inferred.
+    ended = true
     await upstream.stop()
   }
 

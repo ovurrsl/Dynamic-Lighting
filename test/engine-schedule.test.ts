@@ -213,3 +213,18 @@ test('the rules handed to one strip are copies', () => {
   mine[0]!.days.push(6)
   assert.deepEqual(rules[0]?.days, [1, 2])
 })
+
+test('two rules with one id are told apart rather than refused', () => {
+  // Written by an earlier panel whose id counter restarted on every reload.
+  // Refusing the list would lose every rule in it to fix one; the second rule
+  // gets a free id and both survive.
+  const rules = parseRules([
+    { id: 'new-0', atMinute: 60, action: { kind: 'stop' } },
+    { id: 'new-0', atMinute: 120, action: { kind: 'stop' } },
+    { id: 'rule-1', atMinute: 180, action: { kind: 'stop' } }
+  ])
+  assert.deepEqual(rules.map((rule) => rule.atMinute), [60, 120, 180])
+  assert.equal(new Set(rules.map((rule) => rule.id)).size, 3, 'three distinct ids')
+  assert.equal(rules[0]?.id, 'new-0', 'the first keeps its id')
+  assert.equal(rules[2]?.id, 'rule-1', 'an id nobody else has is left alone')
+})

@@ -505,12 +505,16 @@ export const STARTUP_MS_MAX = 30000
 /**
  * Time-constant bounds.
  *
- * The low end is one output period at 120 Hz: a constant shorter than the gap
- * between two frames is not smoothing, it is a copy, and offering it would be
- * offering a knob that does nothing below 8 ms. The high end is where the
- * strip stops following the screen and starts following the last minute of it.
+ * The low end is the smallest value the smoother itself accepts: it refuses a
+ * constant that is not positive, and a parser floor of 0 let the smoothing
+ * card's slider - dragged fully left - produce a configuration the parser
+ * blessed and the engine threw on (on the extension host after persisting it).
+ * A millisecond is well under one output period at 120 Hz, so the low end is
+ * effectively "no smoothing", which the competitive profile's 6 ms already
+ * approaches. The high end is where the strip stops following the screen and
+ * starts following the last minute of it.
  */
-export const SMOOTHING_MS_MIN = 0
+export const SMOOTHING_MS_MIN = 1
 export const SMOOTHING_MS_MAX = 2000
 
 /** Grid bounds. The low end is where a 35-LED edge starts sharing cells between LEDs. */

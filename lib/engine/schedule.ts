@@ -196,7 +196,25 @@ function distanceBack (minute: number, now: number): number {
  */
 export function parseRules (value: unknown): ScheduleRule[] {
   if (!Array.isArray(value)) throw new TypeError('schedule: rules must be an array')
-  return value.map((entry, index) => parseRule(entry, index))
+  const rules = value.map((entry, index) => parseRule(entry, index))
+  // Ids are what the panel edits and removes rows by, so two rules sharing one
+  // are edited and removed together. Repaired rather than refused: a list with
+  // duplicates was written by an earlier panel whose id counter restarted on
+  // every reload, and refusing it would lose every rule in it to fix one.
+  const taken = new Set(rules.map((rule) => rule.id))
+  const seen = new Set<string>()
+  return rules.map((rule, index) => {
+    let id = rule.id
+    if (seen.has(id)) {
+      // Free of every id in the list, later rules included, not just the ones
+      // already passed.
+      let n = index
+      do { id = `rule-${n++}` } while (taken.has(id) || seen.has(id))
+      taken.add(id)
+    }
+    seen.add(id)
+    return id === rule.id ? rule : { ...rule, id }
+  })
 }
 
 export function parseRule (value: unknown, index = 0): ScheduleRule {

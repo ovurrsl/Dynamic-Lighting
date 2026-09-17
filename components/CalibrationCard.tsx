@@ -6,9 +6,9 @@ import { Button, Card, Surface } from '@heroui/react'
 import { useEngine } from '#components/Engine'
 import { useEngineConfig } from '#components/EngineConfig'
 import { useTranslate } from '#components/Preferences'
-import { CORNERS, type Corner } from '#lib/engine/layout'
+import { CORNERS, REFERENCE_LAYOUT, type Corner } from '#lib/engine/layout'
 import { layoutFromCorners, stepWalk, type CalibratedLayout } from '#lib/engine/calibrate'
-import { configLedCount } from '#lib/engine/config'
+import { configLedCount, type EngineConfig } from '#lib/engine/config'
 import { deriveColorOrder, type SeenChannel } from '#lib/engine/order'
 import { WIZARD_COLORS, type PatternKind, type PatternSpec } from '#lib/engine/patterns'
 import type { MessageKey } from '#lib/i18n/strings'
@@ -206,9 +206,15 @@ export function CalibrationCard () {
   }, [total])
 
   const applyLayout = useCallback(async (layout: CalibratedLayout): Promise<void> => {
-    const next = {
+    // The walk produces a CLASSIC layout - four edges, a corner, a direction.
+    // Spread over a matrix layout those fields were parsed and ignored, the
+    // save succeeded, and the card said the rig was described while nothing
+    // had changed. A matrix rig that walks its corners becomes a classic one.
+    const next: EngineConfig = {
       ...config,
-      layout: { ...config.layout, ...layout }
+      layout: config.layout.kind === 'classic'
+        ? { ...config.layout, ...layout }
+        : { kind: 'classic', ...REFERENCE_LAYOUT, ...layout }
     }
     const failure = await saveConfig(next)
     if (failure.error !== undefined) {

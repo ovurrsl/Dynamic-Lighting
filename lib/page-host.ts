@@ -155,7 +155,21 @@ export function createPageEngine (
         paint.fillStyle = '#000'
         paint.fillRect(canvas.width * 0.2, canvas.height * 0.2, canvas.width * 0.6, canvas.height * 0.6)
       }, Math.round(1000 / 60))
-      return await sourceFor(canvas.captureStream(120), config)
+      const inner = await sourceFor(canvas.captureStream(120), config)
+      const timer = selfTestTimer
+      return {
+        ...inner,
+        // The painter goes with the source it fed. It used to be cleared only
+        // in dispose(), so Self-test then Stop left a 640x360 gradient being
+        // drawn sixty times a second for the rest of the tab's life.
+        async stop (): Promise<void> {
+          if (timer !== null && selfTestTimer === timer) {
+            clearInterval(timer)
+            selfTestTimer = null
+          }
+          await inner.stop()
+        }
+      }
     }
   }
 

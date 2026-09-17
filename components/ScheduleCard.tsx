@@ -71,7 +71,20 @@ const toDraft = (rule: ScheduleRule): Draft => ({
   instanceId: rule.instanceId ?? ALL_STRIPS
 })
 
-let nextId = 0
+/**
+ * An id no rule on the page already has.
+ *
+ * Derived from the drafts rather than counted: a module-level counter restarts
+ * at 0 on every page load, so a rule added after a reload got the same id as
+ * one already stored, and from then on the two rows were edited and removed
+ * together. The stored ids are consulted too, whatever scheme wrote them.
+ */
+function freeId (drafts: readonly Draft[]): string {
+  const taken = new Set(drafts.map((d) => d.id))
+  let n = 0
+  while (taken.has(`rule-${n}`)) n++
+  return `rule-${n}`
+}
 
 export function ScheduleCard () {
   const t = useTranslate()
@@ -223,11 +236,14 @@ export function ScheduleCard () {
               )}
 
               {/*
-                Only with more than one strip. A dropdown whose every option but
-                one is "all strips" is a control that cannot be used, and every
-                installation starts with one strip.
+                Only with more than one strip - a dropdown whose every option
+                but one is "all strips" is a control that cannot be used, and
+                every installation starts with one strip - OR when the rule
+                names a strip anyway. That second case is a rule whose strip
+                has been removed: it never fires, and hiding the selector hid
+                the reason. The missing strip is listed, disabled, by its id.
               */}
-              {instances.length > 1 && (
+              {(instances.length > 1 || draft.instanceId !== ALL_STRIPS) && (
                 <Select
                   className="w-44"
                   value={draft.instanceId}
@@ -244,6 +260,16 @@ export function ScheduleCard () {
                         {t('schedule.strip.all')}
                         <ListBox.ItemIndicator />
                       </ListBox.Item>
+                      {draft.instanceId !== ALL_STRIPS && !instances.some((instance) => instance.id === draft.instanceId) && (
+                        <ListBox.Item
+                          id={draft.instanceId}
+                          isDisabled
+                          textValue={t('schedule.strip.missing', { id: draft.instanceId })}
+                        >
+                          {t('schedule.strip.missing', { id: draft.instanceId })}
+                          <ListBox.ItemIndicator />
+                        </ListBox.Item>
+                      )}
                       {instances.map((instance) => (
                         <ListBox.Item id={instance.id} key={instance.id} textValue={instance.name}>
                           {instance.name}
@@ -313,14 +339,17 @@ export function ScheduleCard () {
           <Button
             variant="secondary"
             onPress={() => {
-              setDrafts((c) => [...(c ?? []), {
-                id: `new-${nextId++}`,
-                enabled: true,
-                time: '22:00',
-                days: [],
-                action: { kind: 'stop' },
-                instanceId: ALL_STRIPS
-              }])
+              setDrafts((c) => {
+                const list = c ?? []
+                return [...list, {
+                  id: freeId(list),
+                  enabled: true,
+                  time: '22:00',
+                  days: [],
+                  action: { kind: 'stop' },
+                  instanceId: ALL_STRIPS
+                }]
+              })
             }}
           >
             {t('schedule.add')}

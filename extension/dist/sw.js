@@ -476,7 +476,7 @@ var DEFAULT_STARTUP = Object.freeze({
 });
 var STARTUP_MS_MIN = 100;
 var STARTUP_MS_MAX = 3e4;
-var SMOOTHING_MS_MIN = 0;
+var SMOOTHING_MS_MIN = 1;
 var SMOOTHING_MS_MAX = 2e3;
 var GRID_MIN = 16;
 var GRID_MAX = 480;
@@ -951,7 +951,21 @@ var ACTION_KINDS = ["stop", "capture", "effect", "color"];
 var DEFAULT_GAP_MS = 10 * 60 * 1e3;
 function parseRules(value) {
   if (!Array.isArray(value)) throw new TypeError("schedule: rules must be an array");
-  return value.map((entry, index) => parseRule(entry, index));
+  const rules = value.map((entry, index) => parseRule(entry, index));
+  const taken = new Set(rules.map((rule) => rule.id));
+  const seen = /* @__PURE__ */ new Set();
+  return rules.map((rule, index) => {
+    let id = rule.id;
+    if (seen.has(id)) {
+      let n = index;
+      do {
+        id = `rule-${n++}`;
+      } while (taken.has(id) || seen.has(id));
+      taken.add(id);
+    }
+    seen.add(id);
+    return id === rule.id ? rule : { ...rule, id };
+  });
 }
 function parseRule(value, index = 0) {
   if (typeof value !== "object" || value === null) {

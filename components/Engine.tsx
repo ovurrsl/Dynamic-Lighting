@@ -278,16 +278,29 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!available || host !== 'extension') return
     let cancelled = false
+    let misses = 0
     const tick = async (): Promise<void> => {
       const status = await fetchStatus()
       if (cancelled) return
       if (status === null) {
-        // It answered the probe and then stopped answering: the extension was
-        // disabled or removed while the page was open. Say so rather than
-        // showing the last numbers forever.
-        setProbe({ available: false, reason: 'not-installed', detail: 'yanıt yok' })
+        // It answered the probe and then stopped answering. That is the
+        // extension disabled or removed while the page was open - or one
+        // message lost while the worker was being restarted, which happens.
+        // Three misses in a row and a fresh probe that also fails is the
+        // extension gone; one miss used to switch the host to the page and
+        // stop polling, and only a Retry press brought it back.
+        misses++
+        if (misses < 3) return
+        const again = await probeExtension()
+        if (cancelled) return
+        if (again.available) {
+          misses = 0
+          return
+        }
+        setProbe(again)
         return
       }
+      misses = 0
       setVersion(status.version)
       if (status.pool !== undefined) {
         absorb(status.pool)

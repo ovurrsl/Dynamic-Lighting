@@ -245,13 +245,19 @@ export function createEnginePool (
       }
       const slot = slots[found] as Slot
       const wasEnabled = slot.instance.enabled
+      // Compared before the swap: only a strip whose configuration actually
+      // changed is re-applied. Every save goes through this loop for every
+      // strip, and applyConfig rebuilds a running effect and visualiser from
+      // scratch - so saving one strip's smoothing restarted the other strip's
+      // animation.
+      const changed = JSON.stringify(slot.instance.config) !== JSON.stringify(instance.config)
       slot.instance = instance
       // Its rules are re-routed too: a rule can name a strip that has just been
       // switched on, or stop naming one that has just been renamed away.
       if (rules.length > 0) slot.engine.setSchedule(rulesFor(rules, instance.id))
       // Applied rather than rebuilt: an engine that is running keeps running,
       // and a layout edit on one strip must not black out the other.
-      slot.engine.applyConfig(instance.config)
+      if (changed) slot.engine.applyConfig(instance.config)
       if (wasEnabled && !instance.enabled) slot.engine.stop('user')
       // Re-ordering the list is a panel decision, so honour it here too.
       if (found !== index) slots.splice(index, 0, ...slots.splice(found, 1))

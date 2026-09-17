@@ -6,7 +6,7 @@ import { Button, Card, Label, Slider, Surface, Switch } from '@heroui/react'
 import { useEngine } from '#components/Engine'
 import { useEngineConfig } from '#components/EngineConfig'
 import { useTranslate } from '#components/Preferences'
-import type { SmoothingConfig } from '#lib/engine/config'
+import { SMOOTHING_MS_MIN, type SmoothingConfig } from '#lib/engine/config'
 import { SMOOTHING_PROFILES, SMOOTHING_PROFILE_NAMES, profileOf, type SmoothingProfileName } from '#lib/engine/smooth'
 import type { MessageKey } from '#lib/i18n/strings'
 
@@ -82,9 +82,11 @@ const toMs = (position: number, maxMs: number): number =>
  * fix; a drag moves many positions at once and never reaches this.
  */
 function stepped (from: number, position: number, maxMs: number): number {
-  const next = toMs(position, maxMs)
+  // Never below the parser's floor: the track's left end is position 0, which
+  // is 0 ms, which the engine refuses.
+  const next = Math.max(SMOOTHING_MS_MIN, toMs(position, maxMs))
   if (next !== from) return next
-  return position > toPosition(from, maxMs) ? Math.min(from + 1, maxMs) : Math.max(0, from - 1)
+  return position > toPosition(from, maxMs) ? Math.min(from + 1, maxMs) : Math.max(SMOOTHING_MS_MIN, from - 1)
 }
 
 export function SmoothingCard () {

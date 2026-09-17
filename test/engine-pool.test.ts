@@ -314,3 +314,25 @@ test('starting with every strip switched off says so', async () => {
   assert.deepEqual(opened, [], 'no picker was shown')
   await pool.dispose()
 })
+
+test('a save that leaves a strip unchanged does not re-apply its configuration', async () => {
+  // applyConfig rebuilds a running effect from scratch, so every save of
+  // strip A used to restart strip B's animation. Only the changed strip is
+  // touched; the other keeps its effect object and its phase.
+  const { host } = fakeHost()
+  const pool = createEnginePool(host, addInstance(defaultInstances()))
+  const b = pool.engine('instance-2')
+  assert.ok(b !== null)
+  b.runEffect({ kind: 'rainbow' })
+  const before = b.stats().layers?.find((l) => l.component === 'effect')
+  assert.ok(before !== undefined)
+
+  const edited = updateInstance(pool.instances(), 'instance-1', {
+    config: { ...DEFAULT_ENGINE_CONFIG, blacklist: [{ start: 0, length: 1 }] }
+  })
+  pool.setInstances(edited)
+  const after = b.stats().layers?.find((l) => l.component === 'effect')
+  assert.ok(after !== undefined, 'strip B is still running its effect')
+  assert.deepEqual(pool.engine('instance-1')?.config().blacklist, [{ start: 0, length: 1 }], 'and strip A took the edit')
+  await pool.dispose()
+})

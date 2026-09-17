@@ -192,21 +192,24 @@ function requireCount(name, n) {
 function requireFraction(name, v, max = 1) {
   if (!(v >= 0 && v <= max)) throw new RangeError(`layout: ${name} must be in [0, ${max}], got ${v}`);
 }
+var DEPTH_MAX = 0.5;
+var OVERLAP_MAX = 0.5;
+var EDGE_GAP_MAX = 0.25;
 function validateClassic(spec) {
   for (const edge of ["top", "right", "bottom", "left"]) requireCount(edge, spec[edge]);
   const total = ledCount(spec);
   if (total === 0) throw new RangeError("layout: at least one LED is required");
   for (const depth of ["depthTopBottom", "depthLeftRight"]) {
     const d = spec[depth];
-    if (!(d > 0 && d <= 0.5)) throw new RangeError(`layout: ${depth} must be in (0, 0.5], got ${d}`);
+    if (!(d > 0 && d <= DEPTH_MAX)) throw new RangeError(`layout: ${depth} must be in (0, ${DEPTH_MAX}], got ${d}`);
   }
   if (!CORNERS.includes(spec.start)) throw new RangeError(`layout: unknown start corner ${String(spec.start)}`);
   if (typeof spec.clockwise !== "boolean") throw new TypeError(`layout: clockwise must be a boolean, got ${String(spec.clockwise)}`);
   if (spec.offset !== void 0 && !Number.isInteger(spec.offset)) {
     throw new RangeError(`layout: offset must be an integer, got ${spec.offset}`);
   }
-  if (spec.overlap !== void 0) requireFraction("overlap", spec.overlap, 0.5);
-  if (spec.edgeGap !== void 0) requireFraction("edgeGap", spec.edgeGap, 0.25);
+  if (spec.overlap !== void 0) requireFraction("overlap", spec.overlap, OVERLAP_MAX);
+  if (spec.edgeGap !== void 0) requireFraction("edgeGap", spec.edgeGap, EDGE_GAP_MAX);
   if (spec.aspectRatio !== void 0 && !(spec.aspectRatio > 0 && Number.isFinite(spec.aspectRatio))) {
     throw new RangeError(`layout: aspectRatio must be a positive finite number, got ${spec.aspectRatio}`);
   }

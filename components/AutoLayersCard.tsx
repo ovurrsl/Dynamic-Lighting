@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Button, Card, Input, Label, ListBox, Select, Slider, Surface, Switch, TextField } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
@@ -44,11 +44,14 @@ const KIND_KEY: Record<LayerConfig['kind'], MessageKey> = {
 
 export function AutoLayersCard () {
   const t = useTranslate()
-  const { probe, host, pageCapable, saveConfig } = useEngine()
-  const { config, setConfig } = useEngineConfig()
+  const { probe, host, pageCapable, saveConfig, activeId } = useEngine()
+  const { config, setConfig, draft: shared, setDraft: setShared } = useEngineConfig()
   const [draft, setDraft] = useState<{ background: LayerConfig, startup: StartupConfig } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+
+  // A half-finished edit belongs to the strip it was started on.
+  useEffect(() => { setDraft(null); setNotice(null) }, [activeId])
 
   const current = draft ?? { background: config.background, startup: config.startup }
 
@@ -64,12 +67,13 @@ export function AutoLayersCard () {
       setSaving(false)
       if (result.error !== undefined) { setNotice(t('auto.failed', { reason: result.error })); return }
       setConfig(next)
+      setShared({ ...shared, background: current.background, startup: current.startup })
       setDraft(null)
       setNotice(result.notStored === undefined
         ? t('auto.applied')
         : t('layout.appliedNotStored', { reason: result.notStored }))
     })
-  }, [config, current, saveConfig, setConfig, t])
+  }, [config, current, saveConfig, setConfig, setShared, shared, t])
 
   const hosted = host === 'page' ? pageCapable : probe === null || probe.available === true
   if (!hosted) return null

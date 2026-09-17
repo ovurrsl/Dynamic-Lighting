@@ -31,7 +31,7 @@ import {
   type OutputTransport,
   type WireFormat
 } from '#lib/engine/config'
-import { CORNERS, LAYOUT_DEFAULTS, NO_KEYSTONE, type Corner, type Keystone } from '#lib/engine/layout'
+import { CORNERS, DEPTH_MAX, EDGE_GAP_MAX, LAYOUT_DEFAULTS, NO_KEYSTONE, OVERLAP_MAX, type Corner, type Keystone } from '#lib/engine/layout'
 import { COLOR_ORDERS, type ColorOrder } from '#lib/engine/order'
 import { createLiveSampler, PREVIEW_HZ, type LiveFrame, type LiveSampler } from '#lib/live-sampler'
 import { CORNER_ORDER, frameAspect, isDefaultKeystone, wireOrderColor } from '#lib/preview'
@@ -77,16 +77,19 @@ interface Resolved {
 function EdgeCount ({
   label,
   value,
+  minValue = 0,
   onChange
 }: {
   label: string
   value: number
+  /** An edge may be empty; a matrix axis may not. */
+  minValue?: number
   onChange: (value: number) => void
 }) {
   return (
     <NumberField
       maxValue={512}
-      minValue={0}
+      minValue={minValue}
       value={value}
       variant="secondary"
       // A cleared input reports NaN; that is a keystroke, not a layout.
@@ -106,19 +109,22 @@ function Fraction ({
   label,
   value,
   maxValue,
+  minValue = 0,
   step = 0.005,
   onChange
 }: {
   label: string
   value: number
   maxValue: number
+  /** The generator's own bound, so the slider cannot reach a value it refuses. */
+  minValue?: number
   step?: number
   onChange: (value: number) => void
 }) {
   return (
     <Slider
       maxValue={maxValue}
-      minValue={0}
+      minValue={minValue}
       step={step}
       value={value}
       onChange={(next) => onChange(next as number)}
@@ -261,9 +267,15 @@ export function LayoutCard ({
     })
   }, [resolved, saveConfig, t])
 
+  /**
+   * Resets the LAYOUT, and only that. The whole configuration used to be
+   * replaced with the reference rig's, which silently took the output transport,
+   * the host address, the colour order, the capture settings and every other
+   * page's values with it - and reported that as applied, though nothing had
+   * been sent.
+   */
   const reset = useCallback((to: EngineConfig) => {
-    setDraft(to)
-    report.current?.(to)
+    setDraft((current) => ({ ...current, layout: to.layout }))
     setNotice(t('layout.resetDone'))
   }, [t])
 
@@ -452,7 +464,12 @@ export function LayoutCard ({
             value={layout.kind}
             onChange={(value) => {
               setNotice(null)
-              setDraft(value === 'matrix' ? MATRIX_ENGINE_CONFIG as EngineConfig : DEFAULT_ENGINE_CONFIG as EngineConfig)
+              // Only the layout changes shape. The other pages' settings on this
+              // strip are not the layout's to discard.
+              setDraft((current) => ({
+                ...current,
+                layout: (value === 'matrix' ? MATRIX_ENGINE_CONFIG : DEFAULT_ENGINE_CONFIG).layout as LayoutConfig
+              }))
             }}
           >
             <Label>{t('layout.kind')}</Label>
@@ -488,13 +505,15 @@ export function LayoutCard ({
               <div className="grid gap-4 sm:grid-cols-2">
                 <Fraction
                   label={t('layout.depthTopBottom')}
-                  maxValue={0.5}
+                  maxValue={DEPTH_MAX}
+                  minValue={0.005}
                   value={layout.depthTopBottom}
                   onChange={(depthTopBottom) => patchLayout({ depthTopBottom })}
                 />
                 <Fraction
                   label={t('layout.depthLeftRight')}
-                  maxValue={0.5}
+                  maxValue={DEPTH_MAX}
+                  minValue={0.005}
                   value={layout.depthLeftRight}
                   onChange={(depthLeftRight) => patchLayout({ depthLeftRight })}
                 />
@@ -565,14 +584,14 @@ export function LayoutCard ({
                   <div className="grid gap-4 sm:grid-cols-2">
                     <Fraction
                       label={t('layout.overlap')}
-                      maxValue={1}
+                      maxValue={OVERLAP_MAX}
                       step={0.01}
                       value={layout.overlap ?? LAYOUT_DEFAULTS.overlap}
                       onChange={(overlap) => patchLayout({ overlap })}
                     />
                     <Fraction
                       label={t('layout.edgeGap')}
-                      maxValue={0.3}
+                      maxValue={EDGE_GAP_MAX}
                       value={layout.edgeGap ?? LAYOUT_DEFAULTS.edgeGap}
                       onChange={(edgeGap) => patchLayout({ edgeGap })}
                     />
@@ -633,8 +652,8 @@ export function LayoutCard ({
             )
           : (
             <div className="grid gap-3 sm:grid-cols-2">
-              <EdgeCount label={t('layout.columns')} value={layout.columns} onChange={(columns) => patchLayout({ columns })} />
-              <EdgeCount label={t('layout.rows')} value={layout.rows} onChange={(rows) => patchLayout({ rows })} />
+              <EdgeCount label={t('layout.columns')} minValue={1} value={layout.columns} onChange={(columns) => patchLayout({ columns })} />
+              <EdgeCount label={t('layout.rows')} minValue={1} value={layout.rows} onChange={(rows) => patchLayout({ rows })} />
               <Select
                 value={layout.cabling}
                 onChange={(value) => patchLayout({ cabling: value as 'snake' | 'parallel' })}

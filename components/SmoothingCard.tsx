@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, Card, Label, Slider, Surface, Switch } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
@@ -91,11 +91,14 @@ function stepped (from: number, position: number, maxMs: number): number {
 
 export function SmoothingCard () {
   const t = useTranslate()
-  const { probe, host, pageCapable, saveConfig } = useEngine()
-  const { config, setConfig } = useEngineConfig()
+  const { probe, host, pageCapable, saveConfig, activeId } = useEngine()
+  const { config, setConfig, draft: shared, setDraft: setShared } = useEngineConfig()
   const [draft, setDraft] = useState<SmoothingConfig | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+
+  // A half-finished edit belongs to the strip it was started on.
+  useEffect(() => { setDraft(null); setNotice(null) }, [activeId])
 
   const current = draft ?? config.smoothing
   const profile = useMemo(() => profileOf(current), [current])
@@ -112,12 +115,13 @@ export function SmoothingCard () {
       setSaving(false)
       if (result.error !== undefined) { setNotice(t('smoothing.failed', { reason: result.error })); return }
       setConfig(next)
+      setShared({ ...shared, smoothing: current })
       setDraft(null)
       setNotice(result.notStored === undefined
         ? t('smoothing.applied')
         : t('layout.appliedNotStored', { reason: result.notStored }))
     })
-  }, [config, current, saveConfig, setConfig, t])
+  }, [config, current, saveConfig, setConfig, setShared, shared, t])
 
   const hosted = host === 'page' ? pageCapable : probe === null || probe.available === true
   if (!hosted) {

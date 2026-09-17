@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Button, Card, Label, ListBox, Select, Slider, Surface, Switch } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
@@ -54,11 +54,14 @@ const PERCENT = 100
 
 export function BorderCard () {
   const t = useTranslate()
-  const { probe, host, pageCapable, saveConfig, stats } = useEngine()
-  const { config, setConfig } = useEngineConfig()
+  const { probe, host, pageCapable, saveConfig, stats, activeId } = useEngine()
+  const { config, setConfig, draft: shared, setDraft: setShared } = useEngineConfig()
   const [draft, setDraft] = useState<BorderConfig | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+
+  // A half-finished edit belongs to the strip it was started on.
+  useEffect(() => { setDraft(null); setNotice(null) }, [activeId])
 
   const current = draft ?? config.border
 
@@ -74,12 +77,13 @@ export function BorderCard () {
       setSaving(false)
       if (result.error !== undefined) { setNotice(t('border.failed', { reason: result.error })); return }
       setConfig(next)
+      setShared({ ...shared, border: current })
       setDraft(null)
       setNotice(result.notStored === undefined
         ? t('border.applied')
         : t('layout.appliedNotStored', { reason: result.notStored }))
     })
-  }, [config, current, saveConfig, setConfig, t])
+  }, [config, current, saveConfig, setConfig, setShared, shared, t])
 
   const hosted = host === 'page' ? pageCapable : probe === null || probe.available === true
   if (!hosted) return null

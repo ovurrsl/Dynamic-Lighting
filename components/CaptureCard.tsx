@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, Card, Label, ListBox, NumberField, Select, Slider, Surface } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
@@ -54,8 +54,8 @@ function cellsPerLed (config: EngineConfig, gridWidth: number): number {
 
 export function CaptureCard () {
   const t = useTranslate()
-  const { probe, host, pageCapable, saveConfig } = useEngine()
-  const { config, setConfig } = useEngineConfig()
+  const { probe, host, pageCapable, saveConfig, activeId } = useEngine()
+  const { config, setConfig, draft: shared, setDraft: setShared } = useEngineConfig()
   const [draft, setDraft] = useState<CaptureConfig | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -63,6 +63,11 @@ export function CaptureCard () {
   const [needsPermission, setNeedsPermission] = useState(false)
   const [listing, setListing] = useState(false)
   const [deviceError, setDeviceError] = useState<string | null>(null)
+
+  // A half-finished edit belongs to the strip it was started on. Switching
+  // strips in the sidebar mid-edit used to carry it over and Apply wrote one
+  // strip's settings onto the other.
+  useEffect(() => { setDraft(null); setNotice(null) }, [activeId])
 
   /**
    * Listed on demand, never on load.
@@ -116,12 +121,15 @@ export function CaptureCard () {
       setSaving(false)
       if (failure.error !== undefined) { setNotice(t('capture.failed', { reason: failure.error })); return }
       setConfig(next)
+      // Into the shared draft as well: it is what a saved profile carries, and
+      // it used to keep the pre-apply values until the layout page was visited.
+      setShared({ ...shared, capture: current })
       setDraft(null)
       setNotice(failure.notStored === undefined
         ? t('capture.applied')
         : t('layout.appliedNotStored', { reason: failure.notStored }))
     })
-  }, [config, current, problem, saveConfig, setConfig, t])
+  }, [config, current, problem, saveConfig, setConfig, setShared, shared, t])
 
   // These are engine settings, so they need an engine - but since the page
   // host exists that no longer means an extension. The gate asks whether

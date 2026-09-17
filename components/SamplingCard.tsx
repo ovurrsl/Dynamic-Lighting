@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Button, Card, Label, ListBox, Select, Slider, Surface } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
@@ -115,11 +115,16 @@ function budgetShare (times: number, t: (key: MessageKey, vars?: Record<string, 
 
 export function SamplingCard () {
   const t = useTranslate()
-  const { probe, host, pageCapable, saveConfig, stats } = useEngine()
-  const { config, setConfig } = useEngineConfig()
+  const { probe, host, pageCapable, saveConfig, stats, activeId } = useEngine()
+  const { config, setConfig, draft: shared, setDraft: setShared } = useEngineConfig()
   const [draft, setDraft] = useState<SamplingConfig | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+
+  // A half-finished edit belongs to the strip it was started on. Switching
+  // strips in the sidebar mid-edit used to carry it over and Apply wrote one
+  // strip's settings onto the other.
+  useEffect(() => { setDraft(null); setNotice(null) }, [activeId])
 
   const current = draft ?? config.sampling
 
@@ -135,12 +140,15 @@ export function SamplingCard () {
       setSaving(false)
       if (result.error !== undefined) { setNotice(t('sampling.failed', { reason: result.error })); return }
       setConfig(next)
+      // Into the shared draft as well: it is what a saved profile carries, and
+      // it used to keep the pre-apply values until the layout page was visited.
+      setShared({ ...shared, sampling: current })
       setDraft(null)
       setNotice(result.notStored === undefined
         ? t('sampling.applied')
         : t('layout.appliedNotStored', { reason: result.notStored }))
     })
-  }, [config, current, saveConfig, setConfig, t])
+  }, [config, current, saveConfig, setConfig, setShared, shared, t])
 
   const hosted = host === 'page' ? pageCapable : probe === null || probe.available === true
   if (!hosted) return null

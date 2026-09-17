@@ -4593,8 +4593,14 @@ function createEngine(host) {
         return;
       }
       try {
+        const url = output.transport === "wled" ? wledUrl(address) : afxUrl(address);
+        if (isMixedContent(url)) {
+          lastError = `${output.transport}: HTTPS sayfadan ws:// a\xE7\u0131lamaz (kar\u0131\u015F\u0131k i\xE7erik) \u2014 paneli kendi a\u011F\u0131nda http:// \xFCzerinden \xE7al\u0131\u015Ft\u0131r ya da eklenti host'unu kullan`;
+          useLoopback();
+          return;
+        }
         useSink(
-          output.transport === "wled" ? createWledSink({ url: wledUrl(address), leds: stages.leds, segment: output.segment ?? 0 }) : createSocketSink({ url: afxUrl(address), encoder: stages.encoder }),
+          output.transport === "wled" ? createWledSink({ url, leds: stages.leds, segment: output.segment ?? 0 }) : createSocketSink({ url, encoder: stages.encoder }),
           output.transport,
           address
         );
@@ -5347,6 +5353,10 @@ function createEngine(host) {
   };
   return api;
 }
+function isMixedContent(url) {
+  const protocol = globalThis.location?.protocol;
+  return protocol === "https:" && url.startsWith("ws://");
+}
 function clampByte(value) {
   if (!Number.isFinite(value)) return 0;
   return Math.min(255, Math.max(0, Math.round(value)));
@@ -5764,9 +5774,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         });
       }
       return false;
-    case "ambiflux/instances-get":
-      sendResponse({ type: "ambiflux/instances-reply", instances: pool.instances() });
-      return false;
+    // `instances-get` and `schedule-get` are answered by the worker from
+    // storage and never reach this document; there is deliberately no case
+    // for them here, so a stray one falls through to "not handled".
     // Pool-wide, because a rule may name any strip or none: the pool owns the
     // master list and hands each engine only the rules that apply to it.
     case "ambiflux/schedule":
@@ -5780,15 +5790,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         });
       }
       return false;
-    case "ambiflux/schedule-get":
-      sendResponse({ type: "ambiflux/schedule-reply", rules: pool.schedule() });
-      return false;
     default:
       break;
   }
-  const engine = addressed("instance" in message ? message.instance : void 0);
+  const named = "instance" in message ? message.instance : void 0;
+  const engine = addressed(named);
   if (engine === null) {
-    sendResponse(noSuchInstance("instance" in message ? message.instance : void 0));
+    if (message.type === "ambiflux/control") {
+      sendResponse({ type: "ambiflux/control-reply", sent: false, error: noSuchInstance(named).error });
+    } else {
+      sendResponse(noSuchInstance(named));
+    }
     return false;
   }
   switch (message.type) {
@@ -5831,18 +5843,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }));
       return true;
     }
-    case "ambiflux/config":
-      try {
-        engine.applyConfig(message.config);
-        sendResponse({ type: "ambiflux/config-reply", config: engine.config() });
-      } catch (error) {
-        sendResponse({
-          type: "ambiflux/config-reply",
-          config: engine.config(),
-          error: describe5(error)
-        });
-      }
-      return false;
+    // `config`, `config-get` and `ping` are the worker's: a configuration
+    // reaches this document inside the strip list (`ambiflux/instances`), so
+    // that the stored copy and the running one cannot disagree. A `config`
+    // handled here would have bypassed storage - it was never sent, and it is
+    // deliberately not handled.
     case "ambiflux/control":
       engine.sendControl(message.control).then(
         () => sendResponse({ type: "ambiflux/control-reply", sent: true }),
@@ -5853,12 +5858,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         })
       );
       return true;
-    case "ambiflux/config-get":
-      sendResponse({ type: "ambiflux/config-reply", config: engine.config() });
-      return false;
-    case "ambiflux/ping":
-      sendResponse({ type: "ambiflux/pong", version: "offscreen", engine: engine.state() });
-      return false;
     default:
       return false;
   }

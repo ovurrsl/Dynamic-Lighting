@@ -196,9 +196,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         } satisfies Message)
       }
       return false
-    case 'ambiflux/instances-get':
-      sendResponse({ type: 'ambiflux/instances-reply', instances: pool.instances() } satisfies Message)
-      return false
+    // `instances-get` and `schedule-get` are answered by the worker from
+    // storage and never reach this document; there is deliberately no case
+    // for them here, so a stray one falls through to "not handled".
 
     // Pool-wide, because a rule may name any strip or none: the pool owns the
     // master list and hands each engine only the rules that apply to it.
@@ -211,18 +211,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         } satisfies Message)
       }
       return false
-    case 'ambiflux/schedule-get':
-      sendResponse({ type: 'ambiflux/schedule-reply', rules: pool.schedule() } satisfies Message)
-      return false
 
     default:
       break
   }
 
   // Everything below drives ONE strip.
-  const engine = addressed('instance' in message ? message.instance : undefined)
+  const named = 'instance' in message ? message.instance : undefined
+  const engine = addressed(named)
   if (engine === null) {
-    sendResponse(noSuchInstance('instance' in message ? message.instance : undefined))
+    // In the shape the caller checks for. A control request's caller reads
+    // `sent`, so the generic `{state, error}` reached it as "unexpected reply"
+    // and the sentence naming the missing strip was lost.
+    if (message.type === 'ambiflux/control') {
+      sendResponse({ type: 'ambiflux/control-reply', sent: false, error: noSuchInstance(named).error } satisfies Message)
+    } else {
+      sendResponse(noSuchInstance(named))
+    }
     return false
   }
 
@@ -268,20 +273,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }))
       return true
     }
-    case 'ambiflux/config':
-      try {
-        engine.applyConfig(message.config)
-        sendResponse({ type: 'ambiflux/config-reply', config: engine.config() } satisfies Message)
-      } catch (error) {
-        // The engine keeps the configuration it had: a bad edit must not stop
-        // the strip mid-film.
-        sendResponse({
-          type: 'ambiflux/config-reply',
-          config: engine.config(),
-          error: describe(error)
-        } satisfies Message)
-      }
-      return false
+    // `config`, `config-get` and `ping` are the worker's: a configuration
+    // reaches this document inside the strip list (`ambiflux/instances`), so
+    // that the stored copy and the running one cannot disagree. A `config`
+    // handled here would have bypassed storage - it was never sent, and it is
+    // deliberately not handled.
     case 'ambiflux/control':
       engine.sendControl(message.control).then(
         () => sendResponse({ type: 'ambiflux/control-reply', sent: true } satisfies Message),
@@ -290,12 +286,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         } satisfies Message)
       )
       return true
-    case 'ambiflux/config-get':
-      sendResponse({ type: 'ambiflux/config-reply', config: engine.config() } satisfies Message)
-      return false
-    case 'ambiflux/ping':
-      sendResponse({ type: 'ambiflux/pong', version: 'offscreen', engine: engine.state() } satisfies Message)
-      return false
     default:
       return false
   }

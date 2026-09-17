@@ -541,10 +541,22 @@ export function createEngine (host: EngineHost): Engine {
         return
       }
       try {
+        const url = output.transport === 'wled' ? wledUrl(address) : afxUrl(address)
+        // A page served over HTTPS may not open a plain ws:// connection - the
+        // browser refuses it as mixed content, and from the sink's side that
+        // is an ordinary connect failure that reconnects forever. Said as what
+        // it is, and said BEFORE the first attempt: the hosted panel's page
+        // host cannot reach a board on the LAN this way, and the two things
+        // that can are an http:// panel on the same network and the extension.
+        if (isMixedContent(url)) {
+          lastError = `${output.transport}: HTTPS sayfadan ws:// açılamaz (karışık içerik) — paneli kendi ağında http:// üzerinden çalıştır ya da eklenti host'unu kullan`
+          useLoopback()
+          return
+        }
         useSink(
           output.transport === 'wled'
-            ? createWledSink({ url: wledUrl(address), leds: stages.leds, segment: output.segment ?? 0 })
-            : createSocketSink({ url: afxUrl(address), encoder: stages.encoder }),
+            ? createWledSink({ url, leds: stages.leds, segment: output.segment ?? 0 })
+            : createSocketSink({ url, encoder: stages.encoder }),
           output.transport,
           address
         )
@@ -1632,6 +1644,16 @@ export function createEngine (host: EngineHost): Engine {
   }
 
   return api
+}
+
+/**
+ * Whether this document is secure and the URL is not. `location` is a global
+ * only in a document; the offscreen document's is `chrome-extension:`, which
+ * the mixed-content rule does not apply to, and Node has none.
+ */
+function isMixedContent (url: string): boolean {
+  const protocol = (globalThis as { location?: { protocol?: string } }).location?.protocol
+  return protocol === 'https:' && url.startsWith('ws://')
 }
 
 function clampByte (value: number): number {

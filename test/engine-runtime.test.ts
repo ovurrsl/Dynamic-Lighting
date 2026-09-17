@@ -487,3 +487,24 @@ test('a capture that has not delivered its first frame keeps the engine running'
   assert.equal(winner(engine), null, 'and nothing is chosen until a frame arrives')
   engine.stop()
 })
+
+test('an HTTPS page is told it cannot open ws:// to the board, before the first attempt', async () => {
+  // Mixed content: the browser refuses a plain ws:// connection from a secure
+  // page, and from the sink's side that was an ordinary connect failure that
+  // reconnected forever. The hosted panel's page host cannot reach a LAN board
+  // this way, and the sentence has to say so.
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'location')
+  Object.defineProperty(globalThis, 'location', { value: { protocol: 'https:' }, configurable: true, writable: true })
+  try {
+    const h = harness()
+    h.engine.applyConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'websocket', format: 'Afx', host: '192.168.1.40' } })
+    h.engine.setColor({ r: 1, g: 2, b: 3 })
+    await delay(20)
+    assert.equal(h.engine.link().mode, 'loopback')
+    assert.match(h.engine.error() ?? '', /karışık içerik/)
+    h.engine.stop()
+  } finally {
+    if (original !== undefined) Object.defineProperty(globalThis, 'location', original)
+    else delete (globalThis as { location?: unknown }).location
+  }
+})

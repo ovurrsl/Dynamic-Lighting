@@ -1065,6 +1065,7 @@ async function ensureOffscreen() {
 var lastState = null;
 var lastStats = null;
 var instances = null;
+var instancesProblem;
 async function loadInstances() {
   if (instances !== null) return instances;
   try {
@@ -1079,10 +1080,14 @@ async function loadInstances() {
     if (single !== void 0) {
       instances = updateInstance(instances, instances[0].id, { config: parseEngineConfig(single) });
     }
-  } catch {
+  } catch (error) {
+    instancesProblem = error instanceof Error ? error.message : String(error);
     instances = defaultInstances();
   }
   return instances;
+}
+function firstId(list) {
+  return (list.find((instance) => instance.enabled) ?? list[0]).id;
 }
 async function setInstances(value) {
   let parsed;
@@ -1091,8 +1096,9 @@ async function setInstances(value) {
   } catch (error) {
     return { instances: await loadInstances(), error: error instanceof Error ? error.message : String(error) };
   }
-  instances = parsed;
   await chrome.storage.local.set({ [INSTANCES_KEY]: parsed });
+  instances = parsed;
+  instancesProblem = void 0;
   if (await offscreenExists()) {
     try {
       await chrome.runtime.sendMessage({ type: "ambiflux/instances", target: "offscreen", instances: parsed });
@@ -1103,12 +1109,14 @@ async function setInstances(value) {
 }
 async function loadConfig(id) {
   const list = await loadInstances();
-  const found = id === void 0 ? list[0] : findInstance(list, id);
-  return (found ?? list[0]).config;
+  if (id === void 0) return findInstance(list, firstId(list)).config;
+  const found = findInstance(list, id);
+  if (found === void 0 || found === null) throw new Error(`\u015Ferit bulunamad\u0131: ${id}`);
+  return found.config;
 }
 async function setConfig(value, id) {
   const list = await loadInstances();
-  const target = id ?? list[0].id;
+  const target = id ?? firstId(list);
   let parsed;
   try {
     parsed = parseEngineConfig(value);
@@ -1142,8 +1150,8 @@ async function setSchedule(value) {
   } catch (error) {
     return { rules: await loadSchedule(), error: error instanceof Error ? error.message : String(error) };
   }
-  schedule = parsed;
   await chrome.storage.local.set({ [SCHEDULE_KEY]: parsed });
+  schedule = parsed;
   if (parsed.length > 0) await ensureOffscreen();
   if (await offscreenExists()) {
     try {
@@ -1219,7 +1227,11 @@ function handle(message, sendResponse) {
     // that opens the strips page must not be the reason the engine exists.
     case "ambiflux/instances-get":
       loadInstances().then(
-        (list) => sendResponse({ type: "ambiflux/instances-reply", instances: list }),
+        (list) => sendResponse({
+          type: "ambiflux/instances-reply",
+          instances: list,
+          ...instancesProblem === void 0 ? {} : { error: instancesProblem }
+        }),
         (error) => sendResponse({ type: "ambiflux/instances-reply", instances: null, error: String(error) })
       );
       return true;

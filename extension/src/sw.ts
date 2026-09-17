@@ -68,14 +68,23 @@ let lastStats: Message & { type: 'ambiflux/stats' } | null = null
 
 /**
  * The strips in force, and the worker is their owner: the offscreen document is
- * destroyed whenever capture stops and this worker itself is killed after ~30 s
- * idle, so neither can hold them. chrome.storage.local survives both.
+ * memory that Chrome drops when the browser closes, and this worker itself is
+ * killed after ~30 s idle, so neither can hold them. chrome.storage.local
+ * survives both.
  *
  * Read through `loadInstances`, which parses what storage returns rather than
  * trusting it: the stored value was written by an older version of this
  * extension, which is a trust boundary like any other.
  */
 let instances: Instance[] | null = null
+/**
+ * Why the stored list could not be read, when it could not. Reported with the
+ * list rather than swallowed: the reference rig standing in for somebody's
+ * layout is the right fallback, but a panel that was not told would show the
+ * wrong rig with no explanation and its next Save would overwrite the stored
+ * one for good.
+ */
+let instancesProblem: string | undefined
 
 async function loadInstances (): Promise<Instance[]> {
   if (instances !== null) return instances
@@ -95,12 +104,19 @@ async function loadInstances (): Promise<Instance[]> {
     if (single !== undefined) {
       instances = updateInstance(instances, (instances[0] as Instance).id, { config: parseEngineConfig(single) })
     }
-  } catch {
+  } catch (error) {
     // A stored list this version cannot read is not a reason to light nothing;
-    // one strip on the reference rig stands until the panel sends a good one.
+    // one strip on the reference rig stands until the panel sends a good one -
+    // and the panel is told why.
+    instancesProblem = error instanceof Error ? error.message : String(error)
     instances = defaultInstances()
   }
   return instances
+}
+
+/** The strip a message with no `instance` means: the first enabled one, as the offscreen document reads it. */
+function firstId (list: Instance[]): string {
+  return (list.find((instance) => instance.enabled) ?? list[0] as Instance).id
 }
 
 /**
@@ -116,8 +132,12 @@ async function setInstances (value: unknown): Promise<{ instances: Instance[], e
   } catch (error) {
     return { instances: await loadInstances(), error: error instanceof Error ? error.message : String(error) }
   }
-  instances = parsed
+  // Stored first, then taken: a write that fails must not leave memory, the
+  // storage and the engine document disagreeing while the panel is told it
+  // failed.
   await chrome.storage.local.set({ [INSTANCES_KEY]: parsed })
+  instances = parsed
+  instancesProblem = undefined
   // Only if the engine is up: creating the document just to configure it would
   // start a capture nobody asked for.
   if (await offscreenExists()) {
@@ -131,11 +151,19 @@ async function setInstances (value: unknown): Promise<{ instances: Instance[], e
   return { instances: parsed }
 }
 
-/** The configuration of one strip - the first, when the caller did not say. */
+/**
+ * The configuration of one strip - the first enabled one when the caller did
+ * not say, which is how the offscreen document reads an absent id too. A named
+ * strip that does not exist is an error, not another strip's configuration: a
+ * panel that asked for a deleted strip and got its neighbour's layout back
+ * would show it under the wrong name.
+ */
 async function loadConfig (id?: string): Promise<EngineConfig> {
   const list = await loadInstances()
-  const found = id === undefined ? list[0] : findInstance(list, id)
-  return (found ?? list[0] as Instance).config
+  if (id === undefined) return (findInstance(list, firstId(list)) as Instance).config
+  const found = findInstance(list, id)
+  if (found === undefined || found === null) throw new Error(`şerit bulunamadı: ${id}`)
+  return found.config
 }
 
 /**
@@ -148,7 +176,7 @@ async function loadConfig (id?: string): Promise<EngineConfig> {
  */
 async function setConfig (value: unknown, id?: string): Promise<{ config: EngineConfig, error?: string }> {
   const list = await loadInstances()
-  const target = id ?? (list[0] as Instance).id
+  const target = id ?? firstId(list)
   let parsed: EngineConfig
   try {
     parsed = parseEngineConfig(value)
@@ -204,8 +232,8 @@ async function setSchedule (value: unknown): Promise<{ rules: ScheduleRule[], er
   } catch (error) {
     return { rules: await loadSchedule(), error: error instanceof Error ? error.message : String(error) }
   }
-  schedule = parsed
   await chrome.storage.local.set({ [SCHEDULE_KEY]: parsed })
+  schedule = parsed
 
   // Unlike a configuration change, a rule has to reach a LIVE engine or it
   // cannot fire, so saving one builds the document rather than waiting for the
@@ -304,7 +332,11 @@ function handle (message: unknown, sendResponse: (r: unknown) => void): boolean 
     // that opens the strips page must not be the reason the engine exists.
     case 'ambiflux/instances-get':
       loadInstances().then(
-        (list) => sendResponse({ type: 'ambiflux/instances-reply', instances: list } satisfies Message),
+        (list) => sendResponse({
+          type: 'ambiflux/instances-reply',
+          instances: list,
+          ...(instancesProblem === undefined ? {} : { error: instancesProblem })
+        } satisfies Message),
         (error: unknown) => sendResponse({ type: 'ambiflux/instances-reply', instances: null, error: String(error) } satisfies Message)
       )
       return true

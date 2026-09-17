@@ -137,12 +137,15 @@ her makinede aynıdır (`data/extension.ts`), panel onu bu kimlikle bulur.
 > script 'sw.js'"** der: orada yalnız TypeScript kaynağı var. Klasör `dist`
 > olmalı. Başka birine tek dosya olarak göndermek için `npm run pack:extension`.
 
-Kullanım, eklenti simgesinden:
+Kullanım:
 
-1. **Seri portu eşleştir** — Web Serial izni bir kullanıcı hareketi ister; bu
-   yüzden popup'tan verilir, motor portu `getPorts()` ile devralır.
-2. **Yakalamayı başlat** — ekran seçici de aynı sebeple popup'ta. Seçim Chrome
-   oturumu boyunca geçerlidir; kalıcı yapılamaz, bu bir tarayıcı sınırıdır.
+1. **Seri portu eşleştir** — eklenti simgesinden. Web Serial izni bir
+   kullanıcı hareketi ister ve portu isteyen origin'e verir; bu yüzden popup'tan
+   verilir, motor portu `getPorts()` ile devralır.
+2. **Yakalamayı başlat** — panelin Genel bakış sayfasından (aynı düğme popup'ta
+   da var). Ekran seçiciyi tarayıcı her iki durumda da eklentinin kendi motor
+   dokümanından açar. Seçim Chrome oturumu boyunca geçerlidir; kalıcı
+   yapılamaz, bu bir tarayıcı sınırıdır.
 
 Port eşleşmemişse motor **cihazsız (loopback) modda** çalışır: kareler
 üretilir, firmware'in kullanacağı referans ayrıştırıcıdan geçirilir ve sayılır.

@@ -2,9 +2,14 @@
 
 > **2026-09-13, güncelleme: eklenti geri alındı.** Bu dosya bir süre devir
 > dokümanıydı (Antigravity 2.0'a); eklenti tekrar bu depoda geliştiriliyor.
-> İçerik aynen geçerli — asıl değeri zaten devretmek değil, **neyin neden böyle
-> olduğunu ve daha önce neyin ölçüldüğünü** kayda geçirmekti. §12'nin durumu
-> aşağıda işaretli.
+> Asıl değeri zaten devretmek değil, **neyin neden böyle olduğunu ve daha önce
+> neyin ölçüldüğünü** kayda geçirmekti. §12'nin durumu aşağıda işaretli.
+>
+> **2026-09-17: hangi bölümler tarihsel.** §1'deki durum tablosu ve §6'nın
+> "sabitler `offscreen.ts`'in başında" cümlesi yazıldıkları güne aitti ve
+> düzeltildi; §9'daki ölçümler o günün ölçümleridir (yeniden ölçülenler
+> `README.md` ve `docs/firmware-and-devices.md`'de). §5'teki mesaj tablosu
+> koddan yeniden okundu. Bunların dışındaki gerekçeler geçerli.
 >
 > Ayrıca: §1'deki "satılacak" ifadesi geçersiz. Uygulama **açık kaynak**;
 > lisans, aktivasyon ve koltuk limiti silindi (bkz. kök `README.md`).
@@ -31,8 +36,8 @@ dolayısıyla ürünün farkı kolaylık ve kalite olmak zorunda.
 | Parça | Nerede | Durum |
 |---|---|---|
 | Kontrol paneli | Next.js 16, Vercel, `ambiflux-revor.vercel.app` | canlı |
-| **Motor** | **Chrome eklentisi, `extension/`** | **derleniyor, ölçülmedi** |
-| Firmware | ESP32-S3 (Arduino Nano ESP32) | **henüz yazılmadı** |
+| **Motor** | **Chrome eklentisi, `extension/`** — ve aynı motor `lib/page-host.ts` ile sayfanın içinde | **çalışıyor, ölçüldü (§9)**; ilk yazıldığında "derleniyor, ölçülmedi" idi |
+| Firmware | ESP32-S3 (Arduino Nano ESP32), `firmware/` | **yazıldı**: üç PlatformIO ortamı derleniyor, 68 host testi geçiyor (`docs/firmware-and-devices.md`); ilk yazıldığında "henüz yazılmadı" idi |
 
 Firmware yok, o yüzden eklenti bugün **loopback** modunda çalışır: kareler
 çerçevelenir, referans ayrıştırıcıyla doğrulanır, sayılır, atılır. Bu bilinçli
@@ -188,16 +193,26 @@ Tüm mesajlar `lib/extension/messages.ts`'te tek bir ayrık birleşim. Dosya
 `extension/` altında değil `lib/` altında, çünkü panel de aynı tipleri derliyor:
 iki tarafın karşı derlediği tek sözleşme.
 
+Tablo `lib/extension/messages.ts`'ten okunmuştur (2026-09-17); yeni bir mesaj
+eklerken buraya da satır ekle.
+
 | Mesaj | Yön | Ne |
 |---|---|---|
 | `ambiflux/ping` → `pong` | panel/popup → sw | eklenti var mı, sürüm, motor durumu |
 | `ambiflux/prepare` | popup → sw | **offscreen dokümanı ŞİMDİ kur** (§9) |
-| `ambiflux/start` | popup → sw → offscreen | `streamId` ile yakalamayı başlat |
-| `ambiflux/stop` | → sw → offscreen | durdur (doküman yoksa yaratma) |
+| `ambiflux/start` | panel/popup → sw → offscreen | yakalamayı başlat. **Yük taşımaz**: ekran seçici offscreen dokümanın kendisinde açılır, çünkü popup'ta alınan bir `streamId` orada kullanılamıyor (`offscreen.ts` `openCapture`) |
+| `ambiflux/selftest` | panel/popup → sw → offscreen | ekransız sınama: üretilmiş bir resimle tüm hat |
+| `ambiflux/stop` | panel/popup → sw → offscreen | havuzdaki her şeyi durdur (doküman yoksa yaratma) |
 | `ambiflux/serial` | popup → sw → offscreen | port eşleşti, `getPorts()` ile devral |
-| `ambiflux/status` → `status-reply` | panel → sw | durum + son istatistikler |
-| `ambiflux/config` → `config-reply` | panel → sw → offscreen | yapılandırmayı değiştir |
-| `ambiflux/config-get` → `config-reply` | → sw | yürürlükteki yapılandırma |
+| `ambiflux/status` → `status-reply` | panel → sw | durum + son istatistikler + havuz (`pool`) |
+| `ambiflux/pattern` | panel → sw → offscreen | sınama deseni (kalibrasyon sihirbazları); `spec`, `instance?` |
+| `ambiflux/effect` | panel → sw → offscreen | efekt katmanı; `spec`, `instance?` |
+| `ambiflux/audio` | panel → sw → offscreen | ses görselleştirici; `spec`, `input?` (mikrofon / ekran sesi), `instance?` |
+| `ambiflux/color` | panel → sw → offscreen | düz renk katmanı; `color`, `durationMs?` (flaş), `instance?` |
+| `ambiflux/clear-layer` | panel → sw → offscreen | bir öncelik katmanını kaldır; `priority`, `instance?` |
+| `ambiflux/control` → `control-reply` | panel → sw → offscreen | karta `AxC` kontrol isteği (LED sayısı, ağ, sorgu); `control`, `instance?` |
+| `ambiflux/config` → `config-reply` | panel → sw → offscreen | yapılandırmayı değiştir; `instance?` |
+| `ambiflux/config-get` → `config-reply` | → sw | yürürlükteki yapılandırma; `instance?` |
 | `ambiflux/instances` → `instances-reply` | panel → sw → offscreen | şerit listesini değiştir |
 | `ambiflux/instances-get` → `instances-reply` | panel/offscreen → sw | saklanan şeritler |
 | `ambiflux/schedule` → `schedule-reply` | panel → sw → offscreen | zaman kurallarını değiştir |
@@ -236,12 +251,15 @@ sessizce hiçbir şey yapmayan bir kural en kötü türden.
 
 ## 6. Hat — aşama aşama
 
-`extension/src/offscreen.ts`, sabitler dosyanın başında:
+Hat artık `lib/engine/runtime.ts`'te (offscreen doküman ve sayfa host'u aynı
+motoru paylaşsın diye oradan taşındı); sabitler o dosyanın başında:
 
 ```
-GRID_W=128  GRID_H=72  OUTPUT_HZ=120  TICK_MS=4  REPORT_MS=1000
-BAUD_RATE=921600  RECONNECT_MS=3000
+OUTPUT_HZ=120  TICK_MS=4  REPORT_MS=1000  BAUD_RATE=921600  RECONNECT_MS=3000
 ```
+
+Izgara boyutu sabit değil, yapılandırma: `capture.gridWidth` × `capture.gridHeight`
+(varsayılan 128×72, `lib/engine/config.ts`).
 
 **Kare geldiğinde** (`pump` → `processFrame`):
 

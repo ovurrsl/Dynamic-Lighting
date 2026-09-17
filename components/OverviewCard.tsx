@@ -116,7 +116,14 @@ export function OverviewCard () {
                 <Surface className="rounded-xl p-3 text-sm" variant="secondary">{notice}</Surface>
               )}
 
-              {stats !== null && (
+              {/*
+                Only while running. The engine keeps the last run's counters
+                after a stop, and this card's own description says it shows
+                what the engine is doing NOW - so an idle strip under a line
+                reading "output 106.9 fps" was contradicting itself. The
+                Device page is where the last run's numbers belong.
+              */}
+              {running && stats !== null && (
                 <Surface className="grid grid-cols-2 gap-x-6 gap-y-1 rounded-xl p-3 font-mono text-xs sm:grid-cols-4" variant="secondary">
                   {/*
                     Only while something is actually being captured.

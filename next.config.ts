@@ -20,11 +20,44 @@ const nextConfig: NextConfig = {
   // explicitly because turning it off is a common shortcut.
   typescript: { ignoreBuildErrors: false },
 
-  // Liveness must not be answered from a CDN cache, or it stops meaning
-  // anything about the deployment behind it.
   async headers () {
     return [
       {
+        /*
+         * The response headers a browser uses to refuse things on the page's
+         * behalf. A probe of the built app before release found none of them
+         * set, which is the default and is wrong for a page that talks to a
+         * screen capture and a serial port.
+         *
+         * What is deliberately NOT here:
+         *
+         * - A script Content-Security-Policy. The theme script in
+         *   app/layout.tsx is inline by necessity (it has to run before first
+         *   paint) and Next adds inline scripts of its own, so a policy that
+         *   means anything needs a per-request nonce threaded through the
+         *   layout. That is the right next step, and it is a change to how the
+         *   page renders, not a header.
+         * - A Permissions-Policy entry for display-capture, serial, usb, hid,
+         *   bluetooth or microphone. The page host uses every one of them.
+         * - Strict-Transport-Security. It is the host's decision: Vercel sends
+         *   it for every *.vercel.app deployment already, and a self-hosted
+         *   copy that is not yet on HTTPS would be locked out of itself.
+         */
+        source: '/(.*)',
+        headers: [
+          // The panel is never framed, and a page that holds a screen capture
+          // must not be framed by someone else.
+          { key: 'content-security-policy', value: "frame-ancestors 'none'" },
+          { key: 'x-frame-options', value: 'DENY' },
+          { key: 'x-content-type-options', value: 'nosniff' },
+          { key: 'referrer-policy', value: 'strict-origin-when-cross-origin' },
+          // The features this page has no use for, refused up front.
+          { key: 'permissions-policy', value: 'camera=(), geolocation=(), payment=()' }
+        ]
+      },
+      {
+        // Liveness must not be answered from a CDN cache, or it stops meaning
+        // anything about the deployment behind it.
         source: '/healthz',
         headers: [{ key: 'cache-control', value: 'no-store, max-age=0' }]
       }

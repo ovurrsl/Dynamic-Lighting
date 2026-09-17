@@ -362,6 +362,15 @@ function Shell () {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex flex-wrap items-end justify-between gap-4 border-b border-default/30 p-4 lg:p-6">
+          {/*
+            The page's h1 is the product name in the aside - which is
+            display:none on a phone, and display:none removes it from the
+            accessibility tree too, so a phone had a page with no h1 at all.
+            This one is read by a screen reader and seen by nobody, and it is
+            itself removed at lg where the aside's takes over: one h1 at every
+            width, and the h2 section title below keeps its place under it.
+          */}
+          <h1 className="sr-only lg:hidden">AmbiFlux</h1>
           <div className="flex min-w-0 items-center gap-3">
             <Button
               className="lg:hidden"

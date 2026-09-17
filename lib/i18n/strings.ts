@@ -696,7 +696,7 @@ const en = {
   'device.stat.loopback': 'accepted / rejected',
   'device.stat.source': 'source',
   'device.stat.error': 'error',
-  'device.note': 'Click the extension icon in the toolbar to start capture: the browser requires the screen to be chosen from the extension’s own window, and the choice lasts for the whole Chrome session. The serial port is paired from the same place; with no port the engine runs device-free and counts frames. DRM-protected content (Netflix, Prime, Disney+) captures as black, and that is a browser limit.',
+  'device.note': 'Start capture from the Overview page or from the extension’s icon; either way the browser opens the screen picker from the extension’s own window, and the choice lasts for the whole Chrome session. The serial port is paired from the extension’s icon, because Web Serial grants a port to whichever origin asks for it; with no port the engine runs device-free and counts frames. DRM-protected content (Netflix, Prime, Disney+) captures as black, and that is a browser limit.',
 
   'guide.title': 'Guide',
   'guide.description': 'Installing the extension, wiring the strip, and what to do when nothing lights up.',
@@ -718,7 +718,7 @@ const en = {
   'guide.step.pair.note': 'With no port paired the engine still runs in loopback: frames are produced, parsed by the same reference parser the firmware uses, and counted. That is how you can measure the pipeline before the board arrives.',
 
   'guide.step.capture.title': '4 · Start capture',
-  'guide.step.capture.body': 'Press Start capture in the popup and choose the screen. The choice lasts for the whole Chrome session; it cannot be made permanent, which is a browser limit, not a missing feature.',
+  'guide.step.capture.body': 'Press Start capture on the Overview page (the popup has the same button) and choose the screen. The choice lasts for the whole Chrome session; it cannot be made permanent, which is a browser limit, not a missing feature.',
 
   'guide.step.layout.title': '5 · Describe your layout',
   'guide.step.layout.body': 'In Monitor layout, enter how many LEDs sit on each edge, which corner the strip starts at and which way it runs. Press Show screen and every LED is filled with the colour the engine reads at that spot - if the picture does not match your desk, the layout is wrong, not the engine.',
@@ -738,7 +738,7 @@ const en = {
   'guide.trouble.mirror.q': 'The picture is mirrored or rotated',
   'guide.trouble.mirror.a': 'The starting corner or direction is wrong. Turn the clockwise switch, or move the starting corner one step.',
   'guide.trouble.stop.q': 'Capture stops when the screen resolution or refresh rate changes',
-  'guide.trouble.stop.a': 'The browser ends the stream and it has to be restarted from the popup. Changing resolution, refresh rate, HDR or letting the monitor sleep all do it.',
+  'guide.trouble.stop.a': 'The browser ends the stream and it has to be restarted with Start capture, on the Overview page or in the popup. Changing resolution, refresh rate, HDR or letting the monitor sleep all do it.',
 
   'guide.limits.title': 'Two limits that cannot be engineered away',
   'guide.limits.session': 'The screen is chosen once per Chrome session. The stream identifier cannot be persisted.',
@@ -1433,7 +1433,7 @@ const tr: Messages = {
   'device.stat.loopback': 'kabul / ret',
   'device.stat.source': 'kaynak',
   'device.stat.error': 'hata',
-  'device.note': 'Yakalamayı başlatmak için araç çubuğunda eklenti simgesine tıkla: ekran seçimi tarayıcı gereği eklentinin kendi penceresinden yapılır ve Chrome oturumu boyunca geçerlidir. Seri port aynı yerden eşleştirilir; port yoksa motor cihazsız modda çalışır ve kareleri sayar. DRM korumalı içerik (Netflix, Prime, Disney+) yakalamada siyah gelir; bu bir tarayıcı sınırı.',
+  'device.note': 'Yakalamayı Genel bakış sayfasından ya da eklenti simgesinden başlat; iki durumda da tarayıcı ekran seçiciyi eklentinin kendi penceresinden açar ve seçim Chrome oturumu boyunca geçerlidir. Seri port eklenti simgesinden eşleştirilir, çünkü Web Serial portu hangi origin istediyse ona verir; port yoksa motor cihazsız modda çalışır ve kareleri sayar. DRM korumalı içerik (Netflix, Prime, Disney+) yakalamada siyah gelir; bu bir tarayıcı sınırı.',
 
   'guide.title': 'Kullanım kılavuzu',
   'guide.description': 'Eklentiyi kurmak, şeridi bağlamak, ve hiçbir şey yanmadığında ne yapılacağı.',
@@ -1455,7 +1455,7 @@ const tr: Messages = {
   'guide.step.pair.note': 'Port eşleşmemişse motor cihazsız (loopback) çalışır: kareler üretilir, firmware’in kullanacağı referans ayrıştırıcıdan geçirilir ve sayılır. Hattı kart gelmeden böyle ölçebilirsin.',
 
   'guide.step.capture.title': '4 · Yakalamayı başlat',
-  'guide.step.capture.body': 'Popup’ta Yakalamayı başlat’a bas ve ekranı seç. Seçim Chrome oturumu boyunca geçerli; kalıcı yapılamıyor — bu bir tarayıcı sınırı, eksik bir özellik değil.',
+  'guide.step.capture.body': 'Genel bakış sayfasında Yakalamayı başlat’a bas (aynı düğme popup’ta da var) ve ekranı seç. Seçim Chrome oturumu boyunca geçerli; kalıcı yapılamıyor — bu bir tarayıcı sınırı, eksik bir özellik değil.',
 
   'guide.step.layout.title': '5 · Yerleşimini tanımla',
   'guide.step.layout.body': 'Monitör yerleşimi kartında her kenarda kaç LED olduğunu, şeridin hangi köşeden başladığını ve hangi yöne gittiğini gir. Ekranı göster’e bastığında her LED motorun o noktadan okuduğu renkle doluyor — resim masandakiyle eşleşmiyorsa yanlış olan motor değil yerleşim.',
@@ -1475,7 +1475,7 @@ const tr: Messages = {
   'guide.trouble.mirror.q': 'Resim ayna gibi ya da dönmüş',
   'guide.trouble.mirror.a': 'Başlangıç köşesi ya da yön yanlış. Saat yönü anahtarını çevir ya da başlangıç köşesini bir adım oynat.',
   'guide.trouble.stop.q': 'Çözünürlük ya da yenileme hızı değişince yakalama duruyor',
-  'guide.trouble.stop.a': 'Tarayıcı akışı bitiriyor ve popup’tan yeniden başlatılması gerekiyor. Çözünürlük, yenileme hızı, HDR ve monitörün uyuması bunu yapıyor.',
+  'guide.trouble.stop.a': 'Tarayıcı akışı bitiriyor; Genel bakış sayfasından ya da popup’tan Yakalamayı başlat ile yeniden başlatılması gerekiyor. Çözünürlük, yenileme hızı, HDR ve monitörün uyuması bunu yapıyor.',
 
   'guide.limits.title': 'Mühendislikle çözülemeyen iki sınır',
   'guide.limits.session': 'Ekran Chrome oturumu başına bir kez seçiliyor. Akış kimliği kalıcı yapılamıyor.',

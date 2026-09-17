@@ -33,6 +33,7 @@ import {
 } from '#lib/engine/config'
 import { CORNERS, DEPTH_MAX, EDGE_GAP_MAX, LAYOUT_DEFAULTS, NO_KEYSTONE, OVERLAP_MAX, type Corner, type Keystone } from '#lib/engine/layout'
 import { COLOR_ORDERS, type ColorOrder } from '#lib/engine/order'
+import { formatOverrideList, formatRangeList, parseOverrideList, parseRangeList } from '#lib/engine/ranges'
 import { createLiveSampler, PREVIEW_HZ, type LiveFrame, type LiveSampler } from '#lib/live-sampler'
 import { CORNER_ORDER, frameAspect, isDefaultKeystone, wireOrderColor } from '#lib/preview'
 import type { LedRect } from '#lib/engine/types'
@@ -178,6 +179,24 @@ export function LayoutCard ({
   const [saving, setSaving] = useState(false)
   const [advanced, setAdvanced] = useState(false)
   const [editingCorners, setEditingCorners] = useState(false)
+  /**
+   * The two typed lists, as text while they are being typed.
+   *
+   * Null means "show the draft's value"; a string is what the user has typed
+   * so far, kept even when it does not parse yet - "0-" is on its way to
+   * "0-3" and must not be corrected under the cursor. The problem beside it
+   * says what is still wrong.
+   */
+  const [blacklistText, setBlacklistText] = useState<string | null>(null)
+  const [blacklistProblem, setBlacklistProblem] = useState<string | null>(null)
+  const [overridesText, setOverridesText] = useState<string | null>(null)
+  const [overridesProblem, setOverridesProblem] = useState<string | null>(null)
+  const resetTypedLists = (): void => {
+    setBlacklistText(null)
+    setBlacklistProblem(null)
+    setOverridesText(null)
+    setOverridesProblem(null)
+  }
   const [screen, setScreen] = useState<MediaStream | null>(null)
   /**
    * The live sample: one colour per LED, taken from the captured screen by the
@@ -209,6 +228,10 @@ export function LayoutCard ({
     seeded.current = activeId
     setNotice(null)
     setDraft(active.config)
+    setBlacklistText(null)
+    setBlacklistProblem(null)
+    setOverridesText(null)
+    setOverridesProblem(null)
     report.current?.(active.config)
   }, [instances, activeId])
 
@@ -226,6 +249,10 @@ export function LayoutCard ({
     lastLoadedAt.current = loaded.at
     setNotice(null)
     setDraft(loaded.config)
+    setBlacklistText(null)
+    setBlacklistProblem(null)
+    setOverridesText(null)
+    setOverridesProblem(null)
   }, [loaded])
 
   const lastGood = useRef<Resolved | null>(null)
@@ -698,6 +725,20 @@ export function LayoutCard ({
                   </ListBox>
                 </Select.Popover>
               </Select>
+              {/*
+                The frame the wall leaves uncovered on each side, as the
+                generator has always accepted it. It was parsed, validated and
+                round-trip tested with nothing here to set it.
+              */}
+              {(['top', 'right', 'bottom', 'left'] as const).map((side) => (
+                <Fraction
+                  key={side}
+                  label={t(`layout.matrixGap.${side}`)}
+                  maxValue={0.45}
+                  value={layout.gap?.[side] ?? 0}
+                  onChange={(value) => patchLayout({ gap: { ...(layout.gap ?? {}), [side]: value } })}
+                />
+              ))}
             </div>
             )}
 
@@ -726,6 +767,64 @@ export function LayoutCard ({
           </Select.Popover>
         </Select>
         <p className="text-xs text-muted">{t('layout.orderNote')}</p>
+
+        {/*
+          Two lists the parser has accepted since the layout work - per-LED
+          channel-order overrides and the blacklist - typed as text, because
+          they are lists a person types rather than sliders they drag. The
+          grammar and its error messages are lib/engine/ranges.ts.
+        */}
+        <TextField
+          className="w-full max-w-md"
+          value={overridesText ?? formatOverrideList(draft.colorOrder.overrides)}
+          variant="secondary"
+          onChange={(value) => {
+            setNotice(null)
+            setOverridesText(value)
+            try {
+              const overrides = parseOverrideList(value)
+              setOverridesProblem(null)
+              setDraft((current) => ({
+                ...current,
+                colorOrder: {
+                  ...current.colorOrder,
+                  ...(Object.keys(overrides).length === 0 ? { overrides: undefined } : { overrides })
+                }
+              }))
+            } catch (error) {
+              setOverridesProblem(error instanceof Error ? error.message : String(error))
+            }
+          }}
+        >
+          <Label>{t('layout.overrides')}</Label>
+          <Input placeholder="5:grb, 7:brg" />
+        </TextField>
+        <p className={`text-xs ${overridesProblem !== null ? 'text-warning' : 'text-muted'}`}>
+          {overridesProblem ?? t('layout.overrides.note')}
+        </p>
+
+        <TextField
+          className="w-full max-w-md"
+          value={blacklistText ?? formatRangeList(draft.blacklist)}
+          variant="secondary"
+          onChange={(value) => {
+            setNotice(null)
+            setBlacklistText(value)
+            try {
+              const blacklist = parseRangeList(value)
+              setBlacklistProblem(null)
+              setDraft((current) => ({ ...current, blacklist }))
+            } catch (error) {
+              setBlacklistProblem(error instanceof Error ? error.message : String(error))
+            }
+          }}
+        >
+          <Label>{t('layout.blacklist')}</Label>
+          <Input placeholder="0-3, 10, 20-24" />
+        </TextField>
+        <p className={`text-xs ${blacklistProblem !== null ? 'text-warning' : 'text-muted'}`}>
+          {blacklistProblem ?? t('layout.blacklist.note')}
+        </p>
 
         {/*
           How the device is REACHED, above what is put on the wire, because the
@@ -861,6 +960,66 @@ export function LayoutCard ({
           </Select.Popover>
         </Select>
         <p className="text-xs text-muted">{t(`output.note.${draft.output.format}`)}</p>
+
+        {/*
+          HyperHDR's calibrated frame: Awa's four white-balance bytes, which
+          turn the magic into "AwA". Parsed and refused on any other format
+          since the encoder work, and until now settable from nowhere. Off by
+          default and the note says why: a stock Adalight sketch does not read
+          the calibrated frame at all.
+        */}
+        {draft.output.format === 'Awa' && (
+          <Surface className="flex flex-col gap-3 rounded-xl p-3" variant="secondary">
+            <Switch
+              isSelected={draft.output.calibration !== undefined}
+              onChange={(on) => {
+                setNotice(null)
+                setDraft((current) => ({
+                  ...current,
+                  output: {
+                    ...current.output,
+                    calibration: on ? { limit: 255, red: 255, green: 255, blue: 255 } : undefined
+                  }
+                }))
+              }}
+            >
+              <Switch.Content>
+                <Switch.Control><Switch.Thumb /></Switch.Control>
+                {t('output.calibration')}
+              </Switch.Content>
+            </Switch>
+            <p className="text-xs text-muted">{t('output.calibration.note')}</p>
+            {draft.output.calibration !== undefined && (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {(['limit', 'red', 'green', 'blue'] as const).map((channel) => (
+                  <NumberField
+                    key={channel}
+                    maxValue={255}
+                    minValue={0}
+                    value={draft.output.calibration?.[channel] ?? 255}
+                    variant="secondary"
+                    onChange={(value) => {
+                      if (!Number.isFinite(value)) return
+                      setDraft((current) => current.output.calibration === undefined
+                        ? current
+                        : {
+                            ...current,
+                            output: { ...current.output, calibration: { ...current.output.calibration, [channel]: value } }
+                          })
+                    }}
+                  >
+                    <Label>{t(`output.calibration.${channel}`)}</Label>
+                    <NumberField.Group>
+                      <NumberField.DecrementButton />
+                      <NumberField.Input className="w-14" />
+                      <NumberField.IncrementButton />
+                    </NumberField.Group>
+                  </NumberField>
+                ))}
+              </div>
+            )}
+          </Surface>
+        )}
 
         {/*
           Only on the two 8-bit formats, because that is the only place it does

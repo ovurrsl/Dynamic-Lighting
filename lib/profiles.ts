@@ -3,6 +3,7 @@ import {
   serialiseEngineConfig,
   type EngineConfig
 } from '#lib/engine/config'
+import { TEXT } from '#lib/engine/text'
 
 /**
  * Named rigs.
@@ -98,9 +99,9 @@ export function loadProfiles (storage: StorageLike | null = defaultStorage()): L
   try {
     parsed = JSON.parse(raw)
   } catch (error) {
-    return { profiles: [], problem: `kayıtlı profiller okunamadı: ${message(error)}` }
+    return { profiles: [], problem: TEXT.profilesUnreadable(message(error)) }
   }
-  if (!Array.isArray(parsed)) return { profiles: [], problem: 'kayıtlı profiller bir liste değil' }
+  if (!Array.isArray(parsed)) return { profiles: [], problem: TEXT.profilesNotList }
 
   const profiles: Profile[] = []
   let dropped = 0
@@ -120,12 +121,12 @@ export function loadProfiles (storage: StorageLike | null = defaultStorage()): L
   }
   return dropped === 0
     ? { profiles }
-    : { profiles, problem: `${dropped} profil okunamadı ve atlandı` }
+    : { profiles, problem: TEXT.profilesDropped(dropped) }
 }
 
 /** Returns the reason it could not be stored, or null when it was. */
 export function storeProfiles (profiles: readonly Profile[], storage: StorageLike | null = defaultStorage()): string | null {
-  if (storage === null) return 'tarayıcı yerel depolamaya izin vermiyor'
+  if (storage === null) return TEXT.storageDenied
   try {
     storage.setItem(PROFILES_STORAGE_KEY, JSON.stringify(profiles.map((profile) => ({
       id: profile.id,
@@ -226,11 +227,11 @@ export function importProfiles (text: string, existing: readonly Profile[] = [])
   try {
     parsed = JSON.parse(text)
   } catch (error) {
-    return { profiles: null, added: 0, problem: `geçerli JSON değil: ${message(error)}` }
+    return { profiles: null, added: 0, problem: TEXT.notJson(message(error)) }
   }
   const doc = parsed as { format?: unknown, profiles?: unknown }
   if (doc?.format !== 'ambiflux/profiles' || !Array.isArray(doc.profiles)) {
-    return { profiles: null, added: 0, problem: 'bu bir AmbiFlux profil dosyası değil' }
+    return { profiles: null, added: 0, problem: TEXT.notProfileFile }
   }
 
   const incoming: Profile[] = []
@@ -256,11 +257,11 @@ export function importProfiles (text: string, existing: readonly Profile[] = [])
   }
 
   if (incoming.length === 0) {
-    return { profiles: null, added: 0, problem: 'dosyada okunabilir profil yok' }
+    return { profiles: null, added: 0, problem: TEXT.noReadableProfiles }
   }
   return {
     profiles: mergeProfiles(existing, incoming),
     added: incoming.length,
-    ...(dropped === 0 ? {} : { problem: `${dropped} profil okunamadı ve atlandı.` })
+    ...(dropped === 0 ? {} : { problem: TEXT.profilesDropped(dropped) })
   }
 }

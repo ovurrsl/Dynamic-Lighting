@@ -1,3 +1,4 @@
+import { TEXT } from '#lib/engine/text'
 /**
  * Video input devices: capture cards, and the webcams that look just like them.
  *
@@ -103,7 +104,7 @@ export async function listWithPermission (options: DeviceOptions = {}): Promise<
     }
   } catch (error) {
     const name = error instanceof Error ? error.name : ''
-    if (name === 'NotAllowedError') throw new Error('Kamera izni verilmedi.')
+    if (name === 'NotAllowedError') throw new Error(TEXT.cameraDenied)
     // NotFoundError means there is genuinely nothing to grant - list anyway, so
     // the panel can say "no devices" rather than "permission failed".
     if (name !== 'NotFoundError') throw new Error(describe(error))

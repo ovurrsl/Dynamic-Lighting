@@ -1,5 +1,6 @@
 import { deviceConstraints, listVideoDevices, resolveDevice } from '#lib/engine/devices'
 import type { EngineConfig } from '#lib/engine/config'
+import { TEXT } from '#lib/engine/text'
 
 /**
  * Opens the stream the configuration asks for: the screen, or a video input.
@@ -24,14 +25,14 @@ export async function openConfiguredStream (
     const device = resolveDevice(devices, config.capture.deviceId)
     if (device === null) {
       throw new Error(devices.length === 0
-        ? 'video girişi bulunamadı'
-        : 'seçilen video girişi artık yok; Yakalama sayfasından yeniden seç')
+        ? TEXT.noVideoInput
+        : TEXT.videoInputGone)
     }
     try {
       return await media.getUserMedia(deviceConstraints(device.deviceId, config.capture.fps)) as MediaStream
     } catch (error) {
       const name = error instanceof Error ? error.name : ''
-      throw new Error(name === 'NotAllowedError' ? 'Kamera izni verilmedi.' : describe(error))
+      throw new Error(name === 'NotAllowedError' ? TEXT.cameraDenied : describe(error))
     }
   }
   try {
@@ -44,7 +45,7 @@ export async function openConfiguredStream (
   } catch (error) {
     // Cancelling the picker is a decision, not a failure.
     const name = error instanceof Error ? error.name : ''
-    throw new Error(name === 'NotAllowedError' ? 'Ekran seçilmedi.' : describe(error))
+    throw new Error(name === 'NotAllowedError' ? TEXT.screenNotPicked : describe(error))
   }
 }
 

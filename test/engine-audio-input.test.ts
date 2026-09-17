@@ -55,7 +55,7 @@ test('a refused permission gets its own sentence', async () => {
   const denied = Object.assign(new Error('nope'), { name: 'NotAllowedError' })
   await assert.rejects(
     () => openMicrophone({ context: () => fakeContext(), getUserMedia: async () => { throw denied } }),
-    /Mikrofon izni verilmedi/
+    /microphone permission was refused/
   )
 })
 
@@ -64,7 +64,7 @@ test('a display capture with no audio track says so', async () => {
   // sitting at zero with no explanation is the worst possible outcome.
   await assert.rejects(
     () => openDisplayAudio({ context: () => fakeContext(), getDisplayMedia: async () => stream(0) }),
-    /sekme\/sistem sesi paylaşmıyor/
+    /does not share tab or system audio/
   )
 })
 

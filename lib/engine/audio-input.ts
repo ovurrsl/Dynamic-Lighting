@@ -1,3 +1,4 @@
+import { TEXT } from '#lib/engine/text'
 /**
  * Getting sound into the engine.
  *
@@ -114,8 +115,8 @@ async function build (
     // a visualiser that sits at zero with no explanation.
     ;(stream as StreamLike).getTracks?.().forEach((t) => { t.stop() })
     throw new Error(kind === 'display'
-      ? 'bu tarayıcı sekme/sistem sesi paylaşmıyor'
-      : 'ses izi alınamadı')
+      ? TEXT.noDisplayAudio
+      : TEXT.noAudioTrack)
   }
 
   let stopped = false
@@ -210,7 +211,7 @@ export async function openMicrophone (options: AudioInputOptions = {}): Promise<
     })
   } catch (error) {
     const name = error instanceof Error ? error.name : ''
-    throw new Error(name === 'NotAllowedError' ? 'Mikrofon izni verilmedi.' : describe(error))
+    throw new Error(name === 'NotAllowedError' ? TEXT.microphoneDenied : describe(error))
   }
   return await build('microphone', stream, options)
 }
@@ -226,7 +227,7 @@ export async function openDisplayAudio (options: AudioInputOptions = {}): Promis
     stream = await ask({ video: true, audio: true })
   } catch (error) {
     const name = error instanceof Error ? error.name : ''
-    throw new Error(name === 'NotAllowedError' ? 'Ses kaynağı seçilmedi.' : describe(error))
+    throw new Error(name === 'NotAllowedError' ? TEXT.audioNotPicked : describe(error))
   }
   return await build('display', stream, options)
 }

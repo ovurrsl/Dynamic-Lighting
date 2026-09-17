@@ -41,6 +41,7 @@ import { createArrivalMeter, createValueMeter } from '#lib/engine/stats'
 import { NO_BORDER, allocLedColors, type Border, type LedColors, type LinearGrid } from '#lib/engine/types'
 import { wledUrl } from '#lib/engine/wled'
 import type { ControlRequest, EngineState, EngineStats, LinkMode } from '#lib/extension/messages'
+import { TEXT } from '#lib/engine/text'
 
 /**
  * The engine, with no host in it.
@@ -550,7 +551,7 @@ export function createEngine (host: EngineHost): Engine {
       await closePort()
       const address = output.host
       if (address === undefined || address.trim() === '') {
-        lastError = 'ağ çıkışı için adres girilmedi'
+        lastError = TEXT.noNetworkAddress
         useLoopback()
         return
       }
@@ -565,7 +566,7 @@ export function createEngine (host: EngineHost): Engine {
         // board only through wss:// (a TLS bridge the device trusts) or not at
         // all; the extension's document has no such rule.
         if (isMixedContent(url)) {
-          lastError = `${output.transport}: HTTPS sayfadan ws:// açılamaz (karışık içerik) — yerel ağdaki karta bu sayfadan yalnız wss:// ile (ağındaki, cihazın arkasında durduğu bir TLS köprüsü) ulaşılır; ya paneli localhost'ta çalıştır (ws:// serbest), ya da eklenti host'unu kullan`
+          lastError = TEXT.mixedContent(output.transport)
           useLoopback()
           return
         }
@@ -697,7 +698,7 @@ export function createEngine (host: EngineHost): Engine {
    */
   async function sendControl (request: ControlRequest): Promise<void> {
     const send = sink.sendBytes
-    if (send === undefined) throw new Error(`${linkMode}: bu bağlantının kontrol kanalı yok`)
+    if (send === undefined) throw new Error(TEXT.noControlChannel(linkMode))
     const frame = request.kind === 'wifi'
       ? wifiControl({ ssid: request.ssid, passphrase: request.passphrase, enabled: request.enabled })
       : queryControl()
@@ -1061,7 +1062,7 @@ export function createEngine (host: EngineHost): Engine {
       // A source that has gone - a microphone unplugged, a shared tab closed -
       // drops its LAYER rather than the whole engine. If a capture is running
       // underneath, it comes back rather than the strip going dark.
-      lastError = 'ses kaynağı kayboldu'
+      lastError = TEXT.audioSourceLost
       stopAudio()
       return
     }
@@ -1563,7 +1564,7 @@ export function createEngine (host: EngineHost): Engine {
       if (open === undefined) {
         // Reported, not imposed: an effect that is showing keeps showing.
         state = muxer.sources().length > 0 ? 'running' : 'error'
-        lastError = 'bu ortamda kendi kendine test yok'
+        lastError = TEXT.noSelfTest
         report()
         return
       }

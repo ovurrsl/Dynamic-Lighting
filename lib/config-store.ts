@@ -6,6 +6,7 @@ import {
 } from '#lib/engine/config'
 import { defaultInstances, parseInstances, type Instance } from '#lib/engine/instances'
 import { parseRules, type ScheduleRule } from '#lib/engine/schedule'
+import { TEXT } from '#lib/engine/text'
 
 /**
  * The panel's copy of the engine configuration.
@@ -75,7 +76,7 @@ export function loadStoredConfig (storage: StorageLike | null = defaultStorage()
 
 /** Returns the reason it could not be stored, or null when it was. */
 export function storeConfig (config: EngineConfig, storage: StorageLike | null = defaultStorage()): string | null {
-  if (storage === null) return 'tarayıcı yerel depolamaya izin vermiyor'
+  if (storage === null) return TEXT.storageDenied
   try {
     storage.setItem(CONFIG_STORAGE_KEY, serialiseEngineConfig(config))
     return null
@@ -204,7 +205,7 @@ export function storeInstances (
   instances: readonly Instance[],
   storage: StorageLike | null = defaultStorage()
 ): string | null {
-  if (storage === null) return 'tarayıcı yerel depolamaya izin vermiyor'
+  if (storage === null) return TEXT.storageDenied
   try {
     storage.setItem(INSTANCES_STORAGE_KEY, JSON.stringify(instances))
     return null

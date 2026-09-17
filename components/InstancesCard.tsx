@@ -4,7 +4,7 @@ import { useCallback, useState } from 'react'
 import { Button, Card, Input, Label, Surface, Switch, TextField } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
-import { useTranslate } from '#components/Preferences'
+import { useEngineText, useTranslate } from '#components/Preferences'
 import { configLedCount } from '#lib/engine/config'
 import {
   MAX_INSTANCES,
@@ -31,6 +31,7 @@ import {
  */
 export function InstancesCard () {
   const t = useTranslate()
+  const tx = useEngineText()
   const { instances, activeId, setActiveId, saveInstances, pool, storageProblem } = useEngine()
   const [draft, setDraft] = useState<Instance[] | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -173,7 +174,7 @@ export function InstancesCard () {
                       : t(`device.state.${live.state}` as 'device.state.idle')}
                   </span>
                 )}
-                {live?.error !== undefined && <span className="text-danger">· {live.error}</span>}
+                {live?.error !== undefined && <span className="text-danger">· {tx(live.error)}</span>}
               </div>
             </Surface>
           )

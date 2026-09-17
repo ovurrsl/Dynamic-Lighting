@@ -33,6 +33,7 @@ import type { PoolStats } from '#lib/engine/pool'
 import type { ScheduleRule } from '#lib/engine/schedule'
 import { loadStoredInstances, loadStoredSchedule, storeInstances, storeSchedule } from '#lib/config-store'
 import { createPageEngine, pageHostAvailable, type PageEngine } from '#lib/page-host'
+import { TEXT } from '#lib/engine/text'
 
 /**
  * One connection to the engine, shared by everything that shows it - and now
@@ -603,7 +604,7 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
     if (hostRef.current !== 'page') return await sendControlToExtension(request, activeRef.current)
     try {
       const engine = activeEngine()
-      if (engine === null) return 'şerit bulunamadı'
+      if (engine === null) return TEXT.stripNotFound(activeRef.current)
       await engine.sendControl(request)
       return null
     } catch (error) {
@@ -612,9 +613,9 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
   }, [activeEngine])
 
   const pairSerial = useCallback(async (): Promise<string | null> => {
-    if (hostRef.current !== 'page') return 'eklenti simgesinden eşleştir'
+    if (hostRef.current !== 'page') return TEXT.pairFromExtension
     const serial = (navigator as { serial?: { requestPort: () => Promise<unknown> } }).serial
-    if (serial === undefined) return 'bu tarayıcıda Web Serial yok'
+    if (serial === undefined) return TEXT.noWebSerial
     try {
       await serial.requestPort()
     } catch (error) {

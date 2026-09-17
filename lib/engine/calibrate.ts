@@ -1,4 +1,5 @@
 import { CORNERS, type Corner } from '#lib/engine/layout'
+import { TEXT } from '#lib/engine/text'
 
 /**
  * Working out a rig's layout by walking its strip.
@@ -103,14 +104,14 @@ export function cornerOrder (firstCorner: Corner, clockwise: boolean): Corner[] 
 export function layoutFromCorners (marks: CornerMarks): CalibratedLayout {
   const { indices, firstCorner, clockwise, total } = marks
   if (!Number.isInteger(total) || total < 4) {
-    throw new CalibrationError(`kalibrasyon: şeritte en az 4 LED olmalı, ${String(total)} geldi`)
+    throw new CalibrationError(TEXT.calibrationTooFew(String(total)))
   }
   if (indices.length !== 4) {
-    throw new CalibrationError(`kalibrasyon: dört köşe işaretlenmeli, ${indices.length} işaretlendi`)
+    throw new CalibrationError(TEXT.calibrationFourCorners(indices.length))
   }
   for (const index of indices) {
     if (!Number.isInteger(index) || index < 0 || index >= total) {
-      throw new CalibrationError(`kalibrasyon: köşe indeksi 0..${total - 1} arasında olmalı, ${String(index)} geldi`)
+      throw new CalibrationError(TEXT.calibrationCornerRange(total - 1, String(index)))
     }
   }
 
@@ -122,10 +123,7 @@ export function layoutFromCorners (marks: CornerMarks): CalibratedLayout {
     // The marks do not partition the loop. Pressed out of order, or one was
     // missed - and a layout derived from them would be wrong in a way nobody
     // notices until the strip is on the wall.
-    throw new CalibrationError(
-      `kalibrasyon: köşeler şeridi bölmüyor (${runs.join(' + ')} = ${covered}, ${total} olmalı) — ` +
-      'köşeler ışığın onlara ulaştığı sırayla işaretlenmeli'
-    )
+    throw new CalibrationError(TEXT.calibrationNotPartition(runs.join(' + '), covered, total))
   }
 
   const order = cornerOrder(firstCorner, clockwise)

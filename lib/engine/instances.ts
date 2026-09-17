@@ -1,4 +1,5 @@
 import { DEFAULT_ENGINE_CONFIG, parseEngineConfig, type EngineConfig } from '#lib/engine/config'
+import { TEXT } from '#lib/engine/text'
 
 /**
  * More than one strip at once.
@@ -106,7 +107,7 @@ export interface AddInstanceOptions {
  */
 export function addInstance (list: readonly Instance[], options: AddInstanceOptions = {}): Instance[] {
   if (list.length >= MAX_INSTANCES) {
-    throw new RangeError(`instances: en fazla ${MAX_INSTANCES} şerit sürülebilir`)
+    throw new RangeError(TEXT.tooManyStrips(MAX_INSTANCES))
   }
   const id = nextInstanceId(list)
   const from = list[list.length - 1]
@@ -121,8 +122,8 @@ export function addInstance (list: readonly Instance[], options: AddInstanceOpti
 /** Refuses to remove the last one; see the note at the top of the file. */
 export function removeInstance (list: readonly Instance[], id: string): Instance[] {
   const next = list.filter((instance) => instance.id !== id)
-  if (next.length === list.length) throw new RangeError(`instances: ${id} diye bir şerit yok`)
-  if (next.length === 0) throw new RangeError('instances: son şerit silinemez')
+  if (next.length === list.length) throw new RangeError(TEXT.noSuchStrip(id))
+  if (next.length === 0) throw new RangeError(TEXT.lastStrip)
   return next
 }
 
@@ -138,7 +139,7 @@ export function updateInstance (
     found = true
     return { ...instance, ...change, id: instance.id }
   })
-  if (!found) throw new RangeError(`instances: ${id} diye bir şerit yok`)
+  if (!found) throw new RangeError(TEXT.noSuchStrip(id))
   return next
 }
 
@@ -172,15 +173,15 @@ export class InstanceError extends Error {
  * a missing `enabled` means on.
  */
 export function parseInstances (value: unknown): Instance[] {
-  if (!Array.isArray(value)) throw new InstanceError('instances: bir dizi olmalı')
-  if (value.length === 0) throw new InstanceError('instances: en az bir şerit olmalı')
+  if (!Array.isArray(value)) throw new InstanceError(TEXT.instancesNotList)
+  if (value.length === 0) throw new InstanceError(TEXT.instancesEmpty)
   if (value.length > MAX_INSTANCES) {
-    throw new InstanceError(`instances: en fazla ${MAX_INSTANCES} şerit sürülebilir, ${value.length} geldi`)
+    throw new InstanceError(TEXT.tooManyStrips(MAX_INSTANCES, value.length))
   }
   const seen = new Set<string>()
   return value.map((entry, index) => {
     const instance = parseInstance(entry, index)
-    if (seen.has(instance.id)) throw new InstanceError(`instances: ${instance.id} iki kez geçiyor`)
+    if (seen.has(instance.id)) throw new InstanceError(TEXT.duplicateStripId(instance.id))
     seen.add(instance.id)
     return instance
   })
@@ -188,7 +189,7 @@ export function parseInstances (value: unknown): Instance[] {
 
 export function parseInstance (value: unknown, index = 0): Instance {
   if (typeof value !== 'object' || value === null) {
-    throw new InstanceError(`instances: ${index}. şerit bir nesne olmalı`)
+    throw new InstanceError(TEXT.stripNotObject(index))
   }
   const raw = value as Record<string, unknown>
   const id = typeof raw.id === 'string' && raw.id.trim() !== '' ? raw.id.trim() : `instance-${index + 1}`

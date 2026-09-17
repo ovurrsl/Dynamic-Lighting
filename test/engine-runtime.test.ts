@@ -502,7 +502,7 @@ test('an HTTPS page is told it cannot open ws:// to the board, before the first 
     h.engine.setColor({ r: 1, g: 2, b: 3 })
     await delay(20)
     assert.equal(h.engine.link().mode, 'loopback')
-    assert.match(h.engine.error() ?? '', /karışık içerik/)
+    assert.match(h.engine.error() ?? '', /mixed content/)
     h.engine.stop()
   } finally {
     if (original !== undefined) Object.defineProperty(globalThis, 'location', original)

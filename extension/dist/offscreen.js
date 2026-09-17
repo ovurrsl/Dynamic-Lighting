@@ -2542,6 +2542,60 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   startup: DEFAULT_STARTUP
 });
 
+// lib/engine/text.ts
+var TEXT = Object.freeze({
+  // The engine.
+  noStripEnabled: "no strip is enabled",
+  noNetworkAddress: "no address for the network output",
+  noControlChannel: (link) => `${link}: this link has no control channel`,
+  audioSourceLost: "the audio source went away",
+  mixedContent: (transport) => `${transport}: an HTTPS page may not open ws:// (mixed content) - from this page a board on the LAN is reached only over wss:// (a TLS bridge on your network that the board sits behind); run the panel on localhost, where ws:// is allowed, or use the extension host`,
+  // Frame sources.
+  noVideoInput: "no video input found",
+  videoInputGone: "the chosen video input is no longer there; pick it again on the Capture page",
+  cameraDenied: "camera permission was refused",
+  screenNotPicked: "no screen was picked",
+  noMediaDevices: "this browser has no media devices",
+  noScreenCapture: "this browser cannot capture a screen",
+  noVideoTrack: "the capture gave no video track",
+  no2dContext: "no 2d canvas context",
+  noSelfTest: "this host has no self-test",
+  pairFromExtension: "pair the port from the extension icon",
+  noWebSerial: "this browser has no Web Serial",
+  // Audio.
+  noDisplayAudio: "this browser does not share tab or system audio",
+  noAudioTrack: "no audio track was given",
+  microphoneDenied: "microphone permission was refused",
+  audioNotPicked: "no audio source was picked",
+  // Strips.
+  stripNotFound: (id) => `strip not found: ${id}`,
+  tooManyStrips: (max, got) => got === void 0 ? `instances: at most ${max} strips` : `instances: at most ${max} strips, got ${got}`,
+  noSuchStrip: (id) => `instances: no strip called ${id}`,
+  lastStrip: "instances: the last strip cannot be removed",
+  instancesNotList: "instances: must be a list",
+  instancesEmpty: "instances: at least one strip is needed",
+  duplicateStripId: (id) => `instances: ${id} appears twice`,
+  stripNotObject: (index) => `instances: strip ${index} must be an object`,
+  // Calibration.
+  calibrationTooFew: (total) => `calibration: the strip needs at least 4 LEDs, got ${total}`,
+  calibrationFourCorners: (marked) => `calibration: four corners must be marked, ${marked} were`,
+  calibrationCornerRange: (max, got) => `calibration: a corner index must be 0..${max}, got ${got}`,
+  calibrationNotPartition: (runs, covered, total) => `calibration: the corners do not partition the strip (${runs} = ${covered}, ${total} expected) - mark the corners in the order the light reaches them`,
+  // Storage and profiles.
+  storageDenied: "the browser denies local storage",
+  profilesUnreadable: (reason) => `the saved profiles could not be read: ${reason}`,
+  profilesNotList: "the saved profiles are not a list",
+  profilesDropped: (count) => `${count} profile(s) could not be read and were skipped`,
+  notJson: (reason) => `not valid JSON: ${reason}`,
+  notProfileFile: "this is not an AmbiFlux profile file",
+  noReadableProfiles: "the file has no readable profile",
+  // The extension, as the panel sees it.
+  unexpectedReply: "the extension gave an unexpected reply",
+  configRefused: "the extension did not accept the configuration",
+  boardRefused: "the board did not accept the request",
+  stripsRefused: "the extension did not accept the strip list"
+});
+
 // lib/engine/instances.ts
 var MAX_INSTANCES = 8;
 function defaultInstances() {
@@ -2554,22 +2608,22 @@ var InstanceError = class extends Error {
   }
 };
 function parseInstances(value) {
-  if (!Array.isArray(value)) throw new InstanceError("instances: bir dizi olmal\u0131");
-  if (value.length === 0) throw new InstanceError("instances: en az bir \u015Ferit olmal\u0131");
+  if (!Array.isArray(value)) throw new InstanceError(TEXT.instancesNotList);
+  if (value.length === 0) throw new InstanceError(TEXT.instancesEmpty);
   if (value.length > MAX_INSTANCES) {
-    throw new InstanceError(`instances: en fazla ${MAX_INSTANCES} \u015Ferit s\xFCr\xFClebilir, ${value.length} geldi`);
+    throw new InstanceError(TEXT.tooManyStrips(MAX_INSTANCES, value.length));
   }
   const seen = /* @__PURE__ */ new Set();
   return value.map((entry, index) => {
     const instance = parseInstance(entry, index);
-    if (seen.has(instance.id)) throw new InstanceError(`instances: ${instance.id} iki kez ge\xE7iyor`);
+    if (seen.has(instance.id)) throw new InstanceError(TEXT.duplicateStripId(instance.id));
     seen.add(instance.id);
     return instance;
   });
 }
 function parseInstance(value, index = 0) {
   if (typeof value !== "object" || value === null) {
-    throw new InstanceError(`instances: ${index}. \u015Ferit bir nesne olmal\u0131`);
+    throw new InstanceError(TEXT.stripNotObject(index));
   }
   const raw = value;
   const id = typeof raw.id === "string" && raw.id.trim() !== "" ? raw.id.trim() : `instance-${index + 1}`;
@@ -2919,7 +2973,7 @@ async function build(kind, stream, options) {
     stream.getTracks?.().forEach((t) => {
       t.stop();
     });
-    throw new Error(kind === "display" ? "bu taray\u0131c\u0131 sekme/sistem sesi payla\u015Fm\u0131yor" : "ses izi al\u0131namad\u0131");
+    throw new Error(kind === "display" ? TEXT.noDisplayAudio : TEXT.noAudioTrack);
   }
   let stopped = false;
   for (const track of tracks) track.addEventListener?.("ended", () => {
@@ -3006,7 +3060,7 @@ async function openMicrophone(options = {}) {
     });
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
-    throw new Error(name === "NotAllowedError" ? "Mikrofon izni verilmedi." : describe2(error));
+    throw new Error(name === "NotAllowedError" ? TEXT.microphoneDenied : describe2(error));
   }
   return await build("microphone", stream, options);
 }
@@ -3017,7 +3071,7 @@ async function openDisplayAudio(options = {}) {
     stream = await ask({ video: true, audio: true });
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
-    throw new Error(name === "NotAllowedError" ? "Ses kayna\u011F\u0131 se\xE7ilmedi." : describe2(error));
+    throw new Error(name === "NotAllowedError" ? TEXT.audioNotPicked : describe2(error));
   }
   return await build("display", stream, options);
 }
@@ -4726,14 +4780,14 @@ function createEngine(host) {
       await closePort();
       const address = output.host;
       if (address === void 0 || address.trim() === "") {
-        lastError = "a\u011F \xE7\u0131k\u0131\u015F\u0131 i\xE7in adres girilmedi";
+        lastError = TEXT.noNetworkAddress;
         useLoopback();
         return;
       }
       try {
         const url = output.transport === "wled" ? wledUrl(address) : afxUrl(address);
         if (isMixedContent(url)) {
-          lastError = `${output.transport}: HTTPS sayfadan ws:// a\xE7\u0131lamaz (kar\u0131\u015F\u0131k i\xE7erik) \u2014 yerel a\u011Fdaki karta bu sayfadan yaln\u0131z wss:// ile (a\u011F\u0131ndaki, cihaz\u0131n arkas\u0131nda durdu\u011Fu bir TLS k\xF6pr\xFCs\xFC) ula\u015F\u0131l\u0131r; ya paneli localhost'ta \xE7al\u0131\u015Ft\u0131r (ws:// serbest), ya da eklenti host'unu kullan`;
+          lastError = TEXT.mixedContent(output.transport);
           useLoopback();
           return;
         }
@@ -4827,7 +4881,7 @@ function createEngine(host) {
   }
   async function sendControl(request) {
     const send = sink.sendBytes;
-    if (send === void 0) throw new Error(`${linkMode}: bu ba\u011Flant\u0131n\u0131n kontrol kanal\u0131 yok`);
+    if (send === void 0) throw new Error(TEXT.noControlChannel(linkMode));
     const frame = request.kind === "wifi" ? wifiControl({ ssid: request.ssid, passphrase: request.passphrase, enabled: request.enabled }) : queryControl();
     await send(frame);
   }
@@ -5029,7 +5083,7 @@ function createEngine(host) {
     const input = audio;
     if (v === null || input === null || state !== "running") return;
     if (!input.read(bins)) {
-      lastError = "ses kayna\u011F\u0131 kayboldu";
+      lastError = TEXT.audioSourceLost;
       stopAudio();
       return;
     }
@@ -5407,7 +5461,7 @@ function createEngine(host) {
       const open = host.openSelfTest;
       if (open === void 0) {
         state = muxer.sources().length > 0 ? "running" : "error";
-        lastError = "bu ortamda kendi kendine test yok";
+        lastError = TEXT.noSelfTest;
         report();
         return;
       }
@@ -5667,7 +5721,7 @@ function createEnginePool(host, initial = defaultInstances(), options = {}) {
   apply(parseInstances(structuredCloneOrCopy(initial)));
   async function startEach(run) {
     const enabled = slots.filter((slot) => slot.instance.enabled);
-    if (enabled.length === 0) throw new Error("hi\xE7bir \u015Ferit a\xE7\u0131k de\u011Fil");
+    if (enabled.length === 0) throw new Error(TEXT.noStripEnabled);
     const results = await Promise.allSettled(enabled.map(async (slot) => {
       await run(slot.engine);
     }));
@@ -5827,13 +5881,13 @@ async function openConfiguredStream(config, media) {
     const { devices } = await listVideoDevices();
     const device = resolveDevice(devices, config.capture.deviceId);
     if (device === null) {
-      throw new Error(devices.length === 0 ? "video giri\u015Fi bulunamad\u0131" : "se\xE7ilen video giri\u015Fi art\u0131k yok; Yakalama sayfas\u0131ndan yeniden se\xE7");
+      throw new Error(devices.length === 0 ? TEXT.noVideoInput : TEXT.videoInputGone);
     }
     try {
       return await media.getUserMedia(deviceConstraints(device.deviceId, config.capture.fps));
     } catch (error) {
       const name = error instanceof Error ? error.name : "";
-      throw new Error(name === "NotAllowedError" ? "Kamera izni verilmedi." : describe5(error));
+      throw new Error(name === "NotAllowedError" ? TEXT.cameraDenied : describe5(error));
     }
   }
   try {
@@ -5845,7 +5899,7 @@ async function openConfiguredStream(config, media) {
     });
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
-    throw new Error(name === "NotAllowedError" ? "Ekran se\xE7ilmedi." : describe5(error));
+    throw new Error(name === "NotAllowedError" ? TEXT.screenNotPicked : describe5(error));
   }
 }
 function describe5(error) {
@@ -5867,7 +5921,7 @@ async function openSource(config) {
     getUserMedia: (c) => navigator.mediaDevices.getUserMedia(c)
   });
   const track = stream.getVideoTracks()[0];
-  if (track === void 0) throw new Error("yakalama video izi vermedi");
+  if (track === void 0) throw new Error(TEXT.noVideoTrack);
   return createStreamSource({ track, clock });
 }
 async function openSelfTest() {
@@ -5875,7 +5929,7 @@ async function openSelfTest() {
   canvas.width = 640;
   canvas.height = 360;
   const paint = canvas.getContext("2d");
-  if (paint === null) throw new Error("2d context yok");
+  if (paint === null) throw new Error(TEXT.no2dContext);
   let frame = 0;
   if (selfTestTimer !== null) clearInterval(selfTestTimer);
   selfTestTimer = setInterval(() => {
@@ -5889,7 +5943,7 @@ async function openSelfTest() {
     paint.fillRect(canvas.width * 0.2, canvas.height * 0.2, canvas.width * 0.6, canvas.height * 0.6);
   }, Math.round(1e3 / 60));
   const track = canvas.captureStream(120).getVideoTracks()[0];
-  if (track === void 0) throw new Error("captureStream video vermedi");
+  if (track === void 0) throw new Error(TEXT.noVideoTrack);
   return createStreamSource({ track, clock });
 }
 var pool = createEnginePool(
@@ -5936,7 +5990,7 @@ function describe6(error) {
   return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
 }
 function noSuchInstance(id) {
-  return { state: "idle", error: `\u015Ferit bulunamad\u0131: ${id ?? "?"}` };
+  return { state: "idle", error: TEXT.stripNotFound(id ?? "?") };
 }
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!isMessage(message) || !("target" in message) || message.target !== "offscreen") return false;
@@ -6067,7 +6121,7 @@ var firstState = () => addressed()?.state() ?? "idle";
 function outcomeOf(instance) {
   const engine = addressed(instance);
   if (engine === null) {
-    return instance === void 0 ? { state: "idle" } : { state: "error", error: `\u015Ferit bulunamad\u0131: ${instance}` };
+    return instance === void 0 ? { state: "idle" } : { state: "error", error: TEXT.stripNotFound(instance) };
   }
   const error = engine.error();
   return { state: engine.state(), ...error === void 0 ? {} : { error } };

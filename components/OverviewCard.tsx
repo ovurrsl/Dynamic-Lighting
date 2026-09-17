@@ -7,7 +7,7 @@ import { linkLabel } from '#components/DeviceCard'
 import { useEngine } from '#components/Engine'
 import { useEngineConfig } from '#components/EngineConfig'
 import { LedFrame } from '#components/LedFrame'
-import { useTranslate } from '#components/Preferences'
+import { useEngineText, useTranslate } from '#components/Preferences'
 import { resolveLayout } from '#lib/engine/config'
 import { frameAspect, wireOrderColor } from '#lib/preview'
 import { hashForSection } from '#lib/sections'
@@ -30,6 +30,7 @@ const fmt = (n: number, digits = 1): string => (Number.isFinite(n) ? n.toFixed(d
  */
 export function OverviewCard () {
   const t = useTranslate()
+  const tx = useEngineText()
   const { probe, host, pageCapable, state, stats, busy, start, selfTest, stop } = useEngine()
   const { config } = useEngineConfig()
   const [notice, setNotice] = useState<string | null>(null)
@@ -46,7 +47,7 @@ export function OverviewCard () {
   const act = (call: () => Promise<{ state: string, error?: string }>, pending: string) => {
     setNotice(pending)
     void call().then((result) => {
-      setNotice(result.state === 'running' ? null : result.error ?? null)
+      setNotice(result.state === 'running' ? null : result.error === undefined ? null : tx(result.error))
     })
   }
 

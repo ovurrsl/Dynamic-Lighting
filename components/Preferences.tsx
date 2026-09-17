@@ -8,6 +8,7 @@ import {
   negotiateLocale,
   type Locale
 } from '#lib/i18n/locales'
+import { localiseEngineText } from '#lib/i18n/engine-text'
 import { translate, type MessageKey } from '#lib/i18n/strings'
 import {
   applyTheme,
@@ -47,6 +48,12 @@ interface Preferences {
   /** What `theme` currently means, with "system" already resolved. */
   resolved: ResolvedTheme
   t: (key: MessageKey, values?: Record<string, string | number>) => string
+  /**
+   * A sentence that came out of the engine, the extension or storage - an
+   * error, a reason, a problem - in this language when it is one of ours,
+   * and as it came otherwise (lib/i18n/engine-text.ts).
+   */
+  tx: (text: string) => string
 }
 
 const PreferencesContext = createContext<Preferences | null>(null)
@@ -145,7 +152,8 @@ export function PreferencesProvider ({ children }: { children: React.ReactNode }
     theme,
     setTheme,
     resolved,
-    t: (key, values) => translate(locale, key, values)
+    t: (key, values) => translate(locale, key, values),
+    tx: (text) => localiseEngineText(text, (key, values) => translate(locale, key, values))
   }), [locale, setLocale, theme, setTheme, resolved])
 
   return <PreferencesContext value={value}>{children}</PreferencesContext>
@@ -162,4 +170,9 @@ export function usePreferences (): Preferences {
 /** The common case: just the lookup function. */
 export function useTranslate (): Preferences['t'] {
   return usePreferences().t
+}
+
+/** For the places that show an engine's sentence directly rather than inside a panel one. */
+export function useEngineText (): Preferences['tx'] {
+  return usePreferences().tx
 }

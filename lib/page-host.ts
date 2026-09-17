@@ -10,6 +10,7 @@ import {
   type FrameSource,
   type VideoElement
 } from '#lib/engine/source'
+import { TEXT } from '#lib/engine/text'
 
 
 /**
@@ -96,7 +97,7 @@ export function createPageEngine (
 
   async function sourceFor (stream: MediaStream, config: EngineConfig): Promise<FrameSource> {
     const track = stream.getVideoTracks()[0]
-    if (track === undefined) throw new Error('yakalama video izi vermedi')
+    if (track === undefined) throw new Error(TEXT.noVideoTrack)
     // The stream route where the browser has it - it delivers a frame per
     // change, so a still screen costs nothing - and the video element
     // everywhere else. Asked of the browser, never read from a table.
@@ -133,11 +134,11 @@ export function createPageEngine (
 
     async openSource (config: EngineConfig): Promise<FrameSource> {
       const media = navigator.mediaDevices
-      if (media === undefined) throw new Error('bu tarayıcı medya cihazlarını desteklemiyor')
+      if (media === undefined) throw new Error(TEXT.noMediaDevices)
       if (config.capture.source !== 'device' && media.getDisplayMedia === undefined) {
         // Worth its own sentence: a browser with no screen capture may still
         // have a capture card, and "switch the source" is the useful advice.
-        throw new Error('bu tarayıcı ekran yakalamayı desteklemiyor')
+        throw new Error(TEXT.noScreenCapture)
       }
       const stream = await openConfiguredStream(config, {
         getDisplayMedia: (c) => media.getDisplayMedia(c as DisplayMediaStreamOptions),
@@ -151,7 +152,7 @@ export function createPageEngine (
       canvas.width = 640
       canvas.height = 360
       const paint = canvas.getContext('2d')
-      if (paint === null) throw new Error('2d context yok')
+      if (paint === null) throw new Error(TEXT.no2dContext)
       let frame = 0
       if (selfTestTimer !== null) clearInterval(selfTestTimer)
       // A plain interval, never requestAnimationFrame: the same pattern has to

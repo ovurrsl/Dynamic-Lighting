@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Card, Input, Label, Surface, TextField } from '@heroui/react'
 
-import { useTranslate } from '#components/Preferences'
+import { useEngineText, useTranslate } from '#components/Preferences'
 import { type EngineConfig } from '#lib/engine/config'
 import {
   exportProfiles,
@@ -37,6 +37,7 @@ export function ProfilesCard ({
   onLoad: (config: EngineConfig, name: string) => void
 }) {
   const t = useTranslate()
+  const tx = useEngineText()
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [name, setName] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
@@ -50,7 +51,7 @@ export function ProfilesCard ({
   useEffect(() => {
     const stored = loadProfiles()
     setProfiles(stored.profiles)
-    if (stored.problem !== undefined) setNotice(stored.problem)
+    if (stored.problem !== undefined) setNotice(tx(stored.problem))
   }, [])
 
   const persist = useCallback((next: Profile[]): void => {
@@ -99,7 +100,7 @@ export function ProfilesCard ({
     const added = t('profiles.imported', { count: outcome.added })
     // A partial import still imported something. Saying so and then naming what
     // was skipped is more use than either half alone.
-    setNotice(outcome.problem === undefined ? added : `${added} ${outcome.problem}`)
+    setNotice(outcome.problem === undefined ? added : `${added} ${tx(outcome.problem)}`)
   }, [persist, t])
 
   return (

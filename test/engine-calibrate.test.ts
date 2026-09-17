@@ -68,11 +68,11 @@ test('marks pressed out of order are refused, not silently accepted', () => {
   // strip is on the wall - so the failure has to happen here.
   assert.throws(
     () => layoutFromCorners(reference({ indices: [0, 54, 35, 89] })),
-    /şeridi bölmüyor/
+    /do not partition/
   )
-  assert.throws(() => layoutFromCorners(reference({ indices: [0, 35, 54] })), /dört köşe/)
+  assert.throws(() => layoutFromCorners(reference({ indices: [0, 35, 54] })), /four corners/)
   assert.throws(() => layoutFromCorners(reference({ indices: [0, 35, 54, 108] })), /0\.\.107/)
-  assert.throws(() => layoutFromCorners(reference({ total: 3 })), /en az 4 LED/)
+  assert.throws(() => layoutFromCorners(reference({ total: 3 })), /at least 4 LEDs/)
 })
 
 test('a three-sided rig is allowed: one edge with no LEDs is a real rig', () => {

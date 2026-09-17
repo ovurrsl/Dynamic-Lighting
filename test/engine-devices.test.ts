@@ -70,7 +70,7 @@ test('a refused camera permission gets its own sentence', async () => {
   const denied = Object.assign(new Error('no'), { name: 'NotAllowedError' })
   await assert.rejects(
     () => listWithPermission({ getUserMedia: async () => { throw denied }, enumerate: async () => [] }),
-    /Kamera izni verilmedi/
+    /camera permission was refused/
   )
 })
 

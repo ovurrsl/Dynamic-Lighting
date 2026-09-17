@@ -5,6 +5,7 @@ import { createStreamSource, type FrameSource } from '#lib/engine/source'
 import type { EngineConfig } from '#lib/engine/config'
 import { openConfiguredStream } from '#lib/engine/open-source'
 import { isMessage, type Message } from '#lib/extension/messages'
+import { TEXT } from '#lib/engine/text'
 
 /**
  * The extension's host for the engine.
@@ -51,7 +52,7 @@ async function openSource (config: EngineConfig): Promise<FrameSource> {
     getUserMedia: (c) => navigator.mediaDevices.getUserMedia(c as MediaStreamConstraints)
   })
   const track = stream.getVideoTracks()[0]
-  if (track === undefined) throw new Error('yakalama video izi vermedi')
+  if (track === undefined) throw new Error(TEXT.noVideoTrack)
   return createStreamSource({ track, clock })
 }
 
@@ -72,7 +73,7 @@ async function openSelfTest (): Promise<FrameSource> {
   canvas.width = 640
   canvas.height = 360
   const paint = canvas.getContext('2d')
-  if (paint === null) throw new Error('2d context yok')
+  if (paint === null) throw new Error(TEXT.no2dContext)
   let frame = 0
   if (selfTestTimer !== null) clearInterval(selfTestTimer)
   selfTestTimer = setInterval(() => {
@@ -91,7 +92,7 @@ async function openSelfTest (): Promise<FrameSource> {
   }, Math.round(1000 / 60))
 
   const track = canvas.captureStream(120).getVideoTracks()[0]
-  if (track === undefined) throw new Error('captureStream video vermedi')
+  if (track === undefined) throw new Error(TEXT.noVideoTrack)
   return createStreamSource({ track, clock })
 }
 
@@ -157,7 +158,7 @@ function describe (error: unknown): string {
 
 /** What a per-strip command answers with when the strip it named is gone. */
 function noSuchInstance (id?: string): { state: 'idle', error: string } {
-  return { state: 'idle', error: `şerit bulunamadı: ${id ?? '?'}` }
+  return { state: 'idle', error: TEXT.stripNotFound(id ?? '?') }
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -302,7 +303,7 @@ function outcomeOf (instance?: string): { state: string, error?: string } {
   if (engine === null) {
     return instance === undefined
       ? { state: 'idle' }
-      : { state: 'error', error: `şerit bulunamadı: ${instance}` }
+      : { state: 'error', error: TEXT.stripNotFound(instance) }
   }
   const error = engine.error()
   return { state: engine.state(), ...(error === undefined ? {} : { error }) }

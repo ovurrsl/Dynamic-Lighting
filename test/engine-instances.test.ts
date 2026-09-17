@@ -48,8 +48,8 @@ test('ids skip the ones already taken, so a deleted strip does not come back', (
 })
 
 test('the last strip cannot be removed, because no card can add one back', () => {
-  assert.throws(() => removeInstance(one, 'instance-1'), /son şerit/)
-  assert.throws(() => removeInstance(one, 'instance-9'), /diye bir şerit yok/)
+  assert.throws(() => removeInstance(one, 'instance-1'), /last strip/)
+  assert.throws(() => removeInstance(one, 'instance-9'), /no strip called/)
 })
 
 test('a strip can be switched off without being deleted', () => {
@@ -73,14 +73,14 @@ test('renaming keeps the id, because stored state keys off the id', () => {
 })
 
 test('updating a strip that is not there is an error, not a silent no-op', () => {
-  assert.throws(() => updateInstance(one, 'instance-9', { name: 'x' }), /diye bir şerit yok/)
+  assert.throws(() => updateInstance(one, 'instance-9', { name: 'x' }), /no strip called/)
 })
 
 test('there is a ceiling, and it is enforced where strips are added', () => {
   let list = one
   while (list.length < MAX_INSTANCES) list = addInstance(list)
   assert.equal(list.length, MAX_INSTANCES)
-  assert.throws(() => addInstance(list), /en fazla/)
+  assert.throws(() => addInstance(list), /at most/)
 })
 
 // ---------------------------------------------------------------------------
@@ -101,10 +101,10 @@ test('a stored list is validated, because storage is a trust boundary', () => {
   assert.equal(parsed[1]?.name, 'TV', 'trimmed, so a name that is all spaces is not a name')
   assert.equal(parsed[1]?.enabled, false)
 
-  assert.throws(() => parseInstances('masa ve tv'), /bir dizi olmalı/)
-  assert.throws(() => parseInstances([]), /en az bir şerit/)
-  assert.throws(() => parseInstances([stored(), stored()]), /iki kez geçiyor/)
-  assert.throws(() => parseInstances([null]), /bir nesne olmalı/)
+  assert.throws(() => parseInstances('masa ve tv'), /must be a list/)
+  assert.throws(() => parseInstances([]), /at least one strip/)
+  assert.throws(() => parseInstances([stored(), stored()]), /appears twice/)
+  assert.throws(() => parseInstances([null]), /must be an object/)
 })
 
 test('a missing id or name is filled in, but a bad config is refused by name', () => {
@@ -123,5 +123,5 @@ test('a missing id or name is filled in, but a bad config is refused by name', (
 
 test('a list longer than the ceiling is refused on the way in as well', () => {
   const many = Array.from({ length: MAX_INSTANCES + 1 }, (_, n) => stored({ id: `instance-${n + 1}` }))
-  assert.throws(() => parseInstances(many), /en fazla/)
+  assert.throws(() => parseInstances(many), /at most/)
 })

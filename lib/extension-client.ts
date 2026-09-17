@@ -8,6 +8,7 @@ import { parseRules, type ScheduleRule } from '#lib/engine/schedule'
 import type { PatternSpec } from '#lib/engine/patterns'
 import type { ControlRequest, EngineStats, EngineState, Message } from '#lib/extension/messages'
 import type { PoolStats } from '#lib/engine/pool'
+import { TEXT } from '#lib/engine/text'
 
 /**
  * The panel's side of the extension conversation.
@@ -196,7 +197,7 @@ export async function fetchSchedule (): Promise<{ rules: ScheduleRule[], error?:
 
 function readSchedule (reply: unknown): { rules: ScheduleRule[], error?: string } {
   if (typeof reply !== 'object' || reply === null || !('rules' in reply)) {
-    return { rules: [], error: 'eklenti beklenmeyen bir yanıt verdi' }
+    return { rules: [], error: TEXT.unexpectedReply }
   }
   const answer = reply as { rules: unknown, error?: string }
   try {
@@ -294,9 +295,9 @@ export async function saveConfig (config: EngineConfig, instance?: string): Prom
   } catch (error) {
     return error instanceof Error ? error.message : String(error)
   }
-  if (!isConfigReply(reply)) return 'eklenti beklenmeyen bir yanıt verdi'
+  if (!isConfigReply(reply)) return TEXT.unexpectedReply
   if (reply.error !== undefined) return reply.error
-  return reply.config === null ? 'eklenti yapılandırmayı kabul etmedi' : null
+  return reply.config === null ? TEXT.configRefused : null
 }
 
 /**
@@ -315,11 +316,11 @@ export async function sendControl (control: ControlRequest, instance?: string): 
     return error instanceof Error ? error.message : String(error)
   }
   if (typeof reply !== 'object' || reply === null || !('sent' in reply)) {
-    return 'eklenti beklenmeyen bir yanıt verdi'
+    return TEXT.unexpectedReply
   }
   const answer = reply as { sent: boolean, error?: string }
   if (answer.sent) return null
-  return answer.error ?? 'kart isteği kabul etmedi'
+  return answer.error ?? TEXT.boardRefused
 }
 
 /**
@@ -350,11 +351,11 @@ export async function saveInstances (instances: readonly Instance[]): Promise<{ 
 
 function readInstances (reply: unknown): { instances: Instance[] | null, error?: string } {
   if (typeof reply !== 'object' || reply === null || !('instances' in reply)) {
-    return { instances: null, error: 'eklenti beklenmeyen bir yanıt verdi' }
+    return { instances: null, error: TEXT.unexpectedReply }
   }
   const answer = reply as { instances: unknown, error?: string }
   if (answer.instances === null) {
-    return { instances: null, error: answer.error ?? 'eklenti şeritleri kabul etmedi' }
+    return { instances: null, error: answer.error ?? TEXT.stripsRefused }
   }
   try {
     return {

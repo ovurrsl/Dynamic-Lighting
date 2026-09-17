@@ -5,7 +5,7 @@ import { Button, Card, Surface } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
 import { audioInputLabel, audioKindLabel, effectLabel, patternLabel } from '#components/labels'
-import { useTranslate } from '#components/Preferences'
+import { useEngineText, useTranslate } from '#components/Preferences'
 import type { MessageKey } from '#lib/i18n/strings'
 import type { EngineState, EngineStats } from '#lib/extension/messages'
 
@@ -72,6 +72,7 @@ const fmt = (n: number, digits = 1): string => (Number.isFinite(n) ? n.toFixed(d
  */
 export function DeviceCard () {
   const t = useTranslate()
+  const tx = useEngineText()
   const { probe, host, state, stats, version, reprobe, stop, pairSerial } = useEngine()
   const detail = describeDetail(stats?.link.detail)
   // Asked of the browser after mount, never at render: the server has no
@@ -197,7 +198,7 @@ export function DeviceCard () {
                 {stats.source !== undefined && (
                   <Stat label={t('device.stat.source')} value={`${stats.source.width}×${stats.source.height}`} />
                 )}
-                {stats.error !== undefined && <Stat label={t('device.stat.error')} value={stats.error} />}
+                {stats.error !== undefined && <Stat label={t('device.stat.error')} value={tx(stats.error)} />}
               </Surface>
             )}
 

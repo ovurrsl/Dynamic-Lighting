@@ -4,6 +4,7 @@ import { parseEngineConfig, type EngineConfig } from '#lib/engine/config'
 import { defaultInstances, findInstance, parseInstances, updateInstance, type Instance } from '#lib/engine/instances'
 import { isMessage, type Message } from '#lib/extension/messages'
 import { parseRules, type ScheduleRule } from '#lib/engine/schedule'
+import { TEXT } from '#lib/engine/text'
 
 /**
  * The service worker. It owns exactly one thing: the offscreen document's
@@ -57,7 +58,7 @@ async function ensureOffscreen (): Promise<void> {
       // ambilight extension is exactly the kind of thing that should make a
       // user suspicious. The prompt happens, or the visualiser reports why not.
       reasons: [chrome.offscreen.Reason.DISPLAY_MEDIA, chrome.offscreen.Reason.USER_MEDIA],
-      justification: 'Ekran yakalama, ses görselleştirme ve LED şeridine çıkış, hiçbir sekme açık olmadan.'
+      justification: 'Screen capture, audio visualisation and output to a LED strip, with no tab open.'
     }).finally(() => { creating = null })
   }
   await creating
@@ -162,7 +163,7 @@ async function loadConfig (id?: string): Promise<EngineConfig> {
   const list = await loadInstances()
   if (id === undefined) return (findInstance(list, firstId(list)) as Instance).config
   const found = findInstance(list, id)
-  if (found === undefined || found === null) throw new Error(`şerit bulunamadı: ${id}`)
+  if (found === undefined || found === null) throw new Error(TEXT.stripNotFound(id))
   return found.config
 }
 

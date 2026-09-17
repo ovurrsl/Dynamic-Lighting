@@ -4,7 +4,7 @@ import { useCallback, useState } from 'react'
 import { Button, Card, ColorArea, ColorPicker, ColorSlider, ColorSwatch, Label, Slider, Surface } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
-import { useTranslate } from '#components/Preferences'
+import { useEngineText, useTranslate } from '#components/Preferences'
 import {
   COLOURED_EFFECTS,
   DEFAULT_BRIGHTNESS,
@@ -39,6 +39,7 @@ const DEFAULT_COLOR = { r: 255, g: 160, b: 60 }
 
 export function EffectsCard () {
   const t = useTranslate()
+  const tx = useEngineText()
   const { probe, host, pageCapable, stats, state, runEffect, stop } = useEngine()
   const [kind, setKind] = useState<EffectKind | null>(null)
   const [speed, setSpeed] = useState(DEFAULT_SPEED)
@@ -214,7 +215,7 @@ export function EffectsCard () {
 
         <p className="text-xs text-muted">{t('effects.replaces')}</p>
         {state === 'error' && stats?.error !== undefined && (
-          <p className="text-xs text-danger">{stats.error}</p>
+          <p className="text-xs text-danger">{tx(stats.error)}</p>
         )}
       </Card.Content>
     </Card>

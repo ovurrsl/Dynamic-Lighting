@@ -8,6 +8,7 @@ import {
 import { createEngine, type Engine, type EngineHost, type StopReason } from '#lib/engine/runtime'
 import { parseRules, rulesFor, type ScheduleRule } from '#lib/engine/schedule'
 import type { EngineState, EngineStats } from '#lib/extension/messages'
+import { TEXT } from '#lib/engine/text'
 
 /**
  * Several strips, one screen.
@@ -274,7 +275,7 @@ export function createEnginePool (
     // Said rather than silently done: a Start with every strip switched off
     // used to return with the state idle and nothing on the page explaining
     // why the press did nothing.
-    if (enabled.length === 0) throw new Error('hiçbir şerit açık değil')
+    if (enabled.length === 0) throw new Error(TEXT.noStripEnabled)
     // Together rather than one at a time: the whole point of `share` is that
     // simultaneous starts collapse onto one picker, and starting them in
     // sequence would open the second capture before the first had a consumer.

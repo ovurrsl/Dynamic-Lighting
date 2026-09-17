@@ -909,6 +909,60 @@ var MATRIX_ENGINE_CONFIG = Object.freeze({
   startup: DEFAULT_STARTUP
 });
 
+// lib/engine/text.ts
+var TEXT = Object.freeze({
+  // The engine.
+  noStripEnabled: "no strip is enabled",
+  noNetworkAddress: "no address for the network output",
+  noControlChannel: (link) => `${link}: this link has no control channel`,
+  audioSourceLost: "the audio source went away",
+  mixedContent: (transport) => `${transport}: an HTTPS page may not open ws:// (mixed content) - from this page a board on the LAN is reached only over wss:// (a TLS bridge on your network that the board sits behind); run the panel on localhost, where ws:// is allowed, or use the extension host`,
+  // Frame sources.
+  noVideoInput: "no video input found",
+  videoInputGone: "the chosen video input is no longer there; pick it again on the Capture page",
+  cameraDenied: "camera permission was refused",
+  screenNotPicked: "no screen was picked",
+  noMediaDevices: "this browser has no media devices",
+  noScreenCapture: "this browser cannot capture a screen",
+  noVideoTrack: "the capture gave no video track",
+  no2dContext: "no 2d canvas context",
+  noSelfTest: "this host has no self-test",
+  pairFromExtension: "pair the port from the extension icon",
+  noWebSerial: "this browser has no Web Serial",
+  // Audio.
+  noDisplayAudio: "this browser does not share tab or system audio",
+  noAudioTrack: "no audio track was given",
+  microphoneDenied: "microphone permission was refused",
+  audioNotPicked: "no audio source was picked",
+  // Strips.
+  stripNotFound: (id) => `strip not found: ${id}`,
+  tooManyStrips: (max, got) => got === void 0 ? `instances: at most ${max} strips` : `instances: at most ${max} strips, got ${got}`,
+  noSuchStrip: (id) => `instances: no strip called ${id}`,
+  lastStrip: "instances: the last strip cannot be removed",
+  instancesNotList: "instances: must be a list",
+  instancesEmpty: "instances: at least one strip is needed",
+  duplicateStripId: (id) => `instances: ${id} appears twice`,
+  stripNotObject: (index) => `instances: strip ${index} must be an object`,
+  // Calibration.
+  calibrationTooFew: (total) => `calibration: the strip needs at least 4 LEDs, got ${total}`,
+  calibrationFourCorners: (marked) => `calibration: four corners must be marked, ${marked} were`,
+  calibrationCornerRange: (max, got) => `calibration: a corner index must be 0..${max}, got ${got}`,
+  calibrationNotPartition: (runs, covered, total) => `calibration: the corners do not partition the strip (${runs} = ${covered}, ${total} expected) - mark the corners in the order the light reaches them`,
+  // Storage and profiles.
+  storageDenied: "the browser denies local storage",
+  profilesUnreadable: (reason) => `the saved profiles could not be read: ${reason}`,
+  profilesNotList: "the saved profiles are not a list",
+  profilesDropped: (count) => `${count} profile(s) could not be read and were skipped`,
+  notJson: (reason) => `not valid JSON: ${reason}`,
+  notProfileFile: "this is not an AmbiFlux profile file",
+  noReadableProfiles: "the file has no readable profile",
+  // The extension, as the panel sees it.
+  unexpectedReply: "the extension gave an unexpected reply",
+  configRefused: "the extension did not accept the configuration",
+  boardRefused: "the board did not accept the request",
+  stripsRefused: "the extension did not accept the strip list"
+});
+
 // lib/engine/instances.ts
 var MAX_INSTANCES = 8;
 function defaultInstances() {
@@ -921,7 +975,7 @@ function updateInstance(list, id, change) {
     found = true;
     return { ...instance, ...change, id: instance.id };
   });
-  if (!found) throw new RangeError(`instances: ${id} diye bir \u015Ferit yok`);
+  if (!found) throw new RangeError(TEXT.noSuchStrip(id));
   return next;
 }
 function findInstance(list, id) {
@@ -934,22 +988,22 @@ var InstanceError = class extends Error {
   }
 };
 function parseInstances(value) {
-  if (!Array.isArray(value)) throw new InstanceError("instances: bir dizi olmal\u0131");
-  if (value.length === 0) throw new InstanceError("instances: en az bir \u015Ferit olmal\u0131");
+  if (!Array.isArray(value)) throw new InstanceError(TEXT.instancesNotList);
+  if (value.length === 0) throw new InstanceError(TEXT.instancesEmpty);
   if (value.length > MAX_INSTANCES) {
-    throw new InstanceError(`instances: en fazla ${MAX_INSTANCES} \u015Ferit s\xFCr\xFClebilir, ${value.length} geldi`);
+    throw new InstanceError(TEXT.tooManyStrips(MAX_INSTANCES, value.length));
   }
   const seen = /* @__PURE__ */ new Set();
   return value.map((entry, index) => {
     const instance = parseInstance(entry, index);
-    if (seen.has(instance.id)) throw new InstanceError(`instances: ${instance.id} iki kez ge\xE7iyor`);
+    if (seen.has(instance.id)) throw new InstanceError(TEXT.duplicateStripId(instance.id));
     seen.add(instance.id);
     return instance;
   });
 }
 function parseInstance(value, index = 0) {
   if (typeof value !== "object" || value === null) {
-    throw new InstanceError(`instances: ${index}. \u015Ferit bir nesne olmal\u0131`);
+    throw new InstanceError(TEXT.stripNotObject(index));
   }
   const raw = value;
   const id = typeof raw.id === "string" && raw.id.trim() !== "" ? raw.id.trim() : `instance-${index + 1}`;
@@ -1076,7 +1130,7 @@ async function ensureOffscreen() {
       // ambilight extension is exactly the kind of thing that should make a
       // user suspicious. The prompt happens, or the visualiser reports why not.
       reasons: [chrome.offscreen.Reason.DISPLAY_MEDIA, chrome.offscreen.Reason.USER_MEDIA],
-      justification: "Ekran yakalama, ses g\xF6rselle\u015Ftirme ve LED \u015Feridine \xE7\u0131k\u0131\u015F, hi\xE7bir sekme a\xE7\u0131k olmadan."
+      justification: "Screen capture, audio visualisation and output to a LED strip, with no tab open."
     }).finally(() => {
       creating = null;
     });
@@ -1132,7 +1186,7 @@ async function loadConfig(id) {
   const list = await loadInstances();
   if (id === void 0) return findInstance(list, firstId(list)).config;
   const found = findInstance(list, id);
-  if (found === void 0 || found === null) throw new Error(`\u015Ferit bulunamad\u0131: ${id}`);
+  if (found === void 0 || found === null) throw new Error(TEXT.stripNotFound(id));
   return found.config;
 }
 async function setConfig(value, id) {

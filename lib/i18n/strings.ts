@@ -1,4 +1,5 @@
 import { FALLBACK_LOCALE, type Locale } from '#lib/i18n/locales'
+import { localiseEngineText } from '#lib/i18n/engine-text'
 
 /**
  * Every string the panel shows.
@@ -468,6 +469,50 @@ const en = {
   'pattern.kind.ramp': 'grey ramp',
   'pattern.kind.flash': 'flash',
   'pattern.kind.off': 'off',
+  'engine.noStripEnabled': 'no strip is enabled',
+  'engine.noNetworkAddress': 'no address for the network output',
+  'engine.noControlChannel': '{link}: this link has no control channel',
+  'engine.audioSourceLost': 'the audio source went away',
+  'engine.mixedContent': '{transport}: an HTTPS page may not open ws:// (mixed content) — from this page a board on the LAN is reached only over wss:// (a TLS bridge on your network that the board sits behind); run the panel on localhost, where ws:// is allowed, or use the extension host',
+  'engine.noVideoInput': 'no video input found',
+  'engine.videoInputGone': 'the chosen video input is no longer there; pick it again on the Capture page',
+  'engine.cameraDenied': 'camera permission was refused',
+  'engine.screenNotPicked': 'no screen was picked',
+  'engine.noMediaDevices': 'this browser has no media devices',
+  'engine.noScreenCapture': 'this browser cannot capture a screen',
+  'engine.noVideoTrack': 'the capture gave no video track',
+  'engine.no2dContext': 'no 2d canvas context',
+  'engine.noSelfTest': 'this host has no self-test',
+  'engine.pairFromExtension': 'pair the port from the extension icon',
+  'engine.noWebSerial': 'this browser has no Web Serial',
+  'engine.noDisplayAudio': 'this browser does not share tab or system audio',
+  'engine.noAudioTrack': 'no audio track was given',
+  'engine.microphoneDenied': 'microphone permission was refused',
+  'engine.audioNotPicked': 'no audio source was picked',
+  'engine.stripNotFound': 'strip not found: {id}',
+  'engine.tooManyStrips': 'at most {max} strips',
+  'engine.tooManyStripsGot': 'at most {max} strips, got {got}',
+  'engine.noSuchStrip': 'no strip called {id}',
+  'engine.lastStrip': 'the last strip cannot be removed',
+  'engine.instancesNotList': 'the strip list must be a list',
+  'engine.instancesEmpty': 'at least one strip is needed',
+  'engine.duplicateStripId': 'the strip id {id} appears twice',
+  'engine.stripNotObject': 'strip {index} must be an object',
+  'engine.calibrationTooFew': 'the strip needs at least 4 LEDs, got {total}',
+  'engine.calibrationFourCorners': 'four corners must be marked, {marked} were',
+  'engine.calibrationCornerRange': 'a corner index must be 0..{max}, got {got}',
+  'engine.calibrationNotPartition': 'the corners do not partition the strip ({runs} = {covered}, {total} expected) — mark the corners in the order the light reaches them',
+  'engine.storageDenied': 'the browser denies local storage',
+  'engine.profilesUnreadable': 'the saved profiles could not be read: {reason}',
+  'engine.profilesNotList': 'the saved profiles are not a list',
+  'engine.profilesDropped': '{count} profile(s) could not be read and were skipped',
+  'engine.notJson': 'not valid JSON: {reason}',
+  'engine.notProfileFile': 'this is not an AmbiFlux profile file',
+  'engine.noReadableProfiles': 'the file has no readable profile',
+  'engine.unexpectedReply': 'the extension gave an unexpected reply',
+  'engine.configRefused': 'the extension did not accept the configuration',
+  'engine.boardRefused': 'the board did not accept the request',
+  'engine.stripsRefused': 'the extension did not accept the strip list',
   'cal.running': 'Running: {pattern}',
   'cal.needExtension': 'Test patterns run in the engine, so the extension has to be installed.',
 
@@ -1236,6 +1281,50 @@ const tr: Messages = {
   'pattern.kind.ramp': 'gri rampa',
   'pattern.kind.flash': 'flaş',
   'pattern.kind.off': 'kapalı',
+  'engine.noStripEnabled': 'hiçbir şerit açık değil',
+  'engine.noNetworkAddress': 'ağ çıkışı için adres girilmedi',
+  'engine.noControlChannel': '{link}: bu bağlantının kontrol kanalı yok',
+  'engine.audioSourceLost': 'ses kaynağı kayboldu',
+  'engine.mixedContent': '{transport}: HTTPS bir sayfa ws:// açamaz (karışık içerik) — bu sayfadan yerel ağdaki karta yalnız wss:// ile (ağında, kartın arkasında durduğu bir TLS köprüsü) ulaşılır; paneli localhost’ta çalıştır (ws:// serbest) ya da eklenti host’unu kullan',
+  'engine.noVideoInput': 'video girişi bulunamadı',
+  'engine.videoInputGone': 'seçilen video girişi artık yok; Yakalama sayfasından yeniden seç',
+  'engine.cameraDenied': 'kamera izni verilmedi',
+  'engine.screenNotPicked': 'ekran seçilmedi',
+  'engine.noMediaDevices': 'bu tarayıcı medya cihazlarını desteklemiyor',
+  'engine.noScreenCapture': 'bu tarayıcı ekran yakalayamıyor',
+  'engine.noVideoTrack': 'yakalama video izi vermedi',
+  'engine.no2dContext': '2d canvas bağlamı yok',
+  'engine.noSelfTest': 'bu host’ta kendi kendine test yok',
+  'engine.pairFromExtension': 'portu eklenti simgesinden eşleştir',
+  'engine.noWebSerial': 'bu tarayıcıda Web Serial yok',
+  'engine.noDisplayAudio': 'bu tarayıcı sekme/sistem sesi paylaşmıyor',
+  'engine.noAudioTrack': 'ses izi alınamadı',
+  'engine.microphoneDenied': 'mikrofon izni verilmedi',
+  'engine.audioNotPicked': 'ses kaynağı seçilmedi',
+  'engine.stripNotFound': 'şerit bulunamadı: {id}',
+  'engine.tooManyStrips': 'en fazla {max} şerit sürülebilir',
+  'engine.tooManyStripsGot': 'en fazla {max} şerit sürülebilir, {got} geldi',
+  'engine.noSuchStrip': '{id} diye bir şerit yok',
+  'engine.lastStrip': 'son şerit silinemez',
+  'engine.instancesNotList': 'şerit listesi bir dizi olmalı',
+  'engine.instancesEmpty': 'en az bir şerit olmalı',
+  'engine.duplicateStripId': '{id} kimliği iki kez geçiyor',
+  'engine.stripNotObject': '{index}. şerit bir nesne olmalı',
+  'engine.calibrationTooFew': 'şeritte en az 4 LED olmalı, {total} geldi',
+  'engine.calibrationFourCorners': 'dört köşe işaretlenmeli, {marked} işaretlendi',
+  'engine.calibrationCornerRange': 'köşe indeksi 0..{max} arasında olmalı, {got} geldi',
+  'engine.calibrationNotPartition': 'köşeler şeridi bölmüyor ({runs} = {covered}, {total} olmalı) — köşeler ışığın onlara ulaştığı sırayla işaretlenmeli',
+  'engine.storageDenied': 'tarayıcı yerel depolamaya izin vermiyor',
+  'engine.profilesUnreadable': 'kayıtlı profiller okunamadı: {reason}',
+  'engine.profilesNotList': 'kayıtlı profiller bir liste değil',
+  'engine.profilesDropped': '{count} profil okunamadı ve atlandı',
+  'engine.notJson': 'geçerli JSON değil: {reason}',
+  'engine.notProfileFile': 'bu bir AmbiFlux profil dosyası değil',
+  'engine.noReadableProfiles': 'dosyada okunabilir profil yok',
+  'engine.unexpectedReply': 'eklenti beklenmeyen bir yanıt verdi',
+  'engine.configRefused': 'eklenti yapılandırmayı kabul etmedi',
+  'engine.boardRefused': 'kart isteği kabul etmedi',
+  'engine.stripsRefused': 'eklenti şeritleri kabul etmedi',
   'cal.running': 'Çalışan desen: {pattern}',
   'cal.needExtension': 'Test desenleri motorda çalışıyor, yani eklentinin kurulu olması gerekiyor.',
 
@@ -2579,8 +2668,21 @@ const TABLES: Record<Locale, Partial<Messages>> = {
 export function translate (locale: Locale, key: MessageKey, values?: Record<string, string | number>): string {
   const text = TABLES[locale]?.[key] ?? TABLES[FALLBACK_LOCALE]?.[key] ?? key
   if (values === undefined) return text
-  return text.replace(/\{(\w+)\}/g, (whole, name: string) => String(values[name] ?? whole))
+  return text.replace(/\{(\w+)\}/g, (whole, name: string) => {
+    const value = values[name]
+    if (value === undefined) return whole
+    // A reason, a problem or an error is a sentence that came OUT of the
+    // engine or the storage layer, in English; if it is one of ours it is said
+    // in this language (lib/i18n/engine-text.ts). Only these three names, so a
+    // strip somebody named after an error message stays what they typed.
+    if (typeof value === 'string' && ENGINE_TEXT_VALUES.has(name)) {
+      return localiseEngineText(value, (k, v) => translate(locale, k, v))
+    }
+    return String(value)
+  })
 }
+
+const ENGINE_TEXT_VALUES: ReadonlySet<string> = new Set(['reason', 'problem', 'error'])
 
 /**
  * Whether a language carries its own string for a key, as opposed to borrowing

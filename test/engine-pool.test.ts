@@ -167,8 +167,8 @@ test('a bad list is refused and the running strips are untouched', async () => {
   const pool = createEnginePool(host, defaultInstances())
   await pool.start()
 
-  assert.throws(() => pool.setInstances([]), /en az bir şerit/)
-  assert.throws(() => pool.setInstances('iki şerit'), /bir dizi olmalı/)
+  assert.throws(() => pool.setInstances([]), /at least one strip/)
+  assert.throws(() => pool.setInstances('iki şerit'), /must be a list/)
   assert.equal(pool.instances().length, 1)
   assert.equal(pool.engine('instance-1')?.state(), 'running')
   await pool.dispose()
@@ -310,7 +310,7 @@ test('Stop then Start opens the capture again rather than joining the dead one',
 test('starting with every strip switched off says so', async () => {
   const { host, opened } = fakeHost()
   const pool = createEnginePool(host, updateInstance(defaultInstances(), 'instance-1', { enabled: false }))
-  await assert.rejects(pool.start(), /hiçbir şerit açık değil/)
+  await assert.rejects(pool.start(), /no strip is enabled/)
   assert.deepEqual(opened, [], 'no picker was shown')
   await pool.dispose()
 })

@@ -5,7 +5,7 @@ import { Button, Card, Surface } from '@heroui/react'
 
 import { useEngine } from '#components/Engine'
 import { useEngineConfig } from '#components/EngineConfig'
-import { useTranslate } from '#components/Preferences'
+import { useEngineText, useTranslate } from '#components/Preferences'
 import { CORNERS, REFERENCE_LAYOUT, type Corner } from '#lib/engine/layout'
 import { layoutFromCorners, stepWalk, type CalibratedLayout } from '#lib/engine/calibrate'
 import { configLedCount, type EngineConfig } from '#lib/engine/config'
@@ -83,6 +83,7 @@ interface Wizard {
 
 export function CalibrationCard () {
   const t = useTranslate()
+  const tx = useEngineText()
   const { probe, host, pageCapable, stats, runPattern, saveConfig, clearLayer } = useEngine()
   const { config, setConfig } = useEngineConfig()
   const [notice, setNotice] = useState<string | null>(null)
@@ -274,7 +275,7 @@ export function CalibrationCard () {
             </Surface>
           )}
           {notice !== null && (
-            <Surface className="rounded-xl p-3 text-sm" variant="secondary">{notice}</Surface>
+            <Surface className="rounded-xl p-3 text-sm" variant="secondary">{tx(notice)}</Surface>
           )}
 
           <dl className="flex flex-col gap-2">
@@ -375,7 +376,7 @@ export function CalibrationCard () {
 
           {walk?.step === 'done' && (
             <>
-              {walk.problem !== undefined && <p className="text-sm text-danger">{walk.problem}</p>}
+              {walk.problem !== undefined && <p className="text-sm text-danger">{tx(walk.problem)}</p>}
               {walk.layout !== undefined && (
                 <Surface className="flex flex-col gap-1 rounded-xl p-3 text-sm" variant="secondary">
                   <span>{t('cal.walk.result', {
@@ -455,7 +456,7 @@ export function CalibrationCard () {
 
           {wizard?.step === 'done' && (
             <>
-              {wizard.problem !== undefined && <p className="text-sm text-danger">{wizard.problem}</p>}
+              {wizard.problem !== undefined && <p className="text-sm text-danger">{tx(wizard.problem)}</p>}
               {wizard.order !== undefined && (
                 <p className="text-sm">
                   {t(wizard.saved === true ? 'cal.order.applied' : 'cal.order.result', {

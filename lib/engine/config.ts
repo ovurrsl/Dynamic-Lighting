@@ -21,6 +21,7 @@ import { parseEffectSpec, type EffectKind } from '#lib/engine/effects'
 import { SMOOTHING_PROFILES } from '#lib/engine/smooth'
 import type { Calibration } from '#lib/engine/protocol'
 import type { LedRect } from '#lib/engine/types'
+import { WLED_DEFAULT_GAMMA, WLED_GAMMA_MAX, WLED_GAMMA_MIN } from '#lib/engine/wled'
 
 /**
  * The engine's configuration: what the user's rig actually is.
@@ -96,6 +97,12 @@ export interface OutputConfig {
   host?: string
   /** WLED only: which segment to write, for a device that has several. */
   segment?: number
+  /**
+   * WLED only: the device's own colour gamma, which the driver undoes in
+   * advance so the strip ends up showing linear light (lib/engine/wled.ts).
+   * 2.8 is a stock device; 1 is one with colour gamma switched off.
+   */
+  wledGamma?: number
   format: WireFormat
   /**
    * 'Awa' only: the four white-balance bytes HyperHDR's calibrated 'AwA' frame
@@ -412,7 +419,7 @@ export function switchTransport (output: OutputConfig, transport: OutputTranspor
     // WLED has its own protocol: the format is meaningless, the calibration
     // bytes belong to an Awa frame that will never be sent, and the dither
     // works on a payload this transport does not produce.
-    return { transport, host, segment: output.segment ?? 0, format: 'Afx' }
+    return { transport, host, segment: output.segment ?? 0, wledGamma: output.wledGamma ?? WLED_DEFAULT_GAMMA, format: 'Afx' }
   }
   return { transport, host, format: output.format, ...carried }
 }
@@ -840,6 +847,7 @@ export function parseEngineConfig (value: unknown): EngineConfig {
     // someone ends up staring at an address they are sure they typed correctly.
     if (outputRaw.host !== undefined) throw new ConfigError('output.host', 'is only used by the network transports')
     if (outputRaw.segment !== undefined) throw new ConfigError('output.segment', 'is only used by WLED')
+    if (outputRaw.wledGamma !== undefined) throw new ConfigError('output.wledGamma', 'is only used by WLED')
   } else {
     const host = outputRaw.host
     if (typeof host !== 'string' || host.trim() === '') {
@@ -848,8 +856,13 @@ export function parseEngineConfig (value: unknown): EngineConfig {
     output.host = host.trim()
     if (transport === 'wled') {
       output.segment = outputRaw.segment === undefined ? 0 : integer(outputRaw.segment, 'output.segment', 0)
-    } else if (outputRaw.segment !== undefined) {
-      throw new ConfigError('output.segment', 'is only used by WLED')
+      // The device's setting, copied here: 2.8 on a stock WLED. A wrong value
+      // is a strip that is visibly wrong with nothing in the panel saying so,
+      // which is why it is a setting beside the address and not a constant.
+      output.wledGamma = boundedFraction(outputRaw.wledGamma, 'output.wledGamma', WLED_GAMMA_MIN, WLED_GAMMA_MAX, WLED_DEFAULT_GAMMA)
+    } else {
+      if (outputRaw.segment !== undefined) throw new ConfigError('output.segment', 'is only used by WLED')
+      if (outputRaw.wledGamma !== undefined) throw new ConfigError('output.wledGamma', 'is only used by WLED')
     }
   }
 

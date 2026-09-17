@@ -40,11 +40,15 @@ export function BoardNetworkCard () {
   const [notice, setNotice] = useState<string | null>(null)
   const [touched, setTouched] = useState(false)
 
-  const ssidBytes = bytesOf(ssid.trim())
+  // Measured on the name as typed, and sent as typed: 802.11 allows an SSID
+  // that begins or ends with a space and the firmware takes the exact bytes,
+  // so trimming here made such a network impossible to join. Only "nothing
+  // but spaces" counts as no name (control.ts applies the same rule).
+  const ssidBytes = bytesOf(ssid)
   const passBytes = bytesOf(passphrase)
   const ssidTooLong = ssidBytes > MAX_SSID_BYTES
   const passBad = passBytes !== 0 && (passBytes < MIN_PASSPHRASE_BYTES || passBytes > MAX_PASSPHRASE_BYTES)
-  const needsName = enabled && ssidBytes === 0
+  const needsName = enabled && ssid.trim() === ''
   const canSend = !busy && !ssidTooLong && !passBad && !needsName
 
   // A control frame needs a link that carries our bytes. A WLED speaks its own
@@ -56,7 +60,7 @@ export function BoardNetworkCard () {
   const apply = (): void => {
     setBusy(true)
     setNotice(null)
-    void sendControl({ kind: 'wifi', ssid: ssid.trim(), passphrase, enabled }).then((error) => {
+    void sendControl({ kind: 'wifi', ssid, passphrase, enabled }).then((error) => {
       setBusy(false)
       setNotice(error === null ? t('board.wifi.sent') : t('board.wifi.failed', { reason: error }))
       // Not kept in state a moment longer than the send needs it.

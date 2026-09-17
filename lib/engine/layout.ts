@@ -205,12 +205,15 @@ export function classicLayout (spec: ClassicLayoutSpec): LedRect[] {
   for (let i = 0; i < top; i++) {
     const stepX = (tr.x - tl.x - 2 * gapH) / top
     const stepY = (tr.y - tl.y) / top
-    const yMin = tl.y + stepY * i
+    // Clamped like every edge below: a keystone corner near the far side plus
+    // the band depth reaches past the frame, and a rectangle outside the unit
+    // square is one the parser accepts and the sampler refuses.
+    const yMin = clampUnit(tl.y + stepY * i)
     rects.push({
       xMin: grow(tl.x + stepX * i + gapH, -1),
       xMax: grow(tl.x + stepX * (i + 1) + gapH, 1),
       yMin,
-      yMax: yMin + dh
+      yMax: clampUnit(yMin + dh)
     })
   }
 
@@ -218,9 +221,9 @@ export function classicLayout (spec: ClassicLayoutSpec): LedRect[] {
   for (let i = 0; i < right; i++) {
     const stepX = (br.x - tr.x) / right
     const stepY = (br.y - tr.y - 2 * gapV) / right
-    const xMax = tr.x + stepX * (i + 1)
+    const xMax = clampUnit(tr.x + stepX * (i + 1))
     rects.push({
-      xMin: xMax - dv,
+      xMin: clampUnit(xMax - dv),
       xMax,
       yMin: grow(tr.y + stepY * i + gapV, -1),
       yMax: grow(tr.y + stepY * (i + 1) + gapV, 1)
@@ -231,11 +234,11 @@ export function classicLayout (spec: ClassicLayoutSpec): LedRect[] {
   for (let i = bottom - 1; i >= 0; i--) {
     const stepX = (br.x - bl.x - 2 * gapH) / bottom
     const stepY = (br.y - bl.y) / bottom
-    const yMax = bl.y + stepY * i
+    const yMax = clampUnit(bl.y + stepY * i)
     rects.push({
       xMin: grow(bl.x + stepX * i + gapH, -1),
       xMax: grow(bl.x + stepX * (i + 1) + gapH, 1),
-      yMin: yMax - dh,
+      yMin: clampUnit(yMax - dh),
       yMax
     })
   }
@@ -244,10 +247,10 @@ export function classicLayout (spec: ClassicLayoutSpec): LedRect[] {
   for (let i = left - 1; i >= 0; i--) {
     const stepX = (bl.x - tl.x) / left
     const stepY = (bl.y - tl.y - 2 * gapV) / left
-    const xMin = tl.x + stepX * i
+    const xMin = clampUnit(tl.x + stepX * i)
     rects.push({
       xMin,
-      xMax: xMin + dv,
+      xMax: clampUnit(xMin + dv),
       yMin: grow(tl.y + stepY * i + gapV, -1),
       yMax: grow(tl.y + stepY * (i + 1) + gapV, 1)
     })
@@ -279,7 +282,10 @@ function orient (geometric: LedRect[], spec: ClassicLayoutSpec): LedRect[] {
 
   // Walk from the corner in the direction of travel until a LED exists there:
   // a gap that swallowed the corner hands the anchor to its neighbour.
-  let at = clockwise ? cornerIndex(spec, spec.start) : mod(cornerIndex(spec, spec.start) - 1, total)
+  // Wrapped in both directions: with an empty edge before the start corner,
+  // the corner's index equals `total` and the anchor was undefined - the whole
+  // wire order came out rotated by one LED on a three-sided rig.
+  let at = mod(clockwise ? cornerIndex(spec, spec.start) : cornerIndex(spec, spec.start) - 1, total)
   while (!survives(at)) at = mod(at + (clockwise ? 1 : -1), total)
   const anchor = geometric[at] as LedRect
 

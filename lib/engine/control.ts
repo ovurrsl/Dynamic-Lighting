@@ -123,7 +123,10 @@ export interface WifiCredentials {
  * possible outcomes.
  */
 export function wifiControl (credentials: WifiCredentials, save = true): Uint8Array {
-  const ssid = tlvText(TLV.wifiSsid, credentials.ssid.trim(), MAX_SSID_BYTES)
+  // Sent as typed: 802.11 allows a name that begins or ends with a space and
+  // the firmware takes the exact bytes, so trimming here made such a network
+  // impossible to join. Only "nothing but spaces" counts as no name.
+  const ssid = tlvText(TLV.wifiSsid, credentials.ssid.trim() === '' ? '' : credentials.ssid, MAX_SSID_BYTES)
   const passphrase = tlvText(TLV.wifiPassphrase, credentials.passphrase, MAX_PASSPHRASE_BYTES)
   if (passphrase.value.length !== 0 &&
       (passphrase.value.length < MIN_PASSPHRASE_BYTES || passphrase.value.length > MAX_PASSPHRASE_BYTES)) {

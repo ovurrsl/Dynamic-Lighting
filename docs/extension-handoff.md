@@ -200,8 +200,8 @@ eklerken buraya da satır ekle.
 |---|---|---|
 | `ambiflux/ping` → `pong` | panel/popup → sw | eklenti var mı, sürüm, motor durumu |
 | `ambiflux/prepare` | popup → sw | **offscreen dokümanı ŞİMDİ kur** (§9) |
-| `ambiflux/start` | panel/popup → sw → offscreen | yakalamayı başlat. **Yük taşımaz**: ekran seçici offscreen dokümanın kendisinde açılır, çünkü popup'ta alınan bir `streamId` orada kullanılamıyor (`offscreen.ts` `openCapture`) |
-| `ambiflux/selftest` | panel/popup → sw → offscreen | ekransız sınama: üretilmiş bir resimle tüm hat |
+| `ambiflux/start` | panel/popup → sw → offscreen | yakalamayı başlat (havuz geneli). **Ekran seçici için yük taşımaz**: seçici offscreen dokümanın kendisinde açılır, çünkü popup'ta alınan bir `streamId` orada kullanılamıyor (`offscreen.ts` `openCapture`). `instance?` yalnız cevabın hangi şeridin durumunu/hatasını taşıyacağını söyler |
+| `ambiflux/selftest` | panel/popup → sw → offscreen | ekransız sınama: üretilmiş bir resimle tüm hat; `instance?` cevap için, yukarıdaki gibi |
 | `ambiflux/stop` | panel/popup → sw → offscreen | havuzdaki her şeyi durdur (doküman yoksa yaratma) |
 | `ambiflux/serial` | popup → sw → offscreen | port eşleşti, `getPorts()` ile devral |
 | `ambiflux/status` → `status-reply` | panel → sw | durum + son istatistikler + havuz (`pool`) |
@@ -217,7 +217,7 @@ eklerken buraya da satır ekle.
 | `ambiflux/instances-get` → `instances-reply` | panel/offscreen → sw | saklanan şeritler |
 | `ambiflux/schedule` → `schedule-reply` | panel → sw → offscreen | zaman kurallarını değiştir |
 | `ambiflux/schedule-get` → `schedule-reply` | panel/offscreen → sw | saklanan kurallar |
-| `ambiflux/stats`, `ambiflux/state` | offscreen → sw | yukarı rapor; sw sonuncuyu tutar |
+| `ambiflux/stats`, `ambiflux/state` | offscreen → sw | yukarı rapor; sw sonuncuyu tutar. **Yalnız iç trafik**: `onMessageExternal` bu ikisini türüne bakıp reddeder, yoksa panelin origin'indeki herhangi bir sekme panelin gösterdiği sayıları uydurabilirdi |
 
 **`config` alanı bilinçli olarak `unknown`.** Panelden ya da
 `chrome.storage`'dan geliyor; worker onu `parseEngineConfig` ile ayrıştırıyor
@@ -230,7 +230,10 @@ her mesaj çalışmaya devam ediyor ve hiçbir yere değil, mantıklı bir yere
 düşüyor). `ambiflux/start`, `selftest` ve `stop` ise HAVUZ geneli: "yakalamayı
 başlat" hepsi demek, çünkü tek yakalamayı ve tek seçiciyi paylaşıyorlar.
 Şerit başına başlatmak ikinci şerit için ekranı yeniden sorardı, ki havuzun var
-olma sebebi tam olarak bundan kaçınmak.
+olma sebebi tam olarak bundan kaçınmak. `start` ve `selftest`'teki `instance?`
+yalnız CEVABI adresler: panel hangi şeridi gösteriyorsa onun durumu ve hatası
+döner — 2. şeridin başlatması başarısız olan kullanıcı 1. şeridin "çalışıyor"
+cevabını okuyup arızayı yanlış yerde aramasın diye.
 
 Eski tek yapılandırma anahtarı (`ambiflux/config`) bir kez OKUNUYOR ve ilk
 şerit yapılıyor, sonra bir daha yazılmıyor: yapılandırılmış bir kurulumun

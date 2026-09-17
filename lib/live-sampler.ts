@@ -68,19 +68,55 @@ export function createLiveSampler (config: EngineConfig): LiveSampler {
 
   const decoder = createRgbaDecoder(PREVIEW_WIDTH, PREVIEW_HEIGHT)
   const grid = allocLinearGrid(PREVIEW_WIDTH, PREVIEW_HEIGHT)
-  const detector = createBorderDetector({}, () => performance.now())
 
+  /**
+   * Built from the configuration the engine runs, not from defaults: the
+   * border detector's mode and threshold, the reduction and its options, and
+   * the crop. A preview that ignored them showed the default detector eating
+   * an edge the engine had been told to leave alone - a preview "computed a
+   * different way", which is the mistake this file exists to avoid.
+   */
+  let current = config
   let layout = resolveLayout(config)
-  let sampler = createSampler({ layout, width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT })
+  let detector = buildDetector(config)
+  let sampler = buildSampler(config, layout)
   let out: LedColors = new Float32Array(layout.length * 3)
   let border: Border = NO_BORDER
+
+  function buildDetector (c: EngineConfig) {
+    return createBorderDetector({
+      enabled: c.border.enabled,
+      mode: c.border.mode,
+      threshold: c.border.threshold,
+      blurRemovePx: c.border.blurRemovePx
+    }, () => performance.now())
+  }
+
+  function buildSampler (c: EngineConfig, rects: LedRect[]) {
+    return createSampler({
+      layout: rects,
+      width: PREVIEW_WIDTH,
+      height: PREVIEW_HEIGHT,
+      reducedPixelSetFactor: c.sampling.reducedPixelSetFactor,
+      accuracyLevel: c.sampling.accuracyLevel
+    })
+  }
 
   return {
     rects: () => layout,
 
     configure (next: EngineConfig): void {
+      const borderChanged = JSON.stringify(next.border) !== JSON.stringify(current.border)
+      current = next
       layout = resolveLayout(next)
-      sampler = createSampler({ layout, width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT })
+      sampler = buildSampler(next, layout)
+      // Rebuilt only when its settings changed, for the same reason the engine
+      // rebuilds it with the stages: the candidate it holds was found by the
+      // old probe pattern.
+      if (borderChanged) {
+        detector = buildDetector(next)
+        border = NO_BORDER
+      }
       sampler.setBorder(border)
       out = new Float32Array(layout.length * 3)
     },
@@ -98,13 +134,21 @@ export function createLiveSampler (config: EngineConfig): LiveSampler {
       // it in one step is why there is no WebGL pipeline here.
       context.imageSmoothingEnabled = true
       context.imageSmoothingQuality = 'high'
-      context.drawImage(source, 0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+      // The crop as the source rectangle, exactly as the engine crops (runtime
+      // processFrame): a taskbar the engine has been told to ignore must not
+      // be in the preview either.
+      const crop = current.capture.crop
+      const sx = Math.round(width * crop.left)
+      const sy = Math.round(height * crop.top)
+      const sw = Math.max(1, Math.round(width * (1 - crop.left - crop.right)))
+      const sh = Math.max(1, Math.round(height * (1 - crop.top - crop.bottom)))
+      context.drawImage(source, sx, sy, sw, sh, 0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT)
       const rgba = context.getImageData(0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT).data
 
       decoder.decode(rgba, grid)
       border = detector.process(grid)
       sampler.setBorder(border)
-      sampler.sample(grid, out, 'mean')
+      sampler.sample(grid, out, current.sampling.mode)
 
       const colors: string[] = new Array<string>(layout.length)
       for (let led = 0; led < layout.length; led += 1) {

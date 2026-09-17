@@ -62,6 +62,17 @@ export interface FrameSink {
    * the panel needs to know before it offers the option.
    */
   sendBytes?: (bytes: Uint8Array) => Promise<void>
+  /**
+   * Hands the device back to itself after a Stop, where a transport has such
+   * a notion.
+   *
+   * A WLED has a life of its own - presets, a running effect - and a segment
+   * we froze to paint on stays frozen, on our last frame, until something
+   * unfreezes it. Called by the engine after the black frame on Stop, with the
+   * link left open for the next Start. Our own firmware has its own idle
+   * behaviour once frames stop and needs no word; the loopback has no device.
+   */
+  release?: () => Promise<void>
   close: () => Promise<void>
   /** Whatever this transport counts; merged into the panel's link statistics. */
   stats: () => Record<string, number | string | boolean>

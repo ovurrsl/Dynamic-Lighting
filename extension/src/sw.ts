@@ -445,7 +445,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => handle(
 // External traffic: the hosted panel, admitted by externally_connectable. The
 // browser rejects any origin not in that list before this listener ever runs,
 // so there is no origin check to get wrong here.
-chrome.runtime.onMessageExternal.addListener((message, _sender, sendResponse) => handle(message, sendResponse))
+//
+// What IS checked is which messages a page may send. `stats` and `state` are
+// the engine document's reports to this worker; taken from a page they would
+// let any tab on the panel's origin forge the numbers the panel shows and the
+// state the popup acts on. The browser cannot tell those apart for us - both
+// arrive on the same bus - so the two are refused by type before `handle`.
+const INTERNAL_ONLY: ReadonlySet<string> = new Set(['ambiflux/stats', 'ambiflux/state'])
+chrome.runtime.onMessageExternal.addListener((message, _sender, sendResponse) => {
+  if (isMessage(message) && INTERNAL_ONLY.has(message.type)) {
+    // Answered, with nothing: a page whose sendMessage callback never fires
+    // (measured: the port is left open rather than closed) is a page that
+    // hangs, and a refusal should be a definite answer even to a forger.
+    sendResponse(undefined)
+    return false
+  }
+  return handle(message, sendResponse)
+})
 
 export function currentStats (): Message | null {
   return lastStats

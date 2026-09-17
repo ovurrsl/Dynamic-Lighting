@@ -178,6 +178,9 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
    */
   const activeRef = useRef(activeId)
   activeRef.current = activeId
+  /** The list as last rendered, for callbacks that must not close over a stale one. */
+  const instancesRef = useRef(instances)
+  instancesRef.current = instances
 
   /**
    * Takes one pool report and splits it the way the panel reads it: the active
@@ -254,7 +257,11 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
     let cancelled = false
     void fetchInstances().then((reply) => {
       if (cancelled) return
-      if (reply.instances !== null) setInstances(reply.instances)
+      if (reply.instances !== null) {
+        setInstances(reply.instances)
+        // Mirrored for the page host: a later switch starts from this list.
+        if (reply.error === undefined) storeInstances(reply.instances)
+      }
       // A list WITH an error is the worker's "the stored one could not be
       // read"; an error with no list is the worker being unreachable, which
       // the probe already reports.
@@ -291,6 +298,7 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
       if (cancelled) return
       setSchedule(reply.rules)
       setScheduleProblem(reply.error ?? null)
+      if (reply.error === undefined) storeSchedule(reply.rules)
     })
     return () => { cancelled = true }
   }, [host, probe, pageEngine])
@@ -410,20 +418,28 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
       const result = await (hostRef.current === 'page' ? page() : extension())
       setState(result.state)
       return result
+    } catch (error) {
+      // A page-host action that throws - the pool refusing to start with no
+      // strip enabled, a spec the engine rejects - is an answer, not a crash:
+      // said in the button's notice, with the state it left behind, rather
+      // than left to the console with the panel still showing "starting".
+      const message = error instanceof Error ? error.message : String(error)
+      setState('error')
+      return { state: 'error', error: message }
     } finally {
       busyRef.current = false
       setBusy(false)
     }
   }, [])
 
-  const start = useCallback(() => run(startEngine, async () => {
+  const start = useCallback(() => run(async () => await startEngine(activeRef.current), async () => {
     await pageEngine().pool.start()
     const engine = activeEngine()
     const error = engine?.error()
     return { state: engine?.state() ?? 'idle', ...(error === undefined ? {} : { error }) }
   }), [run, pageEngine, activeEngine])
 
-  const selfTest = useCallback(() => run(selfTestEngine, async () => {
+  const selfTest = useCallback(() => run(async () => await selfTestEngine(activeRef.current), async () => {
     await pageEngine().pool.selfTest()
     const engine = activeEngine()
     const error = engine?.error()
@@ -501,11 +517,16 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
   const saveScheduleRules = useCallback(async (rules: ScheduleRule[]): Promise<SaveResult> => {
     if (hostRef.current !== 'page') {
       // The extension's service worker owns the stored copy there: it outlives
-      // both the engine document and this page, and storing a second copy here
-      // would give two answers to one question.
+      // both the engine document and this page. The page host's copy is only
+      // MIRRORED from it - never read while the extension is the host - so a
+      // switch to the page host starts from the rules the extension had
+      // rather than from whatever this browser last saw months ago.
       const reply = await saveSchedule(rules)
       setSchedule(reply.rules)
-      if (reply.error === undefined) setScheduleProblem(null)
+      if (reply.error === undefined) {
+        setScheduleProblem(null)
+        storeSchedule(reply.rules)
+      }
       return reply.error === undefined ? {} : { error: reply.error }
     }
     try {
@@ -530,7 +551,11 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
     if (hostRef.current !== 'page') {
       const reply = await saveInstancesInExtension(next)
       if (reply.instances !== null) setInstances(reply.instances)
-      if (reply.error === undefined) setStorageProblem(null)
+      if (reply.error === undefined) {
+        setStorageProblem(null)
+        // Mirrored for the page host, as the schedule is (see above).
+        if (reply.instances !== null) storeInstances(reply.instances)
+      }
       return reply.error === undefined ? {} : { error: reply.error }
     }
     try {
@@ -553,7 +578,12 @@ export function EngineProvider ({ children }: { children: React.ReactNode }) {
   const saveConfig = useCallback(async (config: EngineConfig): Promise<SaveResult> => {
     if (hostRef.current !== 'page') {
       const error = await saveConfigInExtension(config, activeRef.current)
-      if (error === null) setInstances((current) => updateInstance(current, activeRef.current, { config }))
+      if (error === null) {
+        const next = updateInstance(instancesRef.current, activeRef.current, { config })
+        setInstances(next)
+        // Mirrored for the page host, as the list and the schedule are.
+        storeInstances(next)
+      }
       return error === null ? {} : { error }
     }
     try {

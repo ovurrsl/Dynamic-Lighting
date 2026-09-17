@@ -34,6 +34,7 @@ import {
 import { CORNERS, DEPTH_MAX, EDGE_GAP_MAX, LAYOUT_DEFAULTS, NO_KEYSTONE, OVERLAP_MAX, type Corner, type Keystone } from '#lib/engine/layout'
 import { COLOR_ORDERS, type ColorOrder } from '#lib/engine/order'
 import { formatOverrideList, formatRangeList, parseOverrideList, parseRangeList } from '#lib/engine/ranges'
+import { WLED_DEFAULT_GAMMA, WLED_GAMMA_MAX, WLED_GAMMA_MIN } from '#lib/engine/wled'
 import { createLiveSampler, PREVIEW_HZ, type LiveFrame, type LiveSampler } from '#lib/live-sampler'
 import { CORNER_ORDER, frameAspect, isDefaultKeystone, wireOrderColor } from '#lib/preview'
 import type { LedRect } from '#lib/engine/types'
@@ -901,6 +902,18 @@ export function LayoutCard ({
               />
             </div>
             <p className="text-xs text-muted">{t('output.segment.note')}</p>
+            <Fraction
+              label={t('output.wledGamma')}
+              value={draft.output.wledGamma ?? WLED_DEFAULT_GAMMA}
+              minValue={WLED_GAMMA_MIN}
+              maxValue={WLED_GAMMA_MAX}
+              step={0.1}
+              onChange={(value) => {
+                setNotice(null)
+                setDraft((current) => ({ ...current, output: { ...current.output, wledGamma: value } }))
+              }}
+            />
+            <p className="text-xs text-muted">{t('output.wledGamma.note')}</p>
             <p className="text-xs text-muted">{t('output.wledFormat')}</p>
           </>
         )}

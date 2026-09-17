@@ -90,9 +90,16 @@ function defaultContext (): AudioContextLike {
   return new Ctor()
 }
 
+interface TrackLike {
+  stop: () => void
+  label?: string
+  /** A real MediaStreamTrack fires 'ended' when the source goes away. */
+  addEventListener?: (type: string, listener: () => void) => void
+}
+
 interface StreamLike {
-  getAudioTracks: () => Array<{ stop: () => void, label?: string }>
-  getTracks?: () => Array<{ stop: () => void }>
+  getAudioTracks: () => TrackLike[]
+  getTracks?: () => TrackLike[]
 }
 
 async function build (
@@ -111,27 +118,49 @@ async function build (
       : 'ses izi alınamadı')
   }
 
-  const context = (options.context ?? defaultContext)()
-  // Autoplay policy: a context created without a gesture starts suspended and
-  // the analyser then reports pure silence with nothing wrong anywhere.
-  if (context.state === 'suspended') await context.resume?.()
+  let stopped = false
+  // The source going away - "Stop sharing" in the browser's own bar, a
+  // microphone unplugged - is a track ending, and only the track says so: the
+  // analyser goes on reporting zeros, which a visualiser cannot tell from a
+  // quiet room. `read()` promises to return false then, and this is what
+  // keeps that promise.
+  for (const track of tracks) track.addEventListener?.('ended', () => { stopped = true })
 
-  const analyser = context.createAnalyser()
-  analyser.fftSize = options.fftSize ?? DEFAULT_FFT
-  // Smoothing is done in our own visualiser, per band, where it can be a
-  // setting. Doing it here as well would be two filters in series with only one
-  // of them adjustable.
-  analyser.smoothingTimeConstant = 0
-  // A wider window than the default -100..-30: music mastered quietly sits
-  // below -30 and would clip the top of the display off.
-  analyser.minDecibels = -90
-  analyser.maxDecibels = -10
+  const stopTracks = (): void => {
+    ;(stream as StreamLike).getTracks?.().forEach((t) => { try { t.stop() } catch { /* gone */ } })
+  }
 
-  const node = context.createMediaStreamSource(stream)
-  node.connect(analyser)
+  let context: AudioContextLike
+  let analyser: AnalyserLike
+  let node: { connect: (node: AnalyserLike) => void, disconnect?: () => void }
+  try {
+    context = (options.context ?? defaultContext)()
+    // Autoplay policy: a context created without a gesture starts suspended and
+    // the analyser then reports pure silence with nothing wrong anywhere.
+    if (context.state === 'suspended') await context.resume?.()
+
+    analyser = context.createAnalyser()
+    analyser.fftSize = options.fftSize ?? DEFAULT_FFT
+    // Smoothing is done in our own visualiser, per band, where it can be a
+    // setting. Doing it here as well would be two filters in series with only one
+    // of them adjustable.
+    analyser.smoothingTimeConstant = 0
+    // A wider window than the default -100..-30: music mastered quietly sits
+    // below -30 and would clip the top of the display off.
+    analyser.minDecibels = -90
+    analyser.maxDecibels = -10
+
+    node = context.createMediaStreamSource(stream)
+    node.connect(analyser)
+  } catch (error) {
+    // The stream was granted and the browser is showing its "recording"
+    // indicator; a graph that fails to build must give the tracks back, or the
+    // indicator stays on with nothing left to stop it.
+    stopTracks()
+    throw error
+  }
 
   const bytes = new Uint8Array(analyser.frequencyBinCount)
-  let stopped = false
 
   return {
     kind,
@@ -155,7 +184,7 @@ async function build (
       }
       // The video half of a display capture has to go too, or the browser keeps
       // showing "sharing your screen" for an audio visualiser.
-      ;(stream as StreamLike).getTracks?.().forEach((t) => { try { t.stop() } catch { /* gone */ } })
+      stopTracks()
       try { await context.close?.() } catch { /* already closed */ }
     }
   }

@@ -195,6 +195,30 @@ ESP tarafında kare başına bir JSON ayrıştırma. Ağ değil, ESP'nin CPU'su
 sınırlıyor. **Ölçülmedi**, ve ölçülene kadar kaç fps olduğu hakkında bir şey
 yazmayacağım.
 
+WLED'in kaynağından (json.cpp, ws.cpp) okunan ve sürücünün (`lib/engine/wled.ts`)
+biçimini belirleyen üç şey — üçü de okundu, hiçbiri cihazda ölçülmedi:
+
+1. **`gamma32()`**: cihaz, JSON ile verilen her rengi kendi renk gamasından
+   geçiriyor (LED ayarları → renk gaması, fabrika değeri 2.8, varsayılan açık).
+   Doğrusal baytı olduğu gibi göndermek onu yolda 2.8'inci kuvvete çıkarır —
+   motorun geri kalanının kaçındığı çifte gama. Sürücü baytları **önceden
+   dengeliyor** (`linear^(1/γ)`); γ panelde `output.wledGamma` ayarı (gaması
+   kapalı cihazda 1).
+2. **Tek çerçeve sınırı**: WebSocket işleyicisi bir mesajı yalnız tek çerçevede
+   bütün geldiğinde ayrıştırıyor (kaynaktaki yorum "max. 1450 bytes") ve
+   bölünene `{"error":9}` diyor. Uzun şerit birkaç mesaj olarak gidiyor, her
+   biri ilk LED indeksiyle adreslenmiş (`"i":[151,"RRGGBB",…]`), mesaj başına
+   en çok 151 LED. Fake bir WebSocket sunucusuna karşı Chromium'da ölçüldü:
+   500 LED = 4 mesaj/kare, en büyük mesaj 1385 bayt, 120 kare/s (loopback TCP,
+   ESP değil).
+3. **`"live":true` gönderilmiyor**: eski el sıkışma onu gönderiyordu, ama bu
+   cihazı UDP gerçek-zaman kipine sokuyor — ana döngü şeridi servis etmeyi
+   bırakıyor ve JSON ile yazılan pikseller hiç gösterilmiyor. El sıkışma artık
+   `{"on":true,"bri":255,"seg":{"id":N,"frz":true}}`: aç, tam parlaklık (motorun
+   kendi parlaklık sınırı tek yetkili), segmenti dondur. Stop'ta siyah kareden
+   sonra `{"seg":{"id":N,"frz":false}}` ile segment cihazın kendi efektine geri
+   veriliyor.
+
 ### 4.3 Tarayıcıdan ulaşılabilirlik tablosu
 
 | Cihaz | Hyperion'un taşıması | Tarayıcıdan | Nasıl |

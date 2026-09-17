@@ -5,6 +5,7 @@ import { MAX_ACCURACY_LEVEL, SAMPLE_MODES } from '#lib/engine/sample'
 import { ConfigError, DEFAULT_BORDER, DEFAULT_CAPTURE, DEFAULT_COLOR, DEFAULT_ENGINE_CONFIG, DEFAULT_SAMPLING, DEFAULT_SMOOTHING, FPS_MAX, GRID_MAX, GRID_MIN, MATRIX_ENGINE_CONFIG, MAX_PIXEL_SET_FACTOR, WIRE_FORMATS, configLedCount, deserialiseEngineConfig, parseEngineConfig, resolveLayout, serialiseEngineConfig, switchTransport, type EngineConfig } from '#lib/engine/config'
 import { DARK_RECT, REFERENCE_LAYOUT, classicLayout, matrixLayout } from '#lib/engine/layout'
 import { SMOOTHING_PROFILES, profileOf } from '#lib/engine/smooth'
+import { WLED_DEFAULT_GAMMA } from '#lib/engine/wled'
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 const classic = (over: Record<string, unknown> = {}): unknown =>
@@ -287,6 +288,31 @@ test('a WLED output defaults to segment 0 and accepts another', () => {
     () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'wled', host: 'x', segment: -1 } }),
     /output.segment/
   )
+})
+
+test('a WLED output carries the device’s colour gamma, defaulting to a stock WLED’s 2.8', () => {
+  const stock = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'wled', host: 'x' } })
+  assert.equal(stock.output.wledGamma, WLED_DEFAULT_GAMMA)
+  const off = parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'wled', host: 'x', wledGamma: 1 } })
+  assert.equal(off.output.wledGamma, 1)
+  for (const bad of [0, 0.5, 4.1, 'x', Number.NaN]) {
+    assert.equal(
+      pathOf(() => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'wled', host: 'x', wledGamma: bad } })),
+      'output.wledGamma'
+    )
+  }
+  // A setting that would do nothing is refused, like the segment.
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'serial', wledGamma: 2.2 } }),
+    /only used by WLED/
+  )
+  assert.throws(
+    () => parseEngineConfig({ ...DEFAULT_ENGINE_CONFIG, output: { transport: 'websocket', host: 'x', wledGamma: 2.2 } }),
+    /only used by WLED/
+  )
+  // And switching to WLED brings a gamma the validator accepts.
+  const switched = switchTransport(DEFAULT_ENGINE_CONFIG.output, 'wled')
+  assert.equal(switched.wledGamma, WLED_DEFAULT_GAMMA)
 })
 
 // ---------------------------------------------------------------------------

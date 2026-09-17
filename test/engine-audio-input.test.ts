@@ -117,3 +117,30 @@ test('a display capture stops its video track too', async () => {
   await source.stop()
   assert.ok(media.stopped.includes('video'), 'the browser would keep saying "sharing your screen"')
 })
+
+test('a track that ends - "Stop sharing", a microphone unplugged - makes read() say so', async () => {
+  // The analyser goes on reporting zeros after the source is gone, which a
+  // visualiser cannot tell from a quiet room. Only the track says so.
+  const listeners: Array<() => void> = []
+  const track = { stop () {}, addEventListener (type: string, fn: () => void) { if (type === 'ended') listeners.push(fn) } }
+  const withEnded = { getAudioTracks: () => [track], getTracks: () => [track] }
+  const source = await openMicrophone({ context: () => fakeContext(), getUserMedia: async () => withEnded })
+  const bins = new Float32Array(8)
+  assert.equal(source.read(bins), true)
+  assert.equal(listeners.length, 1, 'the source listens for the end of its track')
+  for (const fn of listeners) fn()
+  assert.equal(source.read(bins), false)
+})
+
+test('a graph that fails to build gives the tracks back, or the browser keeps saying "recording"', async () => {
+  const s = stream() as { stopped: string[] }
+  await assert.rejects(
+    () => openMicrophone({
+      context: () => fakeContext({ createAnalyser: () => { throw new Error('no analyser today') } }),
+      getUserMedia: async () => s
+    }),
+    /no analyser today/
+  )
+  assert.ok(s.stopped.includes('audio'), 'the audio track must be stopped')
+  assert.ok(s.stopped.includes('video'), 'and any video track with it')
+})

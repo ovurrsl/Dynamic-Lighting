@@ -30,6 +30,24 @@ const LINK_KEY = {
 } as const satisfies Record<EngineStats['link']['mode'], MessageKey>
 
 /**
+ * What a network link is doing. Shown only for the two socket transports: a
+ * serial port and the loopback are open the moment they exist, and saying so
+ * would be noise beside the one link that genuinely spends time dialling.
+ */
+const LINK_STATE_KEY = {
+  idle: 'device.link.state.idle',
+  connecting: 'device.link.state.connecting',
+  open: 'device.link.state.open',
+  error: 'device.link.state.error'
+} as const satisfies Record<NonNullable<EngineStats['link']['state']>, MessageKey>
+
+function linkLabel (t: (key: MessageKey) => string, link: EngineStats['link']): string {
+  const base = t(LINK_KEY[link.mode]) + (link.port !== undefined ? ` ${link.port}` : '')
+  const dialling = (link.mode === 'websocket' || link.mode === 'wled') && link.state !== undefined
+  return dialling ? `${base} — ${t(LINK_STATE_KEY[link.state as keyof typeof LINK_STATE_KEY])}` : base
+}
+
+/**
  * The three frame routes, named rather than shown as a slug: 'video-timer' says
  * nothing to a user, and the difference between them is the difference between
  * a frame per screen change and a frame per tick.
@@ -139,10 +157,7 @@ export function DeviceCard () {
                 <Stat label={t('device.stat.pipelineDrops')} value={String(stats.pipelineDrops)} />
                 <Stat label={t('device.stat.serialDrops')} value={String(stats.link.dropped)} />
                 <Stat label={t('device.stat.process')} value={`${fmt(stats.processMs.p50, 2)} / ${fmt(stats.processMs.p99, 2)} ms`} />
-                <Stat
-                  label={t('device.stat.link')}
-                  value={t(LINK_KEY[stats.link.mode]) + (stats.link.port !== undefined ? ` ${stats.link.port}` : '')}
-                />
+                <Stat label={t('device.stat.link')} value={linkLabel(t, stats.link)} />
                 <Stat
                   label={t('device.stat.border')}
                   value={stats.border.unknown ? t('layout.borderUnknown') : `${stats.border.topBottom} / ${stats.border.leftRight} px`}

@@ -53,20 +53,20 @@ function classicLayout(spec) {
   for (let i = 0; i < top; i++) {
     const stepX = (tr.x - tl.x - 2 * gapH) / top;
     const stepY = (tr.y - tl.y) / top;
-    const yMin = tl.y + stepY * i;
+    const yMin = clampUnit(tl.y + stepY * i);
     rects.push({
       xMin: grow(tl.x + stepX * i + gapH, -1),
       xMax: grow(tl.x + stepX * (i + 1) + gapH, 1),
       yMin,
-      yMax: yMin + dh
+      yMax: clampUnit(yMin + dh)
     });
   }
   for (let i = 0; i < right; i++) {
     const stepX = (br.x - tr.x) / right;
     const stepY = (br.y - tr.y - 2 * gapV) / right;
-    const xMax = tr.x + stepX * (i + 1);
+    const xMax = clampUnit(tr.x + stepX * (i + 1));
     rects.push({
-      xMin: xMax - dv,
+      xMin: clampUnit(xMax - dv),
       xMax,
       yMin: grow(tr.y + stepY * i + gapV, -1),
       yMax: grow(tr.y + stepY * (i + 1) + gapV, 1)
@@ -75,21 +75,21 @@ function classicLayout(spec) {
   for (let i = bottom - 1; i >= 0; i--) {
     const stepX = (br.x - bl.x - 2 * gapH) / bottom;
     const stepY = (br.y - bl.y) / bottom;
-    const yMax = bl.y + stepY * i;
+    const yMax = clampUnit(bl.y + stepY * i);
     rects.push({
       xMin: grow(bl.x + stepX * i + gapH, -1),
       xMax: grow(bl.x + stepX * (i + 1) + gapH, 1),
-      yMin: yMax - dh,
+      yMin: clampUnit(yMax - dh),
       yMax
     });
   }
   for (let i = left - 1; i >= 0; i--) {
     const stepX = (bl.x - tl.x) / left;
     const stepY = (bl.y - tl.y - 2 * gapV) / left;
-    const xMin = tl.x + stepX * i;
+    const xMin = clampUnit(tl.x + stepX * i);
     rects.push({
       xMin,
-      xMax: xMin + dv,
+      xMax: clampUnit(xMin + dv),
       yMin: grow(tl.y + stepY * i + gapV, -1),
       yMax: grow(tl.y + stepY * (i + 1) + gapV, 1)
     });
@@ -102,7 +102,7 @@ function orient(geometric, spec) {
   const clockwise = spec.clockwise;
   const hasGap = gap !== void 0 && gap.length > 0;
   const survives = (at2) => !hasGap || at2 < gap.position || at2 >= gap.position + gap.length;
-  let at = clockwise ? cornerIndex(spec, spec.start) : mod(cornerIndex(spec, spec.start) - 1, total);
+  let at = mod(clockwise ? cornerIndex(spec, spec.start) : cornerIndex(spec, spec.start) - 1, total);
   while (!survives(at)) at = mod(at + (clockwise ? 1 : -1), total);
   const anchor = geometric[at];
   const kept = hasGap ? geometric.slice(0, gap.position).concat(geometric.slice(gap.position + gap.length)) : geometric;
@@ -424,6 +424,23 @@ var SMOOTHING_PROFILES = Object.freeze({
 });
 var SMOOTHING_PROFILE_NAMES = Object.freeze(["cinema", "balanced", "competitive"]);
 
+// lib/engine/address.ts
+var TO_WS = Object.freeze({
+  http: "ws",
+  https: "wss",
+  ws: "ws",
+  wss: "wss"
+});
+
+// lib/engine/wled.ts
+var WLED_DEFAULT_GAMMA = 2.8;
+var WLED_GAMMA_MIN = 1;
+var WLED_GAMMA_MAX = 4;
+var WLED_MAX_FRAME_BYTES = 1400;
+var FRAME_OVERHEAD_BYTES = 40;
+var LED_BYTES = 9;
+var WLED_LEDS_PER_FRAME = Math.floor((WLED_MAX_FRAME_BYTES - FRAME_OVERHEAD_BYTES) / LED_BYTES);
+
 // lib/engine/config.ts
 var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
 var OUTPUT_TRANSPORTS = Object.freeze(["serial", "websocket", "wled"]);
@@ -719,6 +736,7 @@ function parseEngineConfig(value) {
   if (transport === "serial") {
     if (outputRaw.host !== void 0) throw new ConfigError("output.host", "is only used by the network transports");
     if (outputRaw.segment !== void 0) throw new ConfigError("output.segment", "is only used by WLED");
+    if (outputRaw.wledGamma !== void 0) throw new ConfigError("output.wledGamma", "is only used by WLED");
   } else {
     const host = outputRaw.host;
     if (typeof host !== "string" || host.trim() === "") {
@@ -727,8 +745,10 @@ function parseEngineConfig(value) {
     output.host = host.trim();
     if (transport === "wled") {
       output.segment = outputRaw.segment === void 0 ? 0 : integer(outputRaw.segment, "output.segment", 0);
-    } else if (outputRaw.segment !== void 0) {
-      throw new ConfigError("output.segment", "is only used by WLED");
+      output.wledGamma = boundedFraction(outputRaw.wledGamma, "output.wledGamma", WLED_GAMMA_MIN, WLED_GAMMA_MAX, WLED_DEFAULT_GAMMA);
+    } else {
+      if (outputRaw.segment !== void 0) throw new ConfigError("output.segment", "is only used by WLED");
+      if (outputRaw.wledGamma !== void 0) throw new ConfigError("output.wledGamma", "is only used by WLED");
     }
   }
   if (transport === "wled" && outputRaw.format !== void 0 && outputRaw.format !== "Afx") {
@@ -1308,7 +1328,14 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => handle(message, sendResponse));
-chrome.runtime.onMessageExternal.addListener((message, _sender, sendResponse) => handle(message, sendResponse));
+var INTERNAL_ONLY = /* @__PURE__ */ new Set(["ambiflux/stats", "ambiflux/state"]);
+chrome.runtime.onMessageExternal.addListener((message, _sender, sendResponse) => {
+  if (isMessage(message) && INTERNAL_ONLY.has(message.type)) {
+    sendResponse(void 0);
+    return false;
+  }
+  return handle(message, sendResponse);
+});
 function currentStats() {
   return lastStats;
 }

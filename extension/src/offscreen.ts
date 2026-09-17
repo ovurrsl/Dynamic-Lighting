@@ -168,16 +168,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // them: one picker, every strip following the screen it shows. A per-strip
     // start would ask for the screen again for the second strip, which is the
     // one thing the pool exists to avoid.
+    // The answer describes the strip the panel is showing, not the first one:
+    // a user watching strip 2 whose start failed must not read strip 1's
+    // "running" and go looking for a fault in the wrong place.
     case 'ambiflux/start':
       pool.start().then(
-        () => sendResponse({ state: firstState(), error: firstError() }),
-        (error: unknown) => sendResponse({ state: firstState(), error: describe(error) })
+        () => sendResponse(outcomeOf(message.instance)),
+        (error: unknown) => sendResponse({ ...outcomeOf(message.instance), error: describe(error) })
       )
       return true
     case 'ambiflux/selftest':
       pool.selfTest().then(
-        () => sendResponse({ state: firstState(), error: firstError() }),
-        (error: unknown) => sendResponse({ state: firstState(), error: describe(error) })
+        () => sendResponse(outcomeOf(message.instance)),
+        (error: unknown) => sendResponse({ ...outcomeOf(message.instance), error: describe(error) })
       )
       return true
     case 'ambiflux/stop':
@@ -292,7 +295,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 })
 
 const firstState = (): string => addressed()?.state() ?? 'idle'
-const firstError = (): string | undefined => addressed()?.error()
+
+/** The state and error of one strip, shaped as the start/self-test answer. */
+function outcomeOf (instance?: string): { state: string, error?: string } {
+  const engine = addressed(instance)
+  if (engine === null) {
+    return instance === undefined
+      ? { state: 'idle' }
+      : { state: 'error', error: `şerit bulunamadı: ${instance}` }
+  }
+  const error = engine.error()
+  return { state: engine.state(), ...(error === undefined ? {} : { error }) }
+}
 
 /**
  * The worker holds the stored strips, so ask for them as soon as this document

@@ -3,6 +3,7 @@ import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { FrameParser } from '#lib/engine/protocol'
+import { DEFAULT_ENGINE_CONFIG } from '#lib/engine/config'
 import { createEngine, type CanvasLike, type Engine, type EngineHost } from '#lib/engine/runtime'
 import type { FrameSource } from '#lib/engine/source'
 
@@ -161,6 +162,86 @@ test('a relink leaves the port open and no stale serial error behind', async () 
     await run(w, 10)
     assert.equal(w.engine.link().mode, 'port')
     assert.equal(w.engine.error(), undefined)
+  } finally {
+    w.engine.stop()
+    w.restore()
+  }
+})
+
+/** LED `n` of every frame the parser accepts, as the 16-bit linear triple it carries. */
+function ledOf (frames: readonly Uint8Array[], n: number): Array<[number, number, number]> {
+  const parser = new FrameParser()
+  const out: Array<[number, number, number]> = []
+  for (const bytes of frames) {
+    for (const frame of parser.push(bytes)) {
+      const p = frame.payload
+      const at = n * 6
+      out.push([
+        ((p[at] as number) << 8) | (p[at + 1] as number),
+        ((p[at + 2] as number) << 8) | (p[at + 3] as number),
+        ((p[at + 4] as number) << 8) | (p[at + 5] as number)
+      ])
+    }
+  }
+  return out
+}
+
+const last = <T>(items: readonly T[]): T => items[items.length - 1] as T
+
+test('the colour adjustment applies to a colour and an effect, not only to the capture', async () => {
+  // It used to run inside processFrame, on captured frames alone: the
+  // brightness ceiling and the white balance the user set had no effect on
+  // "warm white" or on the rainbow, which is where they would have noticed.
+  const w = wire()
+  try {
+    w.engine.applyConfig({ ...DEFAULT_ENGINE_CONFIG, color: { ...DEFAULT_ENGINE_CONFIG.color, brightness: 50 } })
+    w.engine.setColor({ r: 255, g: 255, b: 255 })
+    await run(w, 40)
+    const dimmed = last(firstLeds(w.frames()))
+    assert.ok(dimmed[0] < 60000 && dimmed[0] > 1000, `the ceiling should have dimmed white, got ${String(dimmed)}`)
+
+    w.engine.applyConfig({ ...DEFAULT_ENGINE_CONFIG, color: { ...DEFAULT_ENGINE_CONFIG.color, brightness: 100 } })
+    await run(w, 40)
+    const full = last(firstLeds(w.frames()))
+    assert.ok(full[0] >= 65000, `and back to full at 100, got ${String(full)}`)
+  } finally {
+    w.engine.stop()
+    w.restore()
+  }
+})
+
+test('the backlight floor lifts a dark CAPTURE only: a colour somebody chose as black stays black', async () => {
+  // Hyperion.cpp:655-664 - the floor is for the picture, where "the scene is
+  // dark" and "it broke" look the same. On a chosen colour it would make
+  // "turn the strip black" impossible.
+  const w = wire()
+  try {
+    w.engine.applyConfig({ ...DEFAULT_ENGINE_CONFIG, color: { ...DEFAULT_ENGINE_CONFIG.color, backlightThreshold: 40 } })
+    w.engine.setColor({ r: 0, g: 0, b: 0 })
+    await run(w, 40)
+    assert.deepEqual(last(firstLeds(w.frames())), [0, 0, 0])
+  } finally {
+    w.engine.stop()
+    w.restore()
+  }
+})
+
+test('a blacklisted LED is sent black whatever a colour or an effect painted on it', async () => {
+  // The sampler kept the blacklist on its own - a zero-area rectangle samples
+  // black - but every other source writes all LEDs, and a blacklisted LED lit
+  // up the moment an effect ran. The mask now sits where every frame passes.
+  const w = wire()
+  try {
+    w.engine.applyConfig({ ...DEFAULT_ENGINE_CONFIG, blacklist: [{ start: 0, length: 1 }] })
+    w.engine.setColor({ r: 255, g: 255, b: 255 })
+    await run(w, 40)
+    assert.deepEqual(last(ledOf(w.frames(), 0)), [0, 0, 0], 'LED 0 is blacklisted')
+    const neighbour = last(ledOf(w.frames(), 1))
+    assert.ok(neighbour[0] >= 65000, `LED 1 is not, got ${String(neighbour)}`)
+
+    w.engine.runEffect({ kind: 'rainbow' })
+    await run(w, 40)
+    assert.deepEqual(last(ledOf(w.frames(), 0)), [0, 0, 0], 'and stays black under an effect')
   } finally {
     w.engine.stop()
     w.restore()

@@ -137,9 +137,11 @@ function outcome (reply: unknown): StartOutcome {
  * the popup was the only way to start the engine, and a product whose main
  * control lives in a toolbar menu is a product people cannot find.
  */
-export async function startEngine (): Promise<StartOutcome> {
+export async function startEngine (instance?: string): Promise<StartOutcome> {
   try {
-    return outcome(await send({ type: 'ambiflux/start', target: 'sw' }))
+    // The pool starts every enabled strip; `instance` only says whose state
+    // and error the answer should carry - the one the panel is showing.
+    return outcome(await send({ type: 'ambiflux/start', target: 'sw', ...(instance === undefined ? {} : { instance }) }))
   } catch (error) {
     return { state: 'error', error: error instanceof Error ? error.message : String(error) }
   }
@@ -152,9 +154,9 @@ export async function startEngine (): Promise<StartOutcome> {
  * started" - which look identical from outside, and are the two things a user
  * with a dark strip is actually choosing between.
  */
-export async function selfTestEngine (): Promise<StartOutcome> {
+export async function selfTestEngine (instance?: string): Promise<StartOutcome> {
   try {
-    return outcome(await send({ type: 'ambiflux/selftest', target: 'sw' }))
+    return outcome(await send({ type: 'ambiflux/selftest', target: 'sw', ...(instance === undefined ? {} : { instance }) }))
   } catch (error) {
     return { state: 'error', error: error instanceof Error ? error.message : String(error) }
   }

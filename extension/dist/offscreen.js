@@ -50,20 +50,20 @@ function classicLayout(spec) {
   for (let i = 0; i < top; i++) {
     const stepX = (tr.x - tl.x - 2 * gapH) / top;
     const stepY = (tr.y - tl.y) / top;
-    const yMin = tl.y + stepY * i;
+    const yMin = clampUnit(tl.y + stepY * i);
     rects.push({
       xMin: grow(tl.x + stepX * i + gapH, -1),
       xMax: grow(tl.x + stepX * (i + 1) + gapH, 1),
       yMin,
-      yMax: yMin + dh
+      yMax: clampUnit(yMin + dh)
     });
   }
   for (let i = 0; i < right; i++) {
     const stepX = (br.x - tr.x) / right;
     const stepY = (br.y - tr.y - 2 * gapV) / right;
-    const xMax = tr.x + stepX * (i + 1);
+    const xMax = clampUnit(tr.x + stepX * (i + 1));
     rects.push({
-      xMin: xMax - dv,
+      xMin: clampUnit(xMax - dv),
       xMax,
       yMin: grow(tr.y + stepY * i + gapV, -1),
       yMax: grow(tr.y + stepY * (i + 1) + gapV, 1)
@@ -72,21 +72,21 @@ function classicLayout(spec) {
   for (let i = bottom - 1; i >= 0; i--) {
     const stepX = (br.x - bl.x - 2 * gapH) / bottom;
     const stepY = (br.y - bl.y) / bottom;
-    const yMax = bl.y + stepY * i;
+    const yMax = clampUnit(bl.y + stepY * i);
     rects.push({
       xMin: grow(bl.x + stepX * i + gapH, -1),
       xMax: grow(bl.x + stepX * (i + 1) + gapH, 1),
-      yMin: yMax - dh,
+      yMin: clampUnit(yMax - dh),
       yMax
     });
   }
   for (let i = left - 1; i >= 0; i--) {
     const stepX = (bl.x - tl.x) / left;
     const stepY = (bl.y - tl.y - 2 * gapV) / left;
-    const xMin = tl.x + stepX * i;
+    const xMin = clampUnit(tl.x + stepX * i);
     rects.push({
       xMin,
-      xMax: xMin + dv,
+      xMax: clampUnit(xMin + dv),
       yMin: grow(tl.y + stepY * i + gapV, -1),
       yMax: grow(tl.y + stepY * (i + 1) + gapV, 1)
     });
@@ -99,7 +99,7 @@ function orient(geometric, spec) {
   const clockwise = spec.clockwise;
   const hasGap = gap !== void 0 && gap.length > 0;
   const survives = (at2) => !hasGap || at2 < gap.position || at2 >= gap.position + gap.length;
-  let at = clockwise ? cornerIndex(spec, spec.start) : mod(cornerIndex(spec, spec.start) - 1, total);
+  let at = mod(clockwise ? cornerIndex(spec, spec.start) : cornerIndex(spec, spec.start) - 1, total);
   while (!survives(at)) at = mod(at + (clockwise ? 1 : -1), total);
   const anchor = geometric[at];
   const kept = hasGap ? geometric.slice(0, gap.position).concat(geometric.slice(gap.position + gap.length)) : geometric;
@@ -1962,6 +1962,113 @@ function requireNonNegative(name, value) {
   if (!(value >= 0) || !Number.isFinite(value)) throw new RangeError(`smooth: ${name} must be a non-negative finite number, got ${value}`);
 }
 
+// lib/engine/address.ts
+var SCHEME = /^([a-z][a-z0-9+.-]*):\/\//i;
+var TO_WS = Object.freeze({
+  http: "ws",
+  https: "wss",
+  ws: "ws",
+  wss: "wss"
+});
+function parseAddress(typed, label) {
+  const trimmed = typed.trim();
+  if (trimmed === "") throw new RangeError(`${label}: host is empty`);
+  const match = SCHEME.exec(trimmed);
+  let text;
+  if (match === null) {
+    const bareV6 = /^[0-9a-f:]+$/i.test(trimmed) && trimmed.split(":").length > 2;
+    text = `ws://${bareV6 ? `[${trimmed}]` : trimmed}`;
+  } else {
+    const typedScheme = match[1];
+    const scheme = TO_WS[typedScheme.toLowerCase()];
+    if (scheme === void 0) throw new RangeError(`${label}: ${typedScheme}:// is not a WebSocket address`);
+    text = `${scheme}://${trimmed.slice(match[0].length)}`;
+  }
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new RangeError(`${label}: not an address: ${trimmed}`);
+  }
+  if (url.hostname === "") throw new RangeError(`${label}: host is empty`);
+  if (url.username !== "" || url.password !== "") {
+    throw new RangeError(`${label}: an address cannot carry a user name or password`);
+  }
+  url.hash = "";
+  return url;
+}
+function formatAddress(url, path) {
+  return `${url.protocol}//${url.host}${path}${url.search}`;
+}
+
+// lib/engine/wled.ts
+var WLED_PATH = "/ws";
+var WLED_DEFAULT_GAMMA = 2.8;
+var WLED_GAMMA_MIN = 1;
+var WLED_GAMMA_MAX = 4;
+var WLED_MAX_FRAME_BYTES = 1400;
+var FRAME_OVERHEAD_BYTES = 40;
+var LED_BYTES = 9;
+var WLED_LEDS_PER_FRAME = Math.floor((WLED_MAX_FRAME_BYTES - FRAME_OVERHEAD_BYTES) / LED_BYTES);
+var HEX = "0123456789ABCDEF";
+function channel2(value, gamma) {
+  const linear = clamp01(Number.isFinite(value) ? value : 0);
+  const encoded = gamma === 1 ? linear : Math.pow(linear, 1 / gamma);
+  return Math.round(encoded * 255);
+}
+function hex2(value) {
+  return `${HEX[value >> 4]}${HEX[value & 15]}`;
+}
+function checkGamma(gamma) {
+  if (!Number.isFinite(gamma) || gamma < WLED_GAMMA_MIN || gamma > WLED_GAMMA_MAX) {
+    throw new RangeError(`wled: gamma must be in ${WLED_GAMMA_MIN}..${WLED_GAMMA_MAX}, got ${String(gamma)}`);
+  }
+  return gamma;
+}
+function checkSegment(segment) {
+  if (!Number.isInteger(segment) || segment < 0) {
+    throw new RangeError(`wled: segment must be a non-negative integer, got ${String(segment)}`);
+  }
+  return segment;
+}
+function wledFrames(colors, leds, options = {}) {
+  if (!Number.isInteger(leds) || leds < 1) {
+    throw new RangeError(`wled: leds must be a positive integer, got ${String(leds)}`);
+  }
+  if (colors.length < leds * 3) {
+    throw new RangeError(`wled: colors holds ${colors.length} floats, needs ${leds * 3}`);
+  }
+  const segment = checkSegment(options.segment ?? 0);
+  const gamma = checkGamma(options.gamma ?? WLED_DEFAULT_GAMMA);
+  const frames = [];
+  for (let start = 0; start < leds; start += WLED_LEDS_PER_FRAME) {
+    const stop = Math.min(leds, start + WLED_LEDS_PER_FRAME);
+    let text = `{"seg":{"id":${segment},"i":[${start}`;
+    for (let led = start; led < stop; led++) {
+      const at = led * 3;
+      const r = channel2(colors[at] ?? 0, gamma);
+      const g = channel2(colors[at + 1] ?? 0, gamma);
+      const b = channel2(colors[at + 2] ?? 0, gamma);
+      text += `,"${hex2(r)}${hex2(g)}${hex2(b)}"`;
+    }
+    frames.push(`${text}]}}`);
+  }
+  return frames;
+}
+function wledHello(options = {}) {
+  const segment = checkSegment(options.segment ?? 0);
+  return `{"on":true,"bri":255,"seg":{"id":${segment},"frz":true}}`;
+}
+function wledGoodbye(options = {}) {
+  const segment = checkSegment(options.segment ?? 0);
+  return `{"seg":{"id":${segment},"frz":false}}`;
+}
+function wledUrl(host) {
+  const url = parseAddress(host, "wled");
+  const path = url.pathname.replace(/\/+$/, "");
+  return formatAddress(url, path === "" || path === WLED_PATH ? WLED_PATH : path);
+}
+
 // lib/engine/config.ts
 var WIRE_FORMATS = Object.freeze(["Afx", "Awa", "Ada"]);
 var OUTPUT_TRANSPORTS = Object.freeze(["serial", "websocket", "wled"]);
@@ -2262,6 +2369,7 @@ function parseEngineConfig(value) {
   if (transport === "serial") {
     if (outputRaw.host !== void 0) throw new ConfigError("output.host", "is only used by the network transports");
     if (outputRaw.segment !== void 0) throw new ConfigError("output.segment", "is only used by WLED");
+    if (outputRaw.wledGamma !== void 0) throw new ConfigError("output.wledGamma", "is only used by WLED");
   } else {
     const host = outputRaw.host;
     if (typeof host !== "string" || host.trim() === "") {
@@ -2270,8 +2378,10 @@ function parseEngineConfig(value) {
     output.host = host.trim();
     if (transport === "wled") {
       output.segment = outputRaw.segment === void 0 ? 0 : integer(outputRaw.segment, "output.segment", 0);
-    } else if (outputRaw.segment !== void 0) {
-      throw new ConfigError("output.segment", "is only used by WLED");
+      output.wledGamma = boundedFraction(outputRaw.wledGamma, "output.wledGamma", WLED_GAMMA_MIN, WLED_GAMMA_MAX, WLED_DEFAULT_GAMMA);
+    } else {
+      if (outputRaw.segment !== void 0) throw new ConfigError("output.segment", "is only used by WLED");
+      if (outputRaw.wledGamma !== void 0) throw new ConfigError("output.wledGamma", "is only used by WLED");
     }
   }
   if (transport === "wled" && outputRaw.format !== void 0 && outputRaw.format !== "Afx") {
@@ -2782,11 +2892,11 @@ function parseAudioSpec(value) {
   if (raw.color !== void 0) {
     const color = raw.color;
     if (typeof color !== "object" || color === null) throw new TypeError("audio: color must be an object");
-    spec.color = { r: channel2(color.r), g: channel2(color.g), b: channel2(color.b) };
+    spec.color = { r: channel3(color.r), g: channel3(color.g), b: channel3(color.b) };
   }
   return spec;
 }
-function channel2(value) {
+function channel3(value) {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
     throw new RangeError(`audio: a colour channel is an integer 0..255, got ${String(value)}`);
   }
@@ -2810,17 +2920,37 @@ async function build(kind, stream, options) {
     });
     throw new Error(kind === "display" ? "bu taray\u0131c\u0131 sekme/sistem sesi payla\u015Fm\u0131yor" : "ses izi al\u0131namad\u0131");
   }
-  const context = (options.context ?? defaultContext)();
-  if (context.state === "suspended") await context.resume?.();
-  const analyser = context.createAnalyser();
-  analyser.fftSize = options.fftSize ?? DEFAULT_FFT;
-  analyser.smoothingTimeConstant = 0;
-  analyser.minDecibels = -90;
-  analyser.maxDecibels = -10;
-  const node = context.createMediaStreamSource(stream);
-  node.connect(analyser);
-  const bytes = new Uint8Array(analyser.frequencyBinCount);
   let stopped = false;
+  for (const track of tracks) track.addEventListener?.("ended", () => {
+    stopped = true;
+  });
+  const stopTracks = () => {
+    ;
+    stream.getTracks?.().forEach((t) => {
+      try {
+        t.stop();
+      } catch {
+      }
+    });
+  };
+  let context;
+  let analyser;
+  let node;
+  try {
+    context = (options.context ?? defaultContext)();
+    if (context.state === "suspended") await context.resume?.();
+    analyser = context.createAnalyser();
+    analyser.fftSize = options.fftSize ?? DEFAULT_FFT;
+    analyser.smoothingTimeConstant = 0;
+    analyser.minDecibels = -90;
+    analyser.maxDecibels = -10;
+    node = context.createMediaStreamSource(stream);
+    node.connect(analyser);
+  } catch (error) {
+    stopTracks();
+    throw error;
+  }
+  const bytes = new Uint8Array(analyser.frequencyBinCount);
   return {
     kind,
     sampleRate: context.sampleRate,
@@ -2849,13 +2979,7 @@ async function build(kind, stream, options) {
         } catch {
         }
       }
-      ;
-      stream.getTracks?.().forEach((t) => {
-        try {
-          t.stop();
-        } catch {
-        }
-      });
+      stopTracks();
       try {
         await context.close?.();
       } catch {
@@ -3248,7 +3372,7 @@ function encodeControl(items) {
   return encodeAxc(body);
 }
 function wifiControl(credentials, save = true) {
-  const ssid = tlvText(TLV.wifiSsid, credentials.ssid.trim(), MAX_SSID_BYTES);
+  const ssid = tlvText(TLV.wifiSsid, credentials.ssid.trim() === "" ? "" : credentials.ssid, MAX_SSID_BYTES);
   const passphrase = tlvText(TLV.wifiPassphrase, credentials.passphrase, MAX_PASSPHRASE_BYTES);
   if (passphrase.value.length !== 0 && (passphrase.value.length < MIN_PASSPHRASE_BYTES || passphrase.value.length > MAX_PASSPHRASE_BYTES)) {
     throw new RangeError(
@@ -3441,65 +3565,25 @@ function createFrameEncoder(format, leds, options = {}) {
   }
 }
 
-// lib/engine/wled.ts
-var HEX = "0123456789ABCDEF";
-function channel3(value) {
-  return Math.round(clamp01(value) * 255);
-}
-function hex2(value) {
-  return `${HEX[value >> 4]}${HEX[value & 15]}`;
-}
-function wledFrame(colors, leds, options = {}) {
-  if (!Number.isInteger(leds) || leds < 1) {
-    throw new RangeError(`wled: leds must be a positive integer, got ${String(leds)}`);
-  }
-  if (colors.length < leds * 3) {
-    throw new RangeError(`wled: colors holds ${colors.length} floats, needs ${leds * 3}`);
-  }
-  const segment = options.segment ?? 0;
-  if (!Number.isInteger(segment) || segment < 0) {
-    throw new RangeError(`wled: segment must be a non-negative integer, got ${String(segment)}`);
-  }
-  const encoding = options.encoding ?? "hex";
-  const parts = [];
-  for (let led = 0; led < leds; led++) {
-    const at = led * 3;
-    const r = channel3(colors[at] ?? 0);
-    const g = channel3(colors[at + 1] ?? 0);
-    const b = channel3(colors[at + 2] ?? 0);
-    parts.push(encoding === "hex" ? `"${hex2(r)}${hex2(g)}${hex2(b)}"` : `[${r},${g},${b}]`);
-  }
-  const body = `{"id":${segment},"i":[${parts.join(",")}]}`;
-  return options.keepOn === false ? `{"seg":${body}}` : `{"on":true,"seg":${body}}`;
-}
-function wledHello(options = {}) {
-  const segment = options.segment ?? 0;
-  return `{"on":true,"live":true,"seg":{"id":${segment}}}`;
-}
-function wledUrl(host) {
-  const trimmed = host.trim();
-  if (trimmed === "") throw new RangeError("wled: host is empty");
-  if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) {
-    return trimmed.endsWith("/ws") ? trimmed : `${trimmed.replace(/\/+$/, "")}/ws`;
-  }
-  const bare = trimmed.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  const scheme = trimmed.startsWith("https://") ? "wss" : "ws";
-  return `${scheme}://${bare}/ws`;
-}
-
 // lib/engine/net.ts
 var SOCKET_OPEN = 1;
 var DEFAULT_RETRY_MS = 1e3;
 var DEFAULT_MAX_RETRY_MS = 15e3;
+var DEFAULT_HIGH_WATER_BYTES = 16 * 1024;
 function defaultFactory(url) {
   const ctor = globalThis.WebSocket;
   if (ctor === void 0) throw new Error("net: this runtime has no WebSocket");
   return new ctor(url);
 }
+function describe3(error) {
+  if (error instanceof Error) return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
+  return String(error);
+}
 function connect(options, onOpen) {
   const factory = options.factory ?? defaultFactory;
   const baseRetry = options.retryMs ?? DEFAULT_RETRY_MS;
   const maxRetry = options.maxRetryMs ?? DEFAULT_MAX_RETRY_MS;
+  const highWater = options.highWaterBytes ?? DEFAULT_HIGH_WATER_BYTES;
   const schedule = options.schedule ?? ((fn, ms) => setTimeout(fn, ms));
   const cancel = options.cancel ?? ((handle) => {
     clearTimeout(handle);
@@ -3511,9 +3595,20 @@ function connect(options, onOpen) {
   let closed = false;
   let connects = 0;
   let drops = 0;
+  let stalls = 0;
   let closes = 0;
+  let reason;
+  const ready = () => {
+    if (socket === null || socket.readyState !== SOCKET_OPEN) return false;
+    return (socket.bufferedAmount ?? 0) <= highWater;
+  };
   const send = (data) => {
     if (socket === null || socket.readyState !== SOCKET_OPEN) {
+      drops++;
+      return false;
+    }
+    if ((socket.bufferedAmount ?? 0) > highWater) {
+      stalls++;
       drops++;
       return false;
     }
@@ -3531,8 +3626,10 @@ function connect(options, onOpen) {
     let next;
     try {
       next = factory(options.url);
-    } catch {
+    } catch (error) {
       state = "error";
+      reason = describe3(error);
+      if (error instanceof SyntaxError) return;
       retry();
       return;
     }
@@ -3540,13 +3637,18 @@ function connect(options, onOpen) {
     next.binaryType = "arraybuffer";
     next.onopen = () => {
       state = "open";
+      reason = void 0;
       connects++;
       retryMs = baseRetry;
       onOpen?.(send);
     };
-    next.onclose = () => {
+    next.onclose = (event) => {
       closes++;
       if (socket === next) socket = null;
+      const { code, reason: why } = event ?? {};
+      if (typeof code === "number" && code !== 1e3 && code !== 1005) {
+        reason = typeof why === "string" && why !== "" ? `closed (${code}): ${why}` : `closed (${code})`;
+      }
       if (!closed) {
         state = "connecting";
         retry();
@@ -3554,6 +3656,7 @@ function connect(options, onOpen) {
     };
     next.onerror = () => {
       state = "error";
+      reason ??= "socket error (the browser gives no detail)";
     };
   };
   const retry = () => {
@@ -3568,6 +3671,7 @@ function connect(options, onOpen) {
   open();
   return {
     state: () => state,
+    ready,
     send,
     close() {
       closed = true;
@@ -3583,18 +3687,14 @@ function connect(options, onOpen) {
       } catch {
       }
     },
-    stats: () => ({ connects, drops, closes, retryMs })
+    stats: () => ({ connects, drops, stalls, closes, retryMs, ...reason !== void 0 ? { reason } : {} })
   };
 }
 var AFX_PATH = "/afx";
 function afxUrl(host) {
-  const trimmed = host.trim();
-  if (trimmed === "") throw new RangeError("net: host is empty");
-  const scheme = trimmed.startsWith("wss://") || trimmed.startsWith("https://") ? "wss" : "ws";
-  const bare = trimmed.replace(/^(wss?|https?):\/\//, "").replace(/\/+$/, "");
-  if (bare === "") throw new RangeError("net: host is empty");
-  const slash = bare.indexOf("/");
-  return slash === -1 ? `${scheme}://${bare}${AFX_PATH}` : `${scheme}://${bare}`;
+  const url = parseAddress(host, "net");
+  const path = url.pathname.replace(/\/+$/, "");
+  return formatAddress(url, path === "" ? AFX_PATH : path);
 }
 function createSocketSink(options) {
   const { encoder: encoder2 } = options;
@@ -3622,26 +3722,52 @@ function createWledSink(options) {
   if (!Number.isInteger(leds) || leds < 1) {
     throw new RangeError(`net: leds must be a positive integer, got ${String(leds)}`);
   }
+  wledFrames(new Float32Array(3), 1, options);
+  let released = false;
   const link = connect(options, (send) => {
     send(wledHello(options));
+    released = false;
   });
   let sent = 0;
+  let messages = 0;
   let bytes = 0;
+  let dropped = 0;
   return {
     kind: "wled",
     describe: () => options.url,
     state: link.state,
     async send(colors) {
-      const text = wledFrame(colors, leds, options);
-      if (link.send(text)) {
-        sent++;
+      if (!link.ready()) {
+        dropped++;
+        return;
+      }
+      if (released) {
+        if (!link.send(wledHello(options))) {
+          dropped++;
+          return;
+        }
+        released = false;
+      }
+      const frames = wledFrames(colors, leds, options);
+      for (const text of frames) {
+        if (!link.send(text)) {
+          dropped++;
+          return;
+        }
+        messages++;
         bytes += text.length;
       }
+      sent++;
+    },
+    async release() {
+      if (link.state() !== "open" || released) return;
+      if (link.send(wledGoodbye(options))) released = true;
     },
     async close() {
+      if (link.state() === "open" && !released) link.send(wledGoodbye(options));
       link.close();
     },
-    stats: () => ({ sent, bytes, leds, ...link.stats() })
+    stats: () => ({ sent, messages, bytes, leds, frameDrops: dropped, ...link.stats() })
   };
 }
 
@@ -4074,7 +4200,12 @@ function createScheduler(initial = [], options = {}) {
       previous = now;
       if (before === null) return [];
       const elapsed = now.atMs - before.atMs;
-      const due = rules.filter((rule) => rule.enabled && appliesOn(rule, now.weekday)).filter((rule) => crossed(rule.atMinute, before.minute, now.minute));
+      const wentBack = now.minute < before.minute && before.minute - now.minute < MINUTES_IN_DAY / 2 && elapsed < gapMs;
+      if (wentBack) return [];
+      const wholeDay = elapsed >= MINUTES_IN_DAY * 6e4;
+      const wrapped = before.minute > now.minute;
+      const dayOf = (minute) => wrapped && minute > before.minute ? (now.weekday + 6) % 7 : now.weekday;
+      const due = rules.filter((rule) => rule.enabled).filter((rule) => wholeDay || crossed(rule.atMinute, before.minute, now.minute)).filter((rule) => appliesOn(rule, wholeDay ? now.weekday : dayOf(rule.atMinute)));
       if (due.length === 0) return [];
       if (elapsed > gapMs) {
         const last = due.reduce((best, rule) => distanceBack(rule.atMinute, now.minute) < distanceBack(best.atMinute, now.minute) ? rule : best);
@@ -4424,6 +4555,7 @@ function createEngine(host) {
   let startupUntil = null;
   let audioTimer = null;
   let visualiser = null;
+  let audioSpec = null;
   let audio = null;
   let bins = new Float32Array(0);
   const muxer = new PriorityMuxer(clock2);
@@ -4455,6 +4587,10 @@ function createEngine(host) {
   function build2(config) {
     const layout = resolveLayout(config);
     const leds = layout.length;
+    const dark = [];
+    layout.forEach((rect, i) => {
+      if (rect.xMax - rect.xMin === 0 || rect.yMax - rect.yMin === 0) dark.push(i);
+    });
     const { gridWidth, gridHeight } = config.capture;
     const canvas = host.createCanvas(gridWidth, gridHeight);
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -4507,6 +4643,7 @@ function createEngine(host) {
       // layout, and a layout edit while an effect is running must not leave the
       // effect drawing on the old geometry.
       geometry: effectGeometry(layout),
+      dark,
       encoder: createFrameEncoder(
         // WLED never sees one of our wire formats; it gets JSON from its own
         // sink. The encoder still exists so the loopback has something to parse.
@@ -4549,7 +4686,7 @@ function createEngine(host) {
     });
   }
   async function onLinkError(error) {
-    lastError = `${linkMode}: ${describe3(error)}`;
+    lastError = `${linkMode}: ${describe4(error)}`;
     if (linkMode === "port") await dropPort(error);
   }
   async function closePort() {
@@ -4595,17 +4732,17 @@ function createEngine(host) {
       try {
         const url = output.transport === "wled" ? wledUrl(address) : afxUrl(address);
         if (isMixedContent(url)) {
-          lastError = `${output.transport}: HTTPS sayfadan ws:// a\xE7\u0131lamaz (kar\u0131\u015F\u0131k i\xE7erik) \u2014 paneli kendi a\u011F\u0131nda http:// \xFCzerinden \xE7al\u0131\u015Ft\u0131r ya da eklenti host'unu kullan`;
+          lastError = `${output.transport}: HTTPS sayfadan ws:// a\xE7\u0131lamaz (kar\u0131\u015F\u0131k i\xE7erik) \u2014 yerel a\u011Fdaki karta bu sayfadan yaln\u0131z wss:// ile (a\u011F\u0131ndaki, cihaz\u0131n arkas\u0131nda durdu\u011Fu bir TLS k\xF6pr\xFCs\xFC) ula\u015F\u0131l\u0131r; ya paneli localhost'ta \xE7al\u0131\u015Ft\u0131r (ws:// serbest), ya da eklenti host'unu kullan`;
           useLoopback();
           return;
         }
         useSink(
-          output.transport === "wled" ? createWledSink({ url, leds: stages.leds, segment: output.segment ?? 0 }) : createSocketSink({ url, encoder: stages.encoder }),
+          output.transport === "wled" ? createWledSink({ url, leds: stages.leds, segment: output.segment ?? 0, gamma: output.wledGamma }) : createSocketSink({ url, encoder: stages.encoder }),
           output.transport,
           address
         );
       } catch (error) {
-        lastError = `${output.transport}: ${describe3(error)}`;
+        lastError = `${output.transport}: ${describe4(error)}`;
         useLoopback();
       }
       return;
@@ -4648,13 +4785,13 @@ function createEngine(host) {
       }, { once: true });
       if (lastError?.startsWith("seri port:") === true) lastError = void 0;
     } catch (error) {
-      lastError = `seri port: ${describe3(error)}`;
+      lastError = `seri port: ${describe4(error)}`;
       if (linkMode !== "loopback") useLoopback();
       scheduleReconnect();
     }
   }
   async function dropPort(error) {
-    lastError = `seri port: ${describe3(error)}`;
+    lastError = `seri port: ${describe4(error)}`;
     await closePort();
     useLoopback();
     scheduleReconnect();
@@ -4721,7 +4858,6 @@ function createEngine(host) {
       border2 = s.detector.process(s.grid, t3);
       s.sampler.setBorder(border2);
       s.sampler.sample(s.grid, s.target, s.config.sampling.mode);
-      s.adjustment.apply(s.target);
       captureTarget.set(s.target);
       if (source !== mine) return;
       feed(PRIORITY.capture, "capture", captureTarget);
@@ -4746,7 +4882,7 @@ function createEngine(host) {
       return;
     }
     processing = processFrame(frame, at).catch((error) => {
-      lastError = describe3(error);
+      lastError = describe4(error);
     }).finally(() => {
       processing = null;
     });
@@ -4764,17 +4900,31 @@ function createEngine(host) {
     if (won.input.kind !== "colors") return;
     if (won.component === "pattern") {
       if (!fromPattern) return;
+      s.target.set(won.input.colors);
+      maskDark(s);
       outputs.mark(now);
-      s.order.apply(won.input.colors);
-      writer.send(won.input.colors);
+      s.order.apply(s.target);
+      writer.send(s.target);
       return;
     }
     s.smoother.setTarget(won.input.colors, now);
     const out = s.smoother.tick(now);
     if (out === null) return;
     outputs.mark(now);
-    s.order.apply(out);
-    writer.send(out);
+    s.target.set(out);
+    s.adjustment.setBacklightEnabled(won.component === "capture");
+    s.adjustment.apply(s.target);
+    maskDark(s);
+    s.order.apply(s.target);
+    writer.send(s.target);
+  }
+  function maskDark(s) {
+    for (const led of s.dark) {
+      const at = led * 3;
+      s.target[at] = 0;
+      s.target[at + 1] = 0;
+      s.target[at + 2] = 0;
+    }
   }
   function feed(priority, component, colors, timeoutMs) {
     if (!muxer.has(priority)) {
@@ -4913,6 +5063,7 @@ function createEngine(host) {
       audioTimer = null;
     }
     visualiser = null;
+    audioSpec = null;
     const a = audio;
     audio = null;
     void a?.stop().catch(() => {
@@ -4962,6 +5113,23 @@ function createEngine(host) {
       case PRIORITY.pattern:
         stopPattern();
         return;
+      // The two automatic layers keep their own state beside the muxer slot,
+      // and clearing the slot alone let feed() register it again on the next
+      // effect tick - the layer list's Stop button vanished the row for one
+      // poll and it came straight back.
+      case HIGHEST_PRIORITY:
+        startupUntil = null;
+        startupEffect = null;
+        muxer.clear(HIGHEST_PRIORITY);
+        idleEffectTimer();
+        idleIfEmpty();
+        return;
+      case BACKGROUND_PRIORITY:
+        backgroundEffect = null;
+        muxer.clear(BACKGROUND_PRIORITY);
+        idleEffectTimer();
+        idleIfEmpty();
+        return;
       default:
         muxer.clear(priority);
         idleIfEmpty();
@@ -4999,7 +5167,7 @@ function createEngine(host) {
       try {
         applyScheduled(action);
       } catch (error) {
-        lastError = `zamanlama: ${describe3(error)}`;
+        lastError = `zamanlama: ${describe4(error)}`;
       }
     }
     if (actions.length > 0) report();
@@ -5015,11 +5183,19 @@ function createEngine(host) {
   function blackout() {
     if (linkMode === "none" || linkMode === "loopback") return;
     const black2 = allocLedColors(stages.leds);
-    if (!writer.send(black2)) {
-      void writer.idle().then(() => {
-        if (state !== "running") writer.send(black2);
+    const handBack = () => {
+      if (state !== "running") void sink.release?.().catch(() => {
       });
+    };
+    if (writer.send(black2)) {
+      void writer.idle().then(handBack);
+      return;
     }
+    void writer.idle().then(() => {
+      if (state === "running") return;
+      writer.send(black2);
+      void writer.idle().then(handBack);
+    });
   }
   function startClocks() {
     tickTimer ??= setInterval(tick, TICK_MS);
@@ -5049,12 +5225,12 @@ function createEngine(host) {
       void connectLink();
       next.start(onFrame, (error) => {
         if (source !== next) return;
-        if (error !== void 0) lastError = describe3(error);
+        if (error !== void 0) lastError = describe4(error);
         stopCapture(true);
       });
       report();
     } catch (error) {
-      lastError = describe3(error);
+      lastError = describe4(error);
       if (gen !== captureGen) return;
       if (muxer.sources().length > 0) {
         state = "running";
@@ -5083,6 +5259,7 @@ function createEngine(host) {
     baseColor = null;
     flashColor = null;
     visualiser = null;
+    audioSpec = null;
     const a = audio;
     audio = null;
     void a?.stop().catch(() => {
@@ -5127,6 +5304,10 @@ function createEngine(host) {
       sampling: { mode: stages.config.sampling.mode, warnings: [...stages.sampler.warnings] },
       link: {
         mode: linkMode,
+        // The sink's own word for what it is doing. A network link spends real
+        // time connecting and can drop at any moment, and "nothing is lighting
+        // up" has to be distinguishable from "still dialling" on the panel.
+        state: sink.state(),
         written: w.written,
         dropped: w.dropped,
         errors: w.errors,
@@ -5205,7 +5386,10 @@ function createEngine(host) {
       if (effectSpec !== null) effect = createEffect(parseEffectSpec(effectSpec), next.geometry, clock2);
       if (visualiser !== null && audio !== null) {
         visualiser = createVisualiser({
-          spec: parseAudioSpec({ kind: visualiser.kind }),
+          // With the gain, colour and decay it was given, not the defaults: a
+          // layout edit on another page used to snap a dim red visualiser to
+          // full-bright blue.
+          spec: audioSpec ?? parseAudioSpec({ kind: visualiser.kind }),
           geometry: next.geometry,
           sampleRate: audio.sampleRate,
           binCount: audio.binCount,
@@ -5258,13 +5442,26 @@ function createEngine(host) {
      */
     async runAudio(spec, input = "microphone") {
       const parsed = parseAudioSpec(spec);
-      stopAudio(false);
       lastError = void 0;
+      if (audio !== null && audio.kind === input) {
+        audioSpec = parsed;
+        visualiser = createVisualiser({
+          spec: parsed,
+          geometry: stages.geometry,
+          sampleRate: audio.sampleRate,
+          binCount: audio.binCount,
+          outputHz: OUTPUT_HZ
+        });
+        report();
+        return;
+      }
+      stopAudio(false);
       if (state === "idle") state = "starting";
       report();
       try {
         const opened = input === "display" ? await openDisplayAudio() : await openMicrophone();
         audio = opened;
+        audioSpec = parsed;
         bins = new Float32Array(opened.binCount);
         sizeBuffers(stages.leds);
         visualiser = createVisualiser({
@@ -5281,7 +5478,7 @@ function createEngine(host) {
         emitAudio();
       } catch (error) {
         state = muxer.sources().length > 0 ? "running" : "error";
-        lastError = describe3(error);
+        lastError = describe4(error);
       }
       report();
     },
@@ -5361,7 +5558,7 @@ function clampByte(value) {
   if (!Number.isFinite(value)) return 0;
   return Math.min(255, Math.max(0, Math.round(value)));
 }
-function describe3(error) {
+function describe4(error) {
   if (!(error instanceof Error)) return String(error);
   return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
 }
@@ -5635,7 +5832,7 @@ async function openConfiguredStream(config, media) {
       return await media.getUserMedia(deviceConstraints(device.deviceId, config.capture.fps));
     } catch (error) {
       const name = error instanceof Error ? error.name : "";
-      throw new Error(name === "NotAllowedError" ? "Kamera izni verilmedi." : describe4(error));
+      throw new Error(name === "NotAllowedError" ? "Kamera izni verilmedi." : describe5(error));
     }
   }
   try {
@@ -5647,10 +5844,10 @@ async function openConfiguredStream(config, media) {
     });
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
-    throw new Error(name === "NotAllowedError" ? "Ekran se\xE7ilmedi." : describe4(error));
+    throw new Error(name === "NotAllowedError" ? "Ekran se\xE7ilmedi." : describe5(error));
   }
 }
-function describe4(error) {
+function describe5(error) {
   if (!(error instanceof Error)) return String(error);
   return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
 }
@@ -5733,7 +5930,7 @@ function stopPool() {
   }
   pool.stop();
 }
-function describe5(error) {
+function describe6(error) {
   if (!(error instanceof Error)) return String(error);
   return error.name === "" || error.name === "Error" ? error.message : `${error.name}: ${error.message}`;
 }
@@ -5747,16 +5944,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // them: one picker, every strip following the screen it shows. A per-strip
     // start would ask for the screen again for the second strip, which is the
     // one thing the pool exists to avoid.
+    // The answer describes the strip the panel is showing, not the first one:
+    // a user watching strip 2 whose start failed must not read strip 1's
+    // "running" and go looking for a fault in the wrong place.
     case "ambiflux/start":
       pool.start().then(
-        () => sendResponse({ state: firstState(), error: firstError() }),
-        (error) => sendResponse({ state: firstState(), error: describe5(error) })
+        () => sendResponse(outcomeOf(message.instance)),
+        (error) => sendResponse({ ...outcomeOf(message.instance), error: describe6(error) })
       );
       return true;
     case "ambiflux/selftest":
       pool.selfTest().then(
-        () => sendResponse({ state: firstState(), error: firstError() }),
-        (error) => sendResponse({ state: firstState(), error: describe5(error) })
+        () => sendResponse(outcomeOf(message.instance)),
+        (error) => sendResponse({ ...outcomeOf(message.instance), error: describe6(error) })
       );
       return true;
     case "ambiflux/stop":
@@ -5770,7 +5970,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({
           type: "ambiflux/instances-reply",
           instances: pool.instances(),
-          error: describe5(error)
+          error: describe6(error)
         });
       }
       return false;
@@ -5786,7 +5986,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({
           type: "ambiflux/schedule-reply",
           rules: pool.schedule(),
-          error: describe5(error)
+          error: describe6(error)
         });
       }
       return false;
@@ -5809,7 +6009,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         engine.runPattern(message.spec);
         sendResponse({ state: engine.state(), pattern: engine.stats().pattern });
       } catch (error) {
-        sendResponse({ state: engine.state(), error: describe5(error) });
+        sendResponse({ state: engine.state(), error: describe6(error) });
       }
       return false;
     case "ambiflux/effect":
@@ -5817,13 +6017,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         engine.runEffect(message.spec);
         sendResponse({ state: engine.state(), effect: engine.stats().effect });
       } catch (error) {
-        sendResponse({ state: engine.state(), error: describe5(error) });
+        sendResponse({ state: engine.state(), error: describe6(error) });
       }
       return false;
     case "ambiflux/audio":
       engine.runAudio(message.spec, message.input).then(
         () => sendResponse({ state: engine.state(), error: engine.error() }),
-        (error) => sendResponse({ state: engine.state(), error: describe5(error) })
+        (error) => sendResponse({ state: engine.state(), error: describe6(error) })
       );
       return true;
     case "ambiflux/color":
@@ -5854,7 +6054,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         (error) => sendResponse({
           type: "ambiflux/control-reply",
           sent: false,
-          error: describe5(error)
+          error: describe6(error)
         })
       );
       return true;
@@ -5863,7 +6063,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 var firstState = () => addressed()?.state() ?? "idle";
-var firstError = () => addressed()?.error();
+function outcomeOf(instance) {
+  const engine = addressed(instance);
+  if (engine === null) {
+    return instance === void 0 ? { state: "idle" } : { state: "error", error: `\u015Ferit bulunamad\u0131: ${instance}` };
+  }
+  const error = engine.error();
+  return { state: engine.state(), ...error === void 0 ? {} : { error } };
+}
 void chrome.runtime.sendMessage({ type: "ambiflux/instances-get", target: "sw" }).then(async (reply) => {
   const instances = reading(reply, "ambiflux/instances-reply", "instances");
   if (Array.isArray(instances) && instances.length > 0) {

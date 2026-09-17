@@ -228,3 +228,46 @@ test('two rules with one id are told apart rather than refused', () => {
   assert.equal(rules[0]?.id, 'new-0', 'the first keeps its id')
   assert.equal(rules[2]?.id, 'rule-1', 'an id nobody else has is left alone')
 })
+
+test('the clock stepping BACK inside one tick is not midnight', () => {
+  // The DST fall-back hour, or an NTP correction: read as a wrap, it made every
+  // rule outside the repeated hour "crossed" in one second, and the engine
+  // applied the whole day's rules at one in the morning.
+  const scheduler = createScheduler([
+    rule({ id: 'morning', atMinute: 8 * 60, action: { kind: 'capture' } }),
+    rule({ id: 'evening', atMinute: 22 * 60, action: { kind: 'stop' } })
+  ])
+  scheduler.tick(at(2 * 60, 2 * 60 * 60_000))
+  // One second later the wall clock says 01:00 again.
+  assert.deepEqual(scheduler.tick(at(60, 2 * 60 * 60_000 + 1000)), [])
+  // And the next ordinary tick fires nothing either: nothing was crossed.
+  assert.deepEqual(scheduler.tick(at(61, 2 * 60 * 60_000 + 61_000)), [])
+})
+
+test('asleep for a day or more, every enabled rule was missed, and the last one that applies today runs', () => {
+  const scheduler = createScheduler([
+    rule({ id: 'a', atMinute: 599, action: { kind: 'capture' } }),
+    rule({ id: 'b', atMinute: 610, action: { kind: 'stop' } }),
+    rule({ id: 'weekend', atMinute: 605, days: [0, 6], action: { kind: 'color', color: { r: 1, g: 1, b: 1 } } })
+  ])
+  scheduler.tick({ minute: 600, weekday: 2, atMs: 600 * 60_000 })
+  // Two days later, at the very same minute - so nothing was "crossed" in the
+  // minute sense, yet the whole day's rules were. The latest one before now
+  // is 'a' at 599; 'b' at 610 is still ahead; the weekend rule does not apply
+  // on a Thursday.
+  const later = { minute: 600, weekday: 4, atMs: 600 * 60_000 + 2 * MINUTES_IN_DAY * 60_000 }
+  assert.deepEqual(scheduler.tick(later), [{ kind: 'capture' }])
+})
+
+test('a rule crossed before midnight is judged on yesterday’s weekday', () => {
+  // "Fridays at 23:00", carried past midnight by a closed lid, must be judged
+  // on Friday - not on the Saturday the machine woke on.
+  const friday = createScheduler([rule({ atMinute: 23 * 60, days: [5], action: { kind: 'stop' } })])
+  friday.tick({ minute: 22 * 60 + 50, weekday: 5, atMs: 0 })
+  assert.deepEqual(friday.tick({ minute: 5, weekday: 6, atMs: 75 * 60_000 }), [{ kind: 'stop' }])
+
+  // And a rule after midnight in the same tick is judged on today.
+  const saturday = createScheduler([rule({ atMinute: 2, days: [6], action: { kind: 'capture' } })])
+  saturday.tick({ minute: 22 * 60 + 50, weekday: 5, atMs: 0 })
+  assert.deepEqual(saturday.tick({ minute: 5, weekday: 6, atMs: 75 * 60_000 }), [{ kind: 'capture' }])
+})

@@ -3,6 +3,7 @@ import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { PRIORITY, createEngine, type CanvasLike, type Engine, type EngineHost } from '#lib/engine/runtime'
+import { BACKGROUND_PRIORITY, HIGHEST_PRIORITY } from '#lib/engine/priority'
 import { DEFAULT_ENGINE_CONFIG } from '#lib/engine/config'
 import type { FrameSource } from '#lib/engine/source'
 import type { EngineStats } from '#lib/extension/messages'
@@ -506,5 +507,118 @@ test('an HTTPS page is told it cannot open ws:// to the board, before the first 
   } finally {
     if (original !== undefined) Object.defineProperty(globalThis, 'location', original)
     else delete (globalThis as { location?: unknown }).location
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The two automatic layers, and the layer list's Stop button.
+// ---------------------------------------------------------------------------
+
+const withStartup = (effect: string, durationMs = 5000): unknown => ({
+  ...DEFAULT_ENGINE_CONFIG,
+  startup: { enabled: true, kind: 'effect', color: { r: 0, g: 0, b: 0 }, effect, durationMs }
+})
+
+const withBackground = (effect: string): unknown => ({
+  ...DEFAULT_ENGINE_CONFIG,
+  background: { enabled: true, kind: 'effect', color: { r: 0, g: 0, b: 0 }, effect }
+})
+
+test('clearing the startup layer from the layer list makes it stay gone', async () => {
+  // Clearing the muxer slot alone let the next effect tick feed the startup
+  // effect again: the row vanished for one poll and came straight back.
+  const h = harness()
+  h.engine.applyConfig(withStartup('rainbow'))
+  h.engine.runEffect({ kind: 'candle' })
+  assert.equal(winner(h.engine), 'startup')
+
+  h.engine.clearLayer(HIGHEST_PRIORITY)
+  assert.equal(winner(h.engine), 'effect')
+  await delay(40)
+  assert.ok(!layers(h.engine).some((l) => l.component === 'startup'), 'the startup layer must not come back')
+  assert.equal(h.engine.state(), 'running')
+  h.engine.stop()
+})
+
+test('clearing the background layer from the layer list makes it stay gone, and the last layer going idles', async () => {
+  const h = harness()
+  h.engine.applyConfig(withBackground('candle'))
+  h.engine.runEffect({ kind: 'rainbow' })
+  assert.ok(layers(h.engine).some((l) => l.component === 'background'))
+
+  h.engine.clearLayer(BACKGROUND_PRIORITY)
+  await delay(40)
+  assert.ok(!layers(h.engine).some((l) => l.component === 'background'), 'the background must not come back')
+  h.engine.clearLayer(PRIORITY.effect)
+  assert.equal(h.engine.state(), 'idle')
+})
+
+// ---------------------------------------------------------------------------
+// Audio: retuning an open input.
+// ---------------------------------------------------------------------------
+
+/**
+ * A microphone and an AudioContext on `globalThis`, because the runtime opens
+ * them through the browser's globals rather than through the host. Node's own
+ * `navigator` is a configurable getter, so it can be stood in for and put back.
+ */
+function fakeAudioGlobals (): { opened: () => number, restore: () => void } {
+  let opened = 0
+  const analyser = {
+    fftSize: 0,
+    frequencyBinCount: 16,
+    smoothingTimeConstant: 1,
+    minDecibels: -100,
+    maxDecibels: -30,
+    getByteFrequencyData (array: Uint8Array) { array.fill(128) },
+    disconnect () {}
+  }
+  class FakeAudioContext {
+    sampleRate = 48000
+    state = 'running'
+    createAnalyser () { return analyser }
+    createMediaStreamSource () { return { connect () {}, disconnect () {} } }
+    async resume () {}
+    async close () {}
+  }
+  const track = { stop () {}, addEventListener () {} }
+  const stream = { getAudioTracks: () => [track], getTracks: () => [track] }
+  const scope = globalThis as { AudioContext?: unknown }
+  const hadContext = Object.getOwnPropertyDescriptor(globalThis, 'AudioContext')
+  const hadNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  scope.AudioContext = FakeAudioContext
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { mediaDevices: { getUserMedia: async () => { opened++; return stream } } },
+    configurable: true,
+    writable: true
+  })
+  return {
+    opened: () => opened,
+    restore () {
+      if (hadContext === undefined) delete scope.AudioContext
+      else Object.defineProperty(globalThis, 'AudioContext', hadContext)
+      if (hadNavigator !== undefined) Object.defineProperty(globalThis, 'navigator', hadNavigator)
+    }
+  }
+}
+
+test('changing the visualiser on an open input retunes it without reopening the microphone', async () => {
+  // Reopening meant a new picker on every slider step for tab audio and a new
+  // permission prompt on some browsers for the microphone.
+  const fake = fakeAudioGlobals()
+  const h = harness()
+  try {
+    await h.engine.runAudio({ kind: 'spectrum' }, 'microphone')
+    assert.equal(h.engine.error(), undefined)
+    assert.equal(h.engine.stats().audio?.kind, 'spectrum')
+    assert.equal(fake.opened(), 1)
+
+    await h.engine.runAudio({ kind: 'level', brightness: 0.2 }, 'microphone')
+    assert.equal(h.engine.stats().audio?.kind, 'level')
+    assert.equal(fake.opened(), 1, 'the same input must not be asked for again')
+    assert.equal(winner(h.engine), 'audio')
+  } finally {
+    h.engine.stop()
+    fake.restore()
   }
 })

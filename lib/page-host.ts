@@ -67,26 +67,31 @@ export function createPageEngine (
   onReport: (stats: PoolStats) => void,
   instances: readonly Instance[] = defaultInstances()
 ): PageEngine {
-  let video: HTMLVideoElement | null = null
+  const videos = new Set<HTMLVideoElement>()
   let selfTestTimer: ReturnType<typeof setInterval> | null = null
 
   /**
-   * One hidden `<video>`, reused.
+   * One hidden `<video>` per open stream.
    *
    * In the document rather than detached, and sized 1x1 at zero opacity rather
    * than `display: none`: a video that is not displayed is allowed to stop
    * producing frames, and on iOS an element outside the document may not play
    * at all. Both would show up as a capture that starts and delivers nothing.
+   *
+   * Per stream rather than one shared element, because two captures can be
+   * open at once - the screen behind the desk and a capture card behind the
+   * TV is the arrangement the strips page advertises - and the video route
+   * assigns `srcObject` on start and clears it on stop, so a shared element
+   * had the second capture overwrite the first on Safari and Firefox.
    */
-  function element (): VideoElement {
-    if (video === null) {
-      video = document.createElement('video')
-      video.setAttribute('style', VIDEO_STYLE)
-      video.muted = true
-      video.playsInline = true
-      document.body.appendChild(video)
-    }
-    return video as unknown as VideoElement
+  function element (): HTMLVideoElement {
+    const video = document.createElement('video')
+    video.setAttribute('style', VIDEO_STYLE)
+    video.muted = true
+    video.playsInline = true
+    document.body.appendChild(video)
+    videos.add(video)
+    return video
   }
 
   async function sourceFor (stream: MediaStream, config: EngineConfig): Promise<FrameSource> {
@@ -96,7 +101,16 @@ export function createPageEngine (
     // change, so a still screen costs nothing - and the video element
     // everywhere else. Asked of the browser, never read from a table.
     if (hasStreamSource()) return createStreamSource({ track, clock })
-    return createVideoSource({ stream, track, video: element(), clock, fps: config.capture.fps })
+    const video = element()
+    const inner = createVideoSource({ stream, track, video: video as unknown as VideoElement, clock, fps: config.capture.fps })
+    return {
+      ...inner,
+      async stop (): Promise<void> {
+        await inner.stop()
+        video.remove()
+        videos.delete(video)
+      }
+    }
   }
 
   const clock = (): number => performance.now()
@@ -183,8 +197,8 @@ export function createPageEngine (
         clearInterval(selfTestTimer)
         selfTestTimer = null
       }
-      video?.remove()
-      video = null
+      for (const video of videos) video.remove()
+      videos.clear()
     }
   }
 }

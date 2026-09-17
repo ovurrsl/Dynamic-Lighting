@@ -1,5 +1,5 @@
 import { createAdjustment, type Adjustment } from '#lib/engine/adjust'
-import { createVisualiser, parseAudioSpec, type Visualiser } from '#lib/engine/audio'
+import { createVisualiser, parseAudioSpec, type AudioSpec, type Visualiser } from '#lib/engine/audio'
 import { openDisplayAudio, openMicrophone, type AudioInputKind, type AudioSource } from '#lib/engine/audio-input'
 import { createBorderDetector, type BorderDetector } from '#lib/engine/border'
 import { srgbToLinear } from '#lib/light'
@@ -248,6 +248,13 @@ interface Stages {
   target: LedColors
   encoder: FrameEncoder
   geometry: EffectGeometry
+  /**
+   * The wire indices the blacklist keeps dark. The sampler reads their
+   * zero-area rectangles as black on its own; every other source - effects,
+   * patterns, colours, audio, the two automatic layers - writes all `leds`,
+   * so the mask is applied once, where every frame passes: in tick().
+   */
+  dark: number[]
 }
 
 export function createEngine (host: EngineHost): Engine {
@@ -302,6 +309,8 @@ export function createEngine (host: EngineHost): Engine {
   let startupUntil: number | null = null
   let audioTimer: ReturnType<typeof setInterval> | null = null
   let visualiser: Visualiser | null = null
+  /** What the visualiser was asked to show, kept like `effectSpec` so a layout edit rebuilds it with the same gain, colour and decay. */
+  let audioSpec: AudioSpec | null = null
   let audio: AudioSource | null = null
   let bins: Float32Array = new Float32Array(0)
 
@@ -377,6 +386,10 @@ export function createEngine (host: EngineHost): Engine {
   function build (config: EngineConfig): Stages {
     const layout = resolveLayout(config)
     const leds = layout.length
+    const dark: number[] = []
+    layout.forEach((rect, i) => {
+      if (rect.xMax - rect.xMin === 0 || rect.yMax - rect.yMin === 0) dark.push(i)
+    })
     const { gridWidth, gridHeight } = config.capture
     const canvas = host.createCanvas(gridWidth, gridHeight)
     const ctx = canvas.getContext('2d', { willReadFrequently: true })
@@ -429,6 +442,7 @@ export function createEngine (host: EngineHost): Engine {
       // layout, and a layout edit while an effect is running must not leave the
       // effect drawing on the old geometry.
       geometry: effectGeometry(layout),
+      dark,
       encoder: createFrameEncoder(
         // WLED never sees one of our wire formats; it gets JSON from its own
         // sink. The encoder still exists so the loopback has something to parse.
@@ -545,17 +559,19 @@ export function createEngine (host: EngineHost): Engine {
         // A page served over HTTPS may not open a plain ws:// connection - the
         // browser refuses it as mixed content, and from the sink's side that
         // is an ordinary connect failure that reconnects forever. Said as what
-        // it is, and said BEFORE the first attempt: the hosted panel's page
-        // host cannot reach a board on the LAN this way, and the two things
-        // that can are an http:// panel on the same network and the extension.
+        // it is, and said BEFORE the first attempt. And said honestly: an
+        // http:// panel is NOT the way round it, because screen capture itself
+        // exists only in a secure context, so the page host can reach a LAN
+        // board only through wss:// (a TLS bridge the device trusts) or not at
+        // all; the extension's document has no such rule.
         if (isMixedContent(url)) {
-          lastError = `${output.transport}: HTTPS sayfadan ws:// açılamaz (karışık içerik) — paneli kendi ağında http:// üzerinden çalıştır ya da eklenti host'unu kullan`
+          lastError = `${output.transport}: HTTPS sayfadan ws:// açılamaz (karışık içerik) — yerel ağdaki karta bu sayfadan yalnız wss:// ile (ağındaki, cihazın arkasında durduğu bir TLS köprüsü) ulaşılır; ya paneli localhost'ta çalıştır (ws:// serbest), ya da eklenti host'unu kullan`
           useLoopback()
           return
         }
         useSink(
           output.transport === 'wled'
-            ? createWledSink({ url, leds: stages.leds, segment: output.segment ?? 0 })
+            ? createWledSink({ url, leds: stages.leds, segment: output.segment ?? 0, gamma: output.wledGamma })
             : createSocketSink({ url, encoder: stages.encoder }),
           output.transport,
           address
@@ -742,7 +758,9 @@ export function createEngine (host: EngineHost): Engine {
       // reductions - and its decimation and accuracy options - written, tested
       // and unreachable.
       s.sampler.sample(s.grid, s.target, s.config.sampling.mode)
-      s.adjustment.apply(s.target)
+      // Not adjusted here any more: the colour chain runs in tick(), on
+      // whatever the muxer chose, so it reaches an effect or a colour exactly
+      // as it reaches the screen.
       captureTarget.set(s.target)
       // NO inactivity timeout on the capture layer, and this is a decision the
       // background forced rather than a simplification.
@@ -833,9 +851,14 @@ export function createEngine (host: EngineHost): Engine {
       // several times OUTPUT_HZ and the latest-wins writer counted the excess
       // as drops on a perfectly healthy link.
       if (!fromPattern) return
+      // Into the pipeline's scratch, never in place: the buffer is the muxer's
+      // own, and permuting the channel order in place meant a second pass over
+      // the same frame permuted it again.
+      s.target.set(won.input.colors as LedColors)
+      maskDark(s)
       outputs.mark(now)
-      s.order.apply(won.input.colors as LedColors)
-      writer.send(won.input.colors as LedColors)
+      s.order.apply(s.target)
+      writer.send(s.target)
       return
     }
 
@@ -843,11 +866,32 @@ export function createEngine (host: EngineHost): Engine {
     const out = s.smoother.tick(now)
     if (out === null) return
     outputs.mark(now)
+    // The colour chain - ceiling, white balance, saturation, taper, floor -
+    // runs HERE, on whatever the muxer chose, which is Hyperion's order too: a
+    // brightness ceiling of 20% has to dim an effect and a solid colour exactly
+    // as it dims the screen, and it used to reach the captured picture only.
+    // Copied first: the smoother owns `out` and overwrites it in place.
+    s.target.set(out)
+    // The floor is for the picture, where "the scene is dark" and "it broke"
+    // look the same: a colour somebody chose as black stays black.
+    s.adjustment.setBacklightEnabled(won.component === 'capture')
+    s.adjustment.apply(s.target)
+    maskDark(s)
     // The channel order is the last thing the engine does: everything above it,
     // the corner calibration included, works in real colours. What those become
     // on the wire is the sink's business.
-    s.order.apply(out)
-    writer.send(out)
+    s.order.apply(s.target)
+    writer.send(s.target)
+  }
+
+  /** Blacklisted LEDs are sent black whatever the source painted on them. */
+  function maskDark (s: Stages): void {
+    for (const led of s.dark) {
+      const at = led * 3
+      s.target[at] = 0
+      s.target[at + 1] = 0
+      s.target[at + 2] = 0
+    }
   }
 
   /** Feeds a source, registering it again if it timed out while nothing looked. */
@@ -1070,6 +1114,7 @@ export function createEngine (host: EngineHost): Engine {
       audioTimer = null
     }
     visualiser = null
+    audioSpec = null
     const a = audio
     audio = null
     void a?.stop().catch(() => { /* already gone */ })
@@ -1115,6 +1160,23 @@ export function createEngine (host: EngineHost): Engine {
       case PRIORITY.effect: stopEffect(); return
       case PRIORITY.audio: stopAudio(); return
       case PRIORITY.pattern: stopPattern(); return
+      // The two automatic layers keep their own state beside the muxer slot,
+      // and clearing the slot alone let feed() register it again on the next
+      // effect tick - the layer list's Stop button vanished the row for one
+      // poll and it came straight back.
+      case HIGHEST_PRIORITY:
+        startupUntil = null
+        startupEffect = null
+        muxer.clear(HIGHEST_PRIORITY)
+        idleEffectTimer()
+        idleIfEmpty()
+        return
+      case BACKGROUND_PRIORITY:
+        backgroundEffect = null
+        muxer.clear(BACKGROUND_PRIORITY)
+        idleEffectTimer()
+        idleIfEmpty()
+        return
       default:
         muxer.clear(priority)
         idleIfEmpty()
@@ -1201,14 +1263,26 @@ export function createEngine (host: EngineHost): Engine {
     // Its own buffer: the pipeline's target is overwritten by the next frame,
     // and this frame may have to wait for the writer.
     const black = allocLedColors(stages.leds)
+    // AFTER the black frame has gone, never before it: a device that is handed
+    // back first and then painted black is frozen black - the one state worse
+    // than holding the last picture.
+    const handBack = (): void => {
+      if (state !== 'running') void sink.release?.().catch(() => { /* the link will say */ })
+    }
     // The writer is latest-wins and DROPS a frame while a send is in flight,
     // which on a Stop is exactly when the previous frame is still being
     // written - so the black frame was lost and the strip held the last
     // picture. Wait for the writer instead, and still only send if nothing has
     // started again in the meantime.
-    if (!writer.send(black)) {
-      void writer.idle().then(() => { if (state !== 'running') writer.send(black) })
+    if (writer.send(black)) {
+      void writer.idle().then(handBack)
+      return
     }
+    void writer.idle().then(() => {
+      if (state === 'running') return
+      writer.send(black)
+      void writer.idle().then(handBack)
+    })
   }
 
   /** Starts the shared clocks if they are not already running. */
@@ -1301,6 +1375,7 @@ export function createEngine (host: EngineHost): Engine {
     baseColor = null
     flashColor = null
     visualiser = null
+    audioSpec = null
     const a = audio
     audio = null
     void a?.stop().catch(() => { /* already gone */ })
@@ -1346,6 +1421,10 @@ export function createEngine (host: EngineHost): Engine {
       sampling: { mode: stages.config.sampling.mode, warnings: [...stages.sampler.warnings] },
       link: {
         mode: linkMode,
+        // The sink's own word for what it is doing. A network link spends real
+        // time connecting and can drop at any moment, and "nothing is lighting
+        // up" has to be distinguishable from "still dialling" on the panel.
+        state: sink.state(),
         written: w.written,
         dropped: w.dropped,
         errors: w.errors,
@@ -1458,7 +1537,10 @@ export function createEngine (host: EngineHost): Engine {
       // has to rebuild it as well or the spectrum keeps drawing the old rig.
       if (visualiser !== null && audio !== null) {
         visualiser = createVisualiser({
-          spec: parseAudioSpec({ kind: visualiser.kind }),
+          // With the gain, colour and decay it was given, not the defaults: a
+          // layout edit on another page used to snap a dim red visualiser to
+          // full-bright blue.
+          spec: audioSpec ?? parseAudioSpec({ kind: visualiser.kind }),
           geometry: next.geometry,
           sampleRate: audio.sampleRate,
           binCount: audio.binCount,
@@ -1526,13 +1608,30 @@ export function createEngine (host: EngineHost): Engine {
      */
     async runAudio (spec: unknown, input: AudioInputKind = 'microphone'): Promise<void> {
       const parsed = parseAudioSpec(spec)
-      stopAudio(false)
       lastError = undefined
+      // The same input, already open: retune the visualiser on it and leave the
+      // source alone. Reopening meant a new picker on every slider step for
+      // tab audio - getDisplayMedia never remembers a grant - and a new
+      // permission prompt on some browsers for the microphone.
+      if (audio !== null && audio.kind === input) {
+        audioSpec = parsed
+        visualiser = createVisualiser({
+          spec: parsed,
+          geometry: stages.geometry,
+          sampleRate: audio.sampleRate,
+          binCount: audio.binCount,
+          outputHz: OUTPUT_HZ
+        })
+        report()
+        return
+      }
+      stopAudio(false)
       if (state === 'idle') state = 'starting'
       report()
       try {
         const opened = input === 'display' ? await openDisplayAudio() : await openMicrophone()
         audio = opened
+        audioSpec = parsed
         bins = new Float32Array(opened.binCount)
         sizeBuffers(stages.leds)
         visualiser = createVisualiser({

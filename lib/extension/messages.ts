@@ -29,7 +29,7 @@ export type Message =
    * popup; such an id is bound to the context that asked for it and fails in
    * the offscreen document with `AbortError` (see offscreen.ts openCapture).
    */
-  | { type: 'ambiflux/start'; target: Target }
+  | { type: 'ambiflux/start'; target: Target; instance?: string }
   | { type: 'ambiflux/stop'; target: Target }
   /**
    * Build the engine document NOW, before anything needs it.
@@ -46,7 +46,7 @@ export type Message =
    * board, and it is the only way to tell "the engine is broken" apart from
    * "the capture never started" - which look identical from outside.
    */
-  | { type: 'ambiflux/selftest'; target: Target }
+  | { type: 'ambiflux/selftest'; target: Target; instance?: string }
   /**
    * Drives the strip from a generated pattern instead of the screen.
    *
@@ -226,6 +226,14 @@ export interface EngineStats {
   outputFps: number
   link: {
     mode: LinkMode
+    /**
+     * What the link is doing right now, in the sink's own words: a network
+     * link spends real time 'connecting' and can go to 'error' at any moment,
+     * and the panel has to be able to say "still dialling" rather than leave
+     * a dark strip unexplained. Optional because an older extension answers
+     * without it.
+     */
+    state?: 'idle' | 'connecting' | 'open' | 'error'
     /** Frames whose write resolved. */
     written: number
     dropped: number

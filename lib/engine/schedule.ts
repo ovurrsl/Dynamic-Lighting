@@ -150,9 +150,27 @@ export function createScheduler (
       if (before === null) return []
 
       const elapsed = now.atMs - before.atMs
+      // The wall clock stepping BACK inside one ordinary tick - the DST
+      // fall-back hour, an NTP correction - is not midnight. Read as a wrap it
+      // made every rule outside the repeated hour "crossed" in one second, and
+      // the engine applied the whole day's rules at one in the morning.
+      const wentBack = now.minute < before.minute &&
+        before.minute - now.minute < MINUTES_IN_DAY / 2 &&
+        elapsed < gapMs
+      if (wentBack) return []
+      // Asleep for a day or more: every rule was missed, and the window of
+      // minutes between the two readings says nothing about which.
+      const wholeDay = elapsed >= MINUTES_IN_DAY * 60_000
+      // A rule crossed before midnight belongs to yesterday's weekday: a
+      // "Fridays at 23:00" rule that a lid-close carried past midnight must be
+      // judged on Friday, not on the Saturday the machine woke on.
+      const wrapped = before.minute > now.minute
+      const dayOf = (minute: number): number =>
+        wrapped && minute > before.minute ? (now.weekday + 6) % 7 : now.weekday
       const due = rules
-        .filter((rule) => rule.enabled && appliesOn(rule, now.weekday))
-        .filter((rule) => crossed(rule.atMinute, before.minute, now.minute))
+        .filter((rule) => rule.enabled)
+        .filter((rule) => wholeDay || crossed(rule.atMinute, before.minute, now.minute))
+        .filter((rule) => appliesOn(rule, wholeDay ? now.weekday : dayOf(rule.atMinute)))
 
       if (due.length === 0) return []
 

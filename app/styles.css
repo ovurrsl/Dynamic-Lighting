@@ -14,3 +14,36 @@
  */
 @import "tailwindcss";
 @import "@heroui/styles";
+
+/*
+ * Two of HeroUI's default tokens fail WCAG AA on this page, and both were
+ * MEASURED before they were touched (axe-core against the built page, then the
+ * WCAG contrast formula over the token values in
+ * node_modules/@heroui/styles/dist/themes/default/variables.css).
+ *
+ * The rules are unlayered on purpose: HeroUI declares its tokens inside
+ * `@layer base`, and an unlayered declaration wins over every layer regardless
+ * of specificity, so these need no `!important` and no selector arms race.
+ *
+ * 1. `--muted` in the light theme is oklch 55.17% on a 97.02% background:
+ *    4.43:1, and normal-size text needs 4.5:1. Every sidebar link, every group
+ *    heading and every card description on the page fails by that margin.
+ *    52% is the LIGHTEST value that passes on every surface the token sits on:
+ *    5.07:1 on the background, 4.81:1 on --surface-secondary, 4.60:1 on
+ *    --surface-tertiary, 4.63:1 on --default. 53% already fails the last two.
+ *    The dark theme's 70.5% is 5.7:1 or better everywhere and is left alone.
+ *
+ * 2. `--accent` at 62.04% carries --snow text at 3.59:1, which is every
+ *    primary button on the page. 55% brings that to 4.75:1 with the hue and
+ *    chroma unchanged; 56% would pass too, at 4.56:1, and the extra step is
+ *    margin against rendering differences between browsers. The accent is
+ *    shared between the themes, and so is this.
+ */
+:root {
+  --accent: oklch(0.55 0.195 253.83);
+}
+
+.light,
+[data-theme="light"] {
+  --muted: oklch(0.52 0.0138 285.94);
+}

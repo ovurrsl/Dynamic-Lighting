@@ -1,3 +1,4 @@
+import type { PoolStats } from '#lib/engine/pool'
 import type { EngineConfig } from '#lib/engine/config'
 
 /**
@@ -22,40 +23,137 @@ export type Message =
   | { type: 'ambiflux/ping'; target: Target }
   | { type: 'ambiflux/pong'; version: string; engine: EngineState }
   /**
-   * Capture start. `streamId` comes from chrome.desktopCapture.chooseDesktopMedia,
-   * which must be called from a page WITH a user gesture (the popup). The
-   * offscreen document has no gesture and cannot show a picker itself; it can
-   * only consume a streamId handed to it. The id is single-use and expires in
-   * seconds, so this message is sent the moment the picker returns.
+   * Capture start. Carries nothing: the engine document opens the screen picker
+   * itself with `getDisplayMedia`, which is the only thing that works there.
+   * An earlier version passed a `chrome.desktopCapture` streamId chosen in the
+   * popup; such an id is bound to the context that asked for it and fails in
+   * the offscreen document with `AbortError` (see offscreen.ts openCapture).
    */
-  | { type: 'ambiflux/start'; target: Target; streamId: string }
+  | { type: 'ambiflux/start'; target: Target; instance?: string }
   | { type: 'ambiflux/stop'; target: Target }
+  /**
+   * Build the engine document NOW, before anything needs it.
+   *
+   * Creating the offscreen document is not instant, and it is the thing that
+   * opens the screen picker - so building it when the popup opens means Start
+   * shows the picker at once rather than after a document boot.
+   */
+  | { type: 'ambiflux/prepare'; target: Target }
+  /**
+   * Runs the engine on a generated picture instead of the screen.
+   *
+   * The bench run: it proves the pipeline with no screen, no picker and no
+   * board, and it is the only way to tell "the engine is broken" apart from
+   * "the capture never started" - which look identical from outside.
+   */
+  | { type: 'ambiflux/selftest'; target: Target; instance?: string }
+  /**
+   * Drives the strip from a generated pattern instead of the screen.
+   *
+   * The bench run, and the thing both calibration wizards are built on: the
+   * walk lights one LED at a known index so corners can be clicked, and a solid
+   * pure channel is what the channel-order wizard asks the user to name.
+   *
+   * `spec` is UNVALIDATED here on purpose - it crosses from the panel, which is
+   * a separately installed program of a possibly different version - so the
+   * engine parses it with `parsePatternSpec` and answers with the error.
+   */
+  | { type: 'ambiflux/pattern'; target: Target; spec: unknown; instance?: string }
+  /**
+   * Starts an effect: light with no screen behind it.
+   *
+   * A separate message from `pattern` because the two are different things. A
+   * pattern is diagnostic and bypasses smoothing and the channel order on
+   * purpose; an effect is content and goes through both.
+   */
+  | { type: 'ambiflux/effect'; target: Target; spec: unknown; instance?: string }
+  /** Starts an audio visualiser. `input` picks the microphone or tab audio. */
+  | { type: 'ambiflux/audio'; target: Target; spec: unknown; input?: 'microphone' | 'display'; instance?: string }
+  /**
+   * Drives the strip with one colour. With `durationMs` it is an interruption
+   * that expires on its own; without, it is a base that effects run on top of.
+   */
+  | { type: 'ambiflux/color'; target: Target; color: { r: number, g: number, b: number }; durationMs?: number; instance?: string }
+  /** Drops one priority layer, leaving the rest running. */
+  | { type: 'ambiflux/clear-layer'; target: Target; priority: number; instance?: string }
+  /**
+   * Replaces the time-of-day rules. UNVALIDATED here on purpose: they arrive
+   * from the panel or from storage, so the engine parses them and answers with
+   * the error rather than trusting them.
+   */
+  | { type: 'ambiflux/schedule'; target: Target; rules: unknown }
+  | { type: 'ambiflux/schedule-get'; target: Target; instance?: string }
+  | { type: 'ambiflux/schedule-reply'; rules: unknown[]; error?: string }
   /** Asks the worker for the engine's state and its latest statistics. */
   | { type: 'ambiflux/status'; target: Target }
-  | { type: 'ambiflux/status-reply'; version: string; state: EngineState; stats: EngineStats | null }
+  | { type: 'ambiflux/status-reply'; version: string; state: EngineState; stats: EngineStats | null; pool?: PoolStats }
   /**
    * The popup paired a serial port (navigator.serial.requestPort needs a
    * gesture); the engine should look again with getPorts() and connect.
    */
-  | { type: 'ambiflux/serial'; target: Target }
+  | { type: 'ambiflux/serial'; target: Target; instance?: string }
   /**
    * Replaces the engine's configuration - the layout, the blacklist, the
    * channel order. `config` is UNVALIDATED here on purpose: it arrives from
    * the panel or from chrome.storage, so the worker parses it with
    * parseEngineConfig and answers with the error rather than trusting it.
    */
-  | { type: 'ambiflux/config'; target: Target; config: unknown }
+  | { type: 'ambiflux/config'; target: Target; config: unknown; instance?: string }
   /** Asks for the configuration in force. */
-  | { type: 'ambiflux/config-get'; target: Target }
+  | { type: 'ambiflux/config-get'; target: Target; instance?: string }
+  /**
+   * The BOARD's own configuration, over the AxC control channel - a different
+   * thing from the engine's config above, which never leaves this machine.
+   *
+   * Sent as an intent rather than as bytes: the frame is built in the engine
+   * with the same tested encoder either side would use, so the message bus
+   * never carries a half-validated byte array, and a passphrase is not turned
+   * into a number array that outlives the call in some log.
+   */
+  | { type: 'ambiflux/control'; target: Target; control: ControlRequest; instance?: string }
+  | { type: 'ambiflux/control-reply'; sent: boolean; error?: string }
   | { type: 'ambiflux/config-reply'; config: EngineConfig | null; error?: string }
-  /** Offscreen -> worker: the latest statistics, kept for whoever asks next. */
-  | { type: 'ambiflux/stats'; target: Target; stats: EngineStats }
+  /**
+   * The strips this installation drives.
+   *
+   * `instances` is UNVALIDATED for the same reason the configuration is: it
+   * comes from the panel or from chrome.storage, so the worker parses it and
+   * answers with the error rather than trusting it.
+   */
+  | { type: 'ambiflux/instances'; target: Target; instances: unknown }
+  | { type: 'ambiflux/instances-get'; target: Target }
+  | { type: 'ambiflux/instances-reply'; instances: unknown[] | null; error?: string }
+  /**
+   * Offscreen -> worker: the latest statistics, kept for whoever asks next.
+   *
+   * `stats` and `state` stay flat and describe ONE strip - whichever the panel
+   * is showing - because every card reads them and none of them should have to
+   * learn about instances to keep working. `pool` carries the rest.
+   */
+  | { type: 'ambiflux/stats'; target: Target; stats: EngineStats | null; pool?: PoolStats }
   | { type: 'ambiflux/state'; target: Target; state: EngineState }
+
+/** What the panel can ask the board to change about itself. */
+export type ControlRequest =
+  | { kind: 'query' }
+  | { kind: 'wifi'; ssid: string; passphrase: string; enabled: boolean }
+  /** The board's own settings; only the fields present are sent. */
+  | { kind: 'device'; ledCount?: number; budgetMa?: number; idleBrightness?: number; benchOnBoot?: boolean }
+  | { kind: 'bench' }
+  | { kind: 'reset' }
 
 export type EngineState = 'idle' | 'starting' | 'running' | 'error'
 
-/** How frames leave the engine. */
-export type LinkMode = 'none' | 'loopback' | 'port'
+/**
+ * How frames leave the engine.
+ *
+ * 'port' is a paired Web Serial port; 'websocket' is our own firmware over a
+ * socket, carrying the same bytes; 'wled' is a WLED device over its own JSON
+ * protocol. The last two exist because a browser on iOS has none of Web Serial,
+ * WebUSB, WebHID or Web Bluetooth, so the network is the only way to a strip
+ * there.
+ */
+export type LinkMode = 'none' | 'loopback' | 'port' | 'websocket' | 'wled'
 
 /**
  * Separate counters, because the stages fail in different ways and a single
@@ -86,10 +184,60 @@ export interface EngineStats {
   pipelineDrops: number
   /** Time from frame arrival to smoother target, ms. */
   processMs: { p50: number; p99: number; max: number }
+  /**
+   * Where that time goes, median per stage, ms.
+   *
+   * The whole of `processMs` was one number, and at 1080p its p50 sat at 9.00 ms
+   * against an 8.33 ms budget - which says there is a problem and nothing about
+   * where. The plan's own first instruction for this is "measure where it goes,
+   * do not guess", and the guess (the downscale) is only a guess: the readback
+   * off the GPU is a candidate too, and so is the decode.
+   *
+   * Optional because an older extension answers without it. The panel is a
+   * hosted page and the extension is installed separately, so they are always
+   * two different versions of two different programs.
+   */
+  stageMs?: {
+    /** createImageBitmap: the area-average downscale, on the GPU. */
+    downscale: number
+    /** drawImage + getImageData: pulling the small grid back to the CPU. */
+    readback: number
+    /** sRGB -> linear, over the whole grid. */
+    decode: number
+    /** Border detect, sample, adjust, hand to the smoother. */
+    sample: number
+  }
+  /**
+   * How regions are being reduced to LED colours, and what the sampler wants
+   * to say about it.
+   *
+   * `warnings` is the part worth carrying over a message boundary: the sampler
+   * reports the large-region guard and a clamped accuracy level, and Hyperion's
+   * equivalent is a log line that a user of its web UI never sees
+   * (docs/hyperion-port-plan.md, defect #10). Reporting it here is the whole
+   * difference between "the strip looks soft" and "the regions are so large
+   * that every second pixel is being skipped".
+   *
+   * Optional for the same reason as `stageMs`: the panel is a hosted page and
+   * the extension is installed separately, so an older extension answers
+   * without it.
+   */
+  sampling?: {
+    mode: string
+    warnings: readonly string[]
+  }
   /** Frames the smoother emitted per second over the last two seconds. */
   outputFps: number
   link: {
     mode: LinkMode
+    /**
+     * What the link is doing right now, in the sink's own words: a network
+     * link spends real time 'connecting' and can go to 'error' at any moment,
+     * and the panel has to be able to say "still dialling" rather than leave
+     * a dark strip unexplained. Optional because an older extension answers
+     * without it.
+     */
+    state?: 'idle' | 'connecting' | 'open' | 'error'
     /** Frames whose write resolved. */
     written: number
     dropped: number
@@ -97,13 +245,66 @@ export interface EngineStats {
     /** Loopback only: frames the reference parser accepted / refused. */
     accepted: number
     rejected: number
-    /** `usbVendorId:usbProductId` in hex when a port is open. */
+    /** `usbVendorId:usbProductId` in hex when a port is open, or the host. */
     port?: string
+    /**
+     * Whatever the transport counts for itself - bytes on a serial port,
+     * reconnects and drops on a socket. Open-ended on purpose: the panel shows
+     * these without knowing which sink produced them, so a new transport needs
+     * no change here and no change in the device page.
+     */
+    detail?: Record<string, number | string | boolean>
   }
+  /**
+   * Which frame source is running: 'stream' is MediaStreamTrackProcessor,
+   * 'video-callback' a <video> read through requestVideoFrameCallback,
+   * 'video-timer' the same element read on a plain timer.
+   *
+   * Shown rather than hidden because the three do not perform alike and the
+   * difference is a property of the browser, not of the rig - a user comparing
+   * their numbers against someone else's needs to know which one they are on.
+   */
+  sourceKind?: string
+  /**
+   * The test pattern running, if one is. Distinct from `state`, which only says
+   * the engine is producing frames: a strip lit by the walk and a strip
+   * following the screen are both "running", and confusing them would have the
+   * panel claim a capture that is not happening.
+   */
+  pattern?: string
+  /** The effect running, if one is. Same distinction as `pattern` above. */
+  effect?: string
+  /**
+   * The audio visualiser, when one is running.
+   *
+   * `level` is the follower's current normalising value, which is what the
+   * panel's meter shows - it says "the engine can hear something" in a way a
+   * strip across the room cannot.
+   */
+  audio?: { kind: string, input: string, level: number }
+  /**
+   * Every registered source, highest priority first, with the winner marked.
+   *
+   * Reported by the engine rather than worked out here: which one the strip is
+   * actually showing is the muxer's decision, and a panel that derived it
+   * separately would disagree with the strip exactly when it mattered.
+   */
+  layers?: Array<{ priority: number, component: string, active: boolean, winning: boolean }>
   /** The black-border inset currently applied, in grid pixels. */
   border: { unknown: boolean; topBottom: number; leftRight: number }
   /** Capture source size as the track reports it. */
   source?: { width: number; height: number; frameRate?: number }
+  /**
+   * The capture ended on its own rather than being stopped.
+   *
+   * A resolution change, a refresh-rate change, toggling HDR, or the monitor
+   * sleeping all end the stream, and on a real desk at least one of those
+   * happens every day. It is not an error and must not be shown as one - but it
+   * is also not the same as "idle", because the user did not ask for it and
+   * their strip just went dark. It is the reason the panel can offer one click
+   * to pick the screen again.
+   */
+  lost?: boolean
   error?: string
 }
 

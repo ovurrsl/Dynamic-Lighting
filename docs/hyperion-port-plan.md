@@ -452,7 +452,11 @@ wind-up yok.
 **Bu bizim için önemli bir karar noktası.** Planımızda dither firmware'de
 (sigma-delta). Hyperion host'ta yapıyor. İkisi birbirini dışlamıyor ama **ikisi
 birden yapılırsa çift dither olur.** Karar: firmware 16-bit alıyorsa dither
-orada; 8-bit `Afx`/AWA yolunda host tarafında.
+orada; 8-bit yolda host tarafında.
+
+*(Bu satır bir süre `8-bit Afx/AWA yolunda` diyordu, ki `Afx` 16-bit formatın
+kendisi olduğu için kendi kararıyla çelişiyordu. Uygulanan hâli: `Awa` ve `Ada`
+host'ta dither'lanabiliyor, `Afx` bunu **reddediyor** — `lib/engine/encode.ts`.)*
 
 Decay modunda iki **bağımsız saat** var: ortalama `interpolationRate`'te yeniden
 hesaplanıyor, kare `updateFrequency`'de gönderiliyor. Dither açıkken kuantalama

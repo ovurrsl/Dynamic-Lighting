@@ -416,3 +416,33 @@ test('cornerIndex names the first LED of each edge, and CORNERS lists them in st
   assert.equal(classicLayout(noRight).length, 89)
   assert.deepEqual(classicLayout({ ...noRight, start: 'bottom-right' })[0], classicLayout(noRight)[35])
 })
+
+test('a keystone corner near the far side plus the band depth is clamped to the frame', () => {
+  // A rectangle outside the unit square is one the parser accepts and the
+  // sampler refuses - the layout applied and the engine threw.
+  const keystone: Keystone = { ...NO_KEYSTONE, topLeft: { x: 0, y: 0.6 }, topRight: { x: 1, y: 0.6 } }
+  const rects = classicLayout({ ...REFERENCE_LAYOUT, keystone, depthTopBottom: 0.5, depthLeftRight: 0.5 })
+  for (const r of rects) {
+    assert.ok(r.xMin >= 0 && r.xMax <= 1 && r.yMin >= 0 && r.yMax <= 1, `outside the frame: ${JSON.stringify(r)}`)
+    assert.ok(r.xMax >= r.xMin && r.yMax >= r.yMin)
+  }
+})
+
+test('a three-sided rig starting at the corner of its empty edge is not rotated by one', () => {
+  // With no left edge the bottom-left corner's index equals the total, and the
+  // anchor lookup fell off the end: the whole wire order came out one LED late.
+  const noLeft = { ...REFERENCE_LAYOUT, left: 0 }
+  const fromEmptyCorner = classicLayout({ ...noLeft, start: 'bottom-left', clockwise: true })
+  const fromTopLeft = classicLayout({ ...noLeft, start: 'top-left', clockwise: true })
+  // Leaving the bottom-left clockwise, the strip climbs the (empty) left edge
+  // and its first LED is the leftmost of the top edge - exactly where a start
+  // at the top-left begins.
+  assert.deepEqual(fromEmptyCorner, fromTopLeft)
+  assert.equal(fromEmptyCorner[0]!.yMin, 0)
+
+  // Anti-clockwise from the top-left, the first LED is the leftmost of the
+  // BOTTOM edge, which sits at the far end of the geometric run.
+  const anti = classicLayout({ ...noLeft, start: 'top-left', clockwise: false })
+  assert.equal(anti[0]!.yMax, 1)
+  assert.ok(anti[0]!.xMin < 0.05)
+})

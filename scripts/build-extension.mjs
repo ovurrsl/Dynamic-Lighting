@@ -21,7 +21,9 @@ await build({
   format: 'esm',
   target: 'chrome116',
   platform: 'browser',
-  sourcemap: true,
+  // External: the map files are deleted before commit, and a sourceMappingURL
+  // comment pointing at a file that is not there is a 404 in every devtools.
+  sourcemap: 'external',
   minify: false,
   logLevel: 'info'
 })
@@ -29,3 +31,6 @@ await build({
 for (const file of ['manifest.json', 'src/offscreen.html', 'src/popup.html']) {
   cpSync(`extension/${file}`, `${outdir}/${file.replace('src/', '')}`)
 }
+// The popup's strings, one directory per language, read by chrome.i18n. The
+// directory name is fixed by the platform; it must sit beside manifest.json.
+cpSync('extension/_locales', `${outdir}/_locales`, { recursive: true })

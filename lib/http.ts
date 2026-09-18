@@ -1,11 +1,5 @@
-import type { ZodError } from 'zod'
-
 /**
- * Response helpers, so every endpoint answers in one shape.
- *
- * The Fastify app had a single error handler that guaranteed this. Route handlers
- * have no equivalent hook, so the guarantee has to come from everything going
- * through these functions.
+ * Response helpers, so the two endpoints that are left answer in one shape.
  *
  * These return a plain web `Response`, not `NextResponse`. Next accepts either,
  * and avoiding the `next/server` import keeps this module - and therefore every
@@ -14,9 +8,8 @@ import type { ZodError } from 'zod'
  */
 
 const NO_STORE = {
-  // A licence response is specific to one machine and one moment. Next caches
-  // aggressively by default and a cached token would be a correctness bug, not
-  // just a stale read.
+  // Liveness answered from a cache stops meaning anything about the deployment
+  // behind it, and a version string is the same.
   'cache-control': 'no-store, max-age=0',
   'content-type': 'application/json; charset=utf-8'
 } as const
@@ -37,70 +30,10 @@ export function apiError (
   return json({ error: code, ...extra }, status, headers)
 }
 
-export function noContent (): Response {
-  return new Response(null, {
-    status: 204,
-    headers: { 'cache-control': 'no-store, max-age=0' }
-  })
-}
-
 /**
- * Turns a Zod failure into the 400 body.
- *
- * `problems` is a flat array of "field: message" strings, which fixes a mismatch
- * carried over from the Fastify version: the server sent `{error, message}` while
- * the web client read `detail.problems`, so validation detail never actually
- * reached the user - they saw the bare code. The client always expected this
- * shape; now it gets it.
- */
-export function validationError (error: ZodError): Response {
-  const problems = error.issues.map((issue) => {
-    const path = issue.path.join('.')
-    return path ? `${path}: ${issue.message}` : issue.message
-  })
-  return json({ error: 'validation_failed', problems }, 400)
-}
-
-/**
- * Parses a JSON body without letting malformed input become a 500.
- *
- * Fastify rejected bad JSON before a handler ran. Here `request.json()` throws,
- * and an unhandled throw in a route handler is a 500 - which would tell a client
- * author "the server is broken" when the truth is "your body is not JSON".
- */
-export async function readJsonBody (request: Request): Promise<
-  { ok: true, value: unknown } | { ok: false, response: Response }
-> {
-  try {
-    return { ok: true, value: await request.json() }
-  } catch {
-    return { ok: false, response: apiError(400, 'invalid_json') }
-  }
-}
-
-/**
- * The client address.
- *
- * TLS terminates in front of the app on both hosts, so the socket address is a
- * proxy and only a forwarded header carries the real client. Without this the
- * rate limiter would see every request as one client and protect nothing - the
- * same reason `trustProxy` defaulted on in the Fastify config.
- *
- * x-forwarded-for may be a comma-separated chain; the left-most entry is the
- * original client.
- */
-export function clientIp (request: Request): string {
-  const forwarded = request.headers.get('x-forwarded-for')
-  if (forwarded) {
-    const first = forwarded.split(',')[0]?.trim()
-    if (first) return first
-  }
-  return request.headers.get('x-real-ip')?.trim() ?? 'unknown'
-}
-
-/**
- * Wraps a handler so an unexpected throw becomes a logged 500 with an opaque
- * body, never a stack trace on the wire.
+ * Turns an unexpected throw into a 500 with a logged cause rather than a stack
+ * trace on the wire. Route handlers have no framework-level error hook, so the
+ * guarantee has to come from every handler going through this.
  */
 export function withErrorHandling<C> (
   handler: (request: Request, context: C) => Promise<Response>

@@ -1,0 +1,47 @@
+{
+  "appName": { "message": "AmbiFlux" },
+  "appDescription": { "message": "Screen-following ambilight engine: capture, sampling and the serial port. Panel: ambiflux-revor.vercel.app" },
+
+  "pairSerial": { "message": "Pair serial port" },
+  "startCapture": { "message": "Start capture" },
+  "stop": { "message": "Stop" },
+  "selfTest": { "message": "Test without a screen" },
+
+  "statusPaired": {
+    "message": "Port paired (VID $VID$, PID $PID$).\nEngine connecting…",
+    "placeholders": {
+      "vid": { "content": "$1", "example": "2341" },
+      "pid": { "content": "$2", "example": "0070" }
+    }
+  },
+  "statusSerialReply": {
+    "message": "Serial: $REPLY$",
+    "placeholders": { "reply": { "content": "$1" } }
+  },
+  "statusNoPort": {
+    "message": "No port chosen: $REASON$",
+    "placeholders": { "reason": { "content": "$1" } }
+  },
+  "statusPickerOpening": { "message": "Opening the screen picker…" },
+  "statusCaptureRunning": { "message": "Capture is running." },
+  "statusStartFailed": {
+    "message": "Could not start: $REASON$",
+    "placeholders": { "reason": { "content": "$1" } }
+  },
+  "statusSelfTestRunning": { "message": "Self-test running: the engine is processing a generated picture." },
+  "statusSelfTestFailed": {
+    "message": "Self-test could not start: $REASON$",
+    "placeholders": { "reason": { "content": "$1" } }
+  },
+  "statusStopped": {
+    "message": "Stopped: $REPLY$",
+    "placeholders": { "reply": { "content": "$1" } }
+  },
+  "statusEngine": {
+    "message": "Engine: $STATE$ · v$VERSION$",
+    "placeholders": {
+      "state": { "content": "$1", "example": "idle" },
+      "version": { "content": "$2", "example": "0.1.0" }
+    }
+  }
+}

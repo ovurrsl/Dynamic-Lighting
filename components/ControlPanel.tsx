@@ -1,234 +1,415 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import {
-  Button,
-  Card,
-  ColorArea,
-  ColorField,
-  ColorPicker,
-  ColorSlider,
-  ColorSwatch,
-  ColorSwatchPicker,
-  Label,
-  Slider,
-  Surface,
-  Switch,
-  parseColor,
-  type Color
-} from '@heroui/react'
+import { useEffect, useState } from 'react'
+import { Button, Surface } from '@heroui/react'
 
+import { AudioCard } from '#components/AudioCard'
+import { AutoLayersCard } from '#components/AutoLayersCard'
+import { CalibrationCard } from '#components/CalibrationCard'
+import { CapabilitiesCard } from '#components/CapabilitiesCard'
+import { CaptureCard } from '#components/CaptureCard'
+import { SamplingCard } from '#components/SamplingCard'
+import { ColourAdjustCard } from '#components/ColourAdjustCard'
+import { ColourCard } from '#components/ColourCard'
+import { BoardNetworkCard } from '#components/BoardNetworkCard'
+import { BoardSettingsCard } from '#components/BoardSettingsCard'
+import { BorderCard } from '#components/BorderCard'
 import { DeviceCard } from '#components/DeviceCard'
+import { EffectsCard } from '#components/EffectsCard'
+import { HostCard } from '#components/HostCard'
+import { COMPONENT_KEY, LayersCard } from '#components/LayersCard'
+import { useEngine } from '#components/Engine'
+import { EngineConfigProvider, useEngineConfig } from '#components/EngineConfig'
+import { GuideCard } from '#components/GuideCard'
+import { InstancesCard, StripPicker } from '#components/InstancesCard'
 import { LayoutCard } from '#components/LayoutCard'
-import { LedFrame } from '#components/LedFrame'
-import { toHex, toLinear16, toRgb8 } from '#lib/colour'
-import type { LicenceGrant } from '#lib/client-api'
-import { DEFAULT_ENGINE_CONFIG, resolveLayout, type EngineConfig } from '#lib/engine/config'
-import { frameAspect } from '#lib/preview'
-
-const PRESET_COLORS = [
-  '#ef4444', '#f97316', '#eab308', '#22c55e',
-  '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'
-]
+import { OverviewCard } from '#components/OverviewCard'
+import { PreferencesMenu } from '#components/PreferencesMenu'
+import { patternLabel } from '#components/labels'
+import { useTranslate } from '#components/Preferences'
+import { ProfilesCard } from '#components/ProfilesCard'
+import { RoadmapCard } from '#components/RoadmapCard'
+import { ScheduleCard } from '#components/ScheduleCard'
+import { TelemetryCard } from '#components/TelemetryCard'
+import { SmoothingCard } from '#components/SmoothingCard'
+import {
+  DEFAULT_SECTION,
+  GROUP_TITLE,
+  SECTION_GROUPS,
+  findSection,
+  hashForSection,
+  sectionFromHash,
+  sectionsInGroup,
+  type SectionId
+} from '#lib/sections'
+import type { EngineState, EngineStats } from '#lib/extension/messages'
+import type { MessageKey } from '#lib/i18n/strings'
 
 /**
- * The strip lit with the chosen colour, in the geometry the CONFIGURED layout
- * describes - so this doubles as a wiring check: if the on-screen frame does not
- * match the desk, the layout is wrong, and the layout card above is where to fix
- * it. The rectangles come from `resolveLayout`, the same call the engine makes.
+ * The shell: a sidebar of grouped sections, one section at a time.
+ *
+ * This replaces a single scrolling page, and the reason is what is coming
+ * rather than what is here. Six cards in a column was fine; the roadmap adds an
+ * effect engine, network devices, audio, colour adjustment, smoothing profiles,
+ * border modes and priority layers, and stacking those vertically produces a
+ * page in which nothing can be found. Hyperion's own web interface is built
+ * exactly this way, and for exactly this reason.
+ *
+ * The navigation is data (`lib/sections.ts`), so adding a feature is one entry
+ * plus one component - not another card wedged into an ever-longer column.
  */
-function StripPreview ({ config, color, brightness }: { config: EngineConfig, color: Color, brightness: number }) {
-  const css = useMemo(() => {
-    const { r, g, b } = toRgb8(color)
-    const scale = brightness / 100
-    return `rgb(${Math.round(r * scale)} ${Math.round(g * scale)} ${Math.round(b * scale)})`
-  }, [color, brightness])
-  const rects = useMemo(() => resolveLayout(config), [config])
 
+function sectionBody (id: SectionId) {
+  switch (id) {
+    case 'overview': return <OverviewSection />
+    case 'colour': return <ColourCard />
+    case 'strips': return <InstancesCard />
+    case 'layout': return <LayoutSection />
+    case 'capture': return <CaptureSection />
+    case 'picture': return <PictureSection />
+    case 'calibration': return <CalibrationCard />
+    case 'profiles': return <ProfilesSection />
+    case 'effects': return <EffectsSection />
+    case 'audio': return <AudioCard />
+    case 'schedule': return <ScheduleCard />
+    case 'device': return <DeviceSection />
+    case 'guide': return <GuideCard />
+    case 'roadmap': return <RoadmapCard />
+  }
+}
+
+/**
+ * The device page is diagnostics, and the browser's own capabilities belong
+ * with the engine's counters: both answer "why is my strip dark", and the
+ * capability table answers it for the half of the world that cannot run the
+ * extension at all.
+ *
+ * The board's own network settings sit here too rather than on the LED hardware
+ * page: that page is about what the strip looks like, this one is about the
+ * board, and putting it on a network is the second half of choosing a network
+ * transport - without it the firmware's socket has no address to be dialled at.
+ */
+function DeviceSection () {
   return (
-    <LedFrame
-      aspectRatio={frameAspect(config.layout)}
-      colorAt={() => css}
-      glow
-      label={`${rects.length} LED önizlemesi`}
-      rects={rects}
-    />
+    <div className="flex flex-col gap-6">
+      <HostCard />
+      <DeviceCard />
+      <TelemetryCard />
+      <BoardSettingsCard />
+      <BoardNetworkCard />
+      <CapabilitiesCard />
+    </div>
   )
 }
 
 /**
- * The panel opens without a licence.
+ * The overview: what the engine is doing, and what the strip is showing.
  *
- * Be clear about what this does: the wall is gone for EVERYONE, not just for the
- * owner. On a public page there is no way to recognise one person without a
- * credential, and the credential would be the licence key - which is the thing
- * we are trying not to ask for. So the licence stops guarding the door and
- * guards entitlements instead, which is how it was designed: `features` lives
- * inside the signed token and the client reads its rights from verified data.
- *
- * Nothing is weakened by this. No feature is gated in the UI today, and when one
- * is, it will read grant.features - which is null here and therefore grants
- * nothing.
+ * The layer list sits here rather than on the device page because it is a
+ * CONTROL, not a diagnostic - it is where someone stops the effect that is
+ * covering their capture.
  */
-export function ControlPanel ({
-  grant,
-  onActivate
-}: {
-  grant: LicenceGrant | null
-  onActivate?: () => void
-}) {
-  const [color, setColor] = useState<Color>(parseColor('#3b82f6'))
-  const [brightness, setBrightness] = useState(70)
-  const [isEnabled, setIsEnabled] = useState(true)
-  /**
-   * The layout in force, as the layout card reports it: from the extension if it
-   * is installed, else this browser's stored copy, else the reference rig. Held
-   * here because two cards draw it and they must not disagree.
-   */
-  const [config, setConfig] = useState<EngineConfig>(DEFAULT_ENGINE_CONFIG as EngineConfig)
+function OverviewSection () {
+  return (
+    <div className="flex flex-col gap-6">
+      <OverviewCard />
+      <LayersCard />
+    </div>
+  )
+}
 
-  // What would go on the wire. Shown because it is the fastest way to see that
-  // the linear decode is doing something: a mid sRGB value lands far lower in
-  // linear, and that is correct, not a bug.
-  const wire = useMemo(() => toLinear16(color), [color])
-  const srgb = useMemo(() => toRgb8(color), [color])
+/**
+ * What the screen gives us, and how a region of it becomes one LED colour.
+ *
+ * The two belong together: the analysis grid decides how many pixels a region
+ * holds, and the sampling mode decides what is done with them. Reading the
+ * grid's "cells per LED" on one page and choosing the reduction on another
+ * would split one decision across two.
+ */
+function CaptureSection () {
+  return (
+    <div className="flex flex-col gap-6">
+      <CaptureCard />
+      <SamplingCard />
+    </div>
+  )
+}
+
+/**
+ * The picture page: everything between the captured frame and the strip.
+ *
+ * Smoothing and colour correction sit together because they are the same kind
+ * of decision - how the picture is TREATED, rather than where it comes from or
+ * where it goes - and because anyone tuning one is usually about to tune the
+ * other - and the border detector is the third, because it decides which part
+ * of the frame is picture in the first place.
+ */
+function PictureSection () {
+  return (
+    <div className="flex flex-col gap-6">
+      <SmoothingCard />
+      <ColourAdjustCard />
+      <BorderCard />
+    </div>
+  )
+}
+
+/**
+ * Effects, and the two layers nobody starts by hand.
+ *
+ * The background and the boot animation sit with the effects because that is
+ * what they usually are, and because the alternative is a page of their own
+ * holding two switches.
+ */
+function EffectsSection () {
+  return (
+    <div className="flex flex-col gap-6">
+      <EffectsCard />
+      <AutoLayersCard />
+    </div>
+  )
+}
+
+/** Thin wrappers, so the two cards that need shared state do not have to know about the shell. */
+function LayoutSection () {
+  const { loaded, setConfig, setDraft } = useEngineConfig()
+  return <LayoutCard loaded={loaded} onConfig={setConfig} onDraft={setDraft} />
+}
+
+function ProfilesSection () {
+  const { draft, load } = useEngineConfig()
+  return <ProfilesCard current={draft} onLoad={(profile) => load(profile)} />
+}
+
+/**
+ * A live word for the engine, in the sidebar, on every page.
+ *
+ * The point of splitting the panel is that you are usually not on the device
+ * page; the cost is that the device page was where you could see whether
+ * anything was running. This pays that back in one line.
+ */
+/**
+ * What the badge says beside "running".
+ *
+ * An effect or a test pattern has NO CAPTURE, so `deliveredFps` is 0 for them -
+ * and "running · 0 fps" beside a strip that is visibly animating reads as a
+ * fault. What is running is the useful thing to say there; the capture rate is
+ * only meaningful when something is being captured.
+ */
+function describeRate (stats: EngineStats, t: (key: MessageKey) => string): string {
+  // Through the string table, like the layer tags below: an effect's `kind` is
+  // an internal identifier, and "twinkle" in a Turkish panel is the same leak
+  // as showing a component tag.
+  if (stats.audio !== undefined) return t(`audio.kind.${stats.audio.kind}` as MessageKey)
+  if (stats.effect !== undefined) return t(`effects.kind.${stats.effect}` as MessageKey)
+  if (stats.pattern !== undefined) return patternLabel(stats.pattern, t)
+  // No capture layer means `deliveredFps` counts nothing, and "0 fps" beside a
+  // strip that is visibly lit reads as a fault. Naming what is actually
+  // showing is both true and more use - and this now covers the background and
+  // the startup layer as well as a plain colour.
+  const winning = stats.layers?.find((layer) => layer.winning)
+  if (winning !== undefined && winning.component !== 'capture') {
+    // Through the same table the layer list uses: this is the one place in the
+    // panel where an internal tag would otherwise reach a user.
+    const key = COMPONENT_KEY[winning.component]
+    return key === undefined ? winning.component : t(key)
+  }
+  return `${stats.deliveredFps.toFixed(0)} fps`
+}
+
+/** One place for the four state words, so the badge and the device page agree. */
+const STATE_LABEL: Record<EngineState, MessageKey> = {
+  idle: 'device.state.idle',
+  starting: 'device.state.starting',
+  running: 'device.state.running',
+  error: 'device.state.error'
+}
+
+function EngineBadge () {
+  const t = useTranslate()
+  const { probe, host, pageCapable, state, stats } = useEngine()
+  // The badge used to speak for the extension, because the extension was the
+  // engine. Now it speaks for whichever host is live - saying "not installed"
+  // beside a strip the page is actively driving is worse than saying nothing.
+  if (host === 'page') {
+    const running = state === 'running'
+    return (
+      <span className="flex items-center gap-2 text-xs">
+        <span aria-hidden className={`size-2 rounded-full ${running ? 'bg-success' : state === 'error' ? 'bg-danger' : 'bg-default'}`} />
+        <span className="text-muted">
+          {t(STATE_LABEL[state])}
+          {running && stats !== null && ` · ${describeRate(stats, t)}`}
+          {` · ${t('host.page')}`}
+        </span>
+      </span>
+    )
+  }
+  if (probe === null) return null
+  if (!probe.available) {
+    // With a page host available this is a choice, not a dead end.
+    if (pageCapable) return null
+    return (
+      <span className="flex items-center gap-2 text-xs">
+        <span aria-hidden className="size-2 rounded-full bg-default" />
+        <span className="text-muted">{t('device.absent')}</span>
+      </span>
+    )
+  }
+  return (
+    <span className="flex items-center gap-2 text-xs">
+      <span
+        aria-hidden
+        className={`size-2 rounded-full ${
+          state === 'running' ? 'bg-success' : state === 'error' ? 'bg-danger' : 'bg-default'
+        }`}
+      />
+      <span className="text-muted">
+        {t(STATE_LABEL[state])}
+        {state === 'running' && stats !== null && ` · ${describeRate(stats, t)}`}
+      </span>
+    </span>
+  )
+}
+
+function Nav ({ current, onNavigate }: { current: SectionId, onNavigate: (id: SectionId) => void }) {
+  const t = useTranslate()
+  return (
+    <nav aria-label={t('nav.menu')} className="flex flex-col gap-5">
+      {SECTION_GROUPS.map((group) => (
+        <div key={group} className="flex flex-col gap-1">
+          <h2 className="px-3 text-xs font-semibold uppercase tracking-wide text-muted">
+            {t(GROUP_TITLE[group])}
+          </h2>
+          {sectionsInGroup(group).map((section) => {
+            const active = section.id === current
+            return (
+              <a
+                key={section.id}
+                aria-current={active ? 'page' : undefined}
+                className={`flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors ${
+                  active ? 'bg-default/20 font-medium' : 'text-muted hover:bg-default/10'
+                }`}
+                href={hashForSection(section.id)}
+                onClick={() => onNavigate(section.id)}
+              >
+                <span aria-hidden className="w-4 text-center opacity-70">{section.glyph}</span>
+                {t(section.titleKey)}
+              </a>
+            )
+          })}
+        </div>
+      ))}
+    </nav>
+  )
+}
+
+export function ControlPanel () {
+  return (
+    <EngineConfigProvider>
+      <Shell />
+    </EngineConfigProvider>
+  )
+}
+
+function Shell () {
+  const t = useTranslate()
+  const [menuOpen, setMenuOpen] = useState(false)
+  /**
+   * Starts on the default and is corrected from the hash after mount, for the
+   * same reason the language is: the server cannot see a fragment - browsers
+   * never send it - so rendering the hash's section on the server is not merely
+   * hard, it is impossible.
+   */
+  const [current, setCurrent] = useState<SectionId>(DEFAULT_SECTION)
+
+  useEffect(() => {
+    const read = (): void => setCurrent(sectionFromHash(window.location.hash))
+    read()
+    window.addEventListener('hashchange', read)
+    return () => window.removeEventListener('hashchange', read)
+  }, [])
+
+  const section = findSection(current)
+
+  const go = (id: SectionId): void => {
+    setCurrent(id)
+    setMenuOpen(false)
+  }
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6 p-6">
-      <header className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">AmbiFlux</h1>
-          {grant === null
-            ? (
-              <p className="flex items-center gap-2 text-sm text-muted">
-                <span>Lisanssız</span>
-                {onActivate !== undefined && (
-                  <Button size="sm" variant="secondary" onPress={onActivate}>
-                    Lisans ekle
-                  </Button>
-                )}
-              </p>
-              )
-            : (
-              <p className="text-sm text-muted">
-                {grant.tier} · {grant.seats.used}/{grant.seats.max} cihaz
-              </p>
-              )}
+    <div className="mx-auto flex min-h-dvh w-full max-w-7xl">
+      {/*
+        Two renders of one nav rather than one repositioned by CSS. A drawer
+        that overlays the page needs a focus trap, an escape key and a scroll
+        lock to be usable with a keyboard; this needs none of them, because on a
+        narrow screen the menu is simply part of the page.
+      */}
+      <aside className="hidden w-60 shrink-0 flex-col gap-6 border-e border-default/30 p-4 lg:flex">
+        <div className="px-3">
+          <h1 className="text-lg font-semibold">AmbiFlux</h1>
+          <p className="text-xs text-muted">{t('app.tagline')}</p>
         </div>
-        <Switch isSelected={isEnabled} size="md" onChange={setIsEnabled}>
-          <Switch.Content>
-            <Switch.Control>
-              <Switch.Thumb />
-            </Switch.Control>
-            Aydınlatma
-          </Switch.Content>
-        </Switch>
-      </header>
+        <Nav current={current} onNavigate={go} />
+        {/*
+          The strip picker lives beside the navigation because it changes what
+          every page below it means: the layout, the capture settings and the
+          board's network all belong to the selected strip. It renders nothing
+          at all with one strip, which is every fresh installation.
+        */}
+        <StripPicker />
+        <div className="mt-auto px-3">
+          <EngineBadge />
+        </div>
+      </aside>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card variant="default">
-          <Card.Header>
-            <Card.Title>Renk</Card.Title>
-            <Card.Description>
-              Sürüklerken canlı önizlenir, bıraktığında cihaza yazılır.
-            </Card.Description>
-          </Card.Header>
-          <Card.Content className="flex flex-col gap-4">
-            {/*
-              ColorArea, ColorSlider, ColorField and ColorSwatch read the shared
-              colour from ColorPicker's context, so none of them needs its own
-              value/onChange. There is no ColorWheel in HeroUI v3 — a saturation
-              x brightness area plus a hue slider is the supported shape.
-            */}
-            <ColorPicker value={color} onChange={setColor}>
-              <ColorPicker.Trigger>
-                <ColorSwatch size="lg" />
-                <Label>Renk seç</Label>
-              </ColorPicker.Trigger>
-              <ColorPicker.Popover className="gap-2">
-                <ColorSwatchPicker className="justify-center pt-2" size="xs">
-                  {PRESET_COLORS.map((preset) => (
-                    <ColorSwatchPicker.Item key={preset} color={preset}>
-                      <ColorSwatchPicker.Swatch />
-                    </ColorSwatchPicker.Item>
-                  ))}
-                </ColorSwatchPicker>
-                <ColorArea
-                  aria-label="Doygunluk ve parlaklık"
-                  className="max-w-full"
-                  colorSpace="hsb"
-                  xChannel="saturation"
-                  yChannel="brightness"
-                >
-                  <ColorArea.Thumb />
-                </ColorArea>
-                <ColorSlider aria-label="Renk tonu" channel="hue" colorSpace="hsb">
-                  <ColorSlider.Track>
-                    <ColorSlider.Thumb />
-                  </ColorSlider.Track>
-                </ColorSlider>
-                <ColorField aria-label="Onaltılık renk kodu">
-                  <ColorField.Group variant="secondary">
-                    <ColorField.Prefix>
-                      <ColorSwatch size="xs" />
-                    </ColorField.Prefix>
-                    <ColorField.Input />
-                  </ColorField.Group>
-                </ColorField>
-              </ColorPicker.Popover>
-            </ColorPicker>
-
-            <Slider
-              maxValue={100}
-              minValue={0}
-              step={1}
-              value={brightness}
-              onChange={(value) => setBrightness(value as number)}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex flex-wrap items-end justify-between gap-4 border-b border-default/30 p-4 lg:p-6">
+          {/*
+            The page's h1 is the product name in the aside - which is
+            display:none on a phone, and display:none removes it from the
+            accessibility tree too, so a phone had a page with no h1 at all.
+            This one is read by a screen reader and seen by nobody, and it is
+            itself removed at lg where the aside's takes over: one h1 at every
+            width, and the h2 section title below keeps its place under it.
+          */}
+          <h1 className="sr-only lg:hidden">AmbiFlux</h1>
+          <div className="flex min-w-0 items-center gap-3">
+            <Button
+              className="lg:hidden"
+              size="sm"
+              variant="secondary"
+              onPress={() => setMenuOpen((open) => !open)}
             >
-              <Label>Parlaklık</Label>
-              <Slider.Output />
-              <Slider.Track>
-                <Slider.Fill />
-                <Slider.Thumb />
-              </Slider.Track>
-            </Slider>
-          </Card.Content>
-        </Card>
+              {t('nav.menu')}
+            </Button>
+            <div className="min-w-0">
+              <h2 className="truncate text-xl font-semibold">{t(section.titleKey)}</h2>
+              <p className="truncate text-sm text-muted">{t(section.descriptionKey)}</p>
+            </div>
+          </div>
+          {/*
+            No "Lighting" switch here any more. It looked like a master switch
+            for the strip and blanked one preview on one page - a control that
+            promises more than it does is worse than none. Stopping the strip
+            is the overview's Stop button, and it really stops it.
+          */}
+          <div className="flex flex-wrap items-end gap-4">
+            <PreferencesMenu />
+          </div>
+        </header>
 
-        <Card variant="default">
-          <Card.Header>
-            <Card.Title>Önizleme</Card.Title>
-            <Card.Description>
-              Şeridin fiziksel sırası. Masadakiyle eşleşmiyorsa yerleşim ayarı yanlış.
-            </Card.Description>
-          </Card.Header>
-          <Card.Content className="flex flex-col gap-4">
-            <StripPreview brightness={isEnabled ? brightness : 0} color={color} config={config} />
-            <Surface className="rounded-xl p-3 font-mono text-xs" variant="secondary">
-              <div className="flex justify-between">
-                <span className="text-muted">seçilen</span>
-                <span>{toHex(color)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted">sRGB 8-bit</span>
-                <span>{srgb.r}, {srgb.g}, {srgb.b}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted">tele giden (doğrusal 16-bit)</span>
-                <span>{wire.r}, {wire.g}, {wire.b}</span>
-              </div>
-            </Surface>
-            <p className="text-xs text-muted">
-              Doğrusal değerlerin sRGB'den belirgin düşük olması beklenir: firmware
-              hiçbir transfer fonksiyonu uygulamıyor, o yüzden kodlama burada çözülüyor.
-            </p>
-          </Card.Content>
-        </Card>
+        {menuOpen && (
+          <Surface className="m-4 rounded-2xl p-4 lg:hidden" variant="secondary">
+            <Nav current={current} onNavigate={go} />
+            <StripPicker className="mt-4" />
+            <div className="mt-4 px-3">
+              <EngineBadge />
+            </div>
+          </Surface>
+        )}
+
+        <main className="flex-1 p-4 lg:p-6">{sectionBody(current)}</main>
       </div>
-
-      <LayoutCard onConfig={setConfig} />
-
-      <DeviceCard />
     </div>
   )
 }

@@ -205,12 +205,15 @@ export function classicLayout (spec: ClassicLayoutSpec): LedRect[] {
   for (let i = 0; i < top; i++) {
     const stepX = (tr.x - tl.x - 2 * gapH) / top
     const stepY = (tr.y - tl.y) / top
-    const yMin = tl.y + stepY * i
+    // Clamped like every edge below: a keystone corner near the far side plus
+    // the band depth reaches past the frame, and a rectangle outside the unit
+    // square is one the parser accepts and the sampler refuses.
+    const yMin = clampUnit(tl.y + stepY * i)
     rects.push({
       xMin: grow(tl.x + stepX * i + gapH, -1),
       xMax: grow(tl.x + stepX * (i + 1) + gapH, 1),
       yMin,
-      yMax: yMin + dh
+      yMax: clampUnit(yMin + dh)
     })
   }
 
@@ -218,9 +221,9 @@ export function classicLayout (spec: ClassicLayoutSpec): LedRect[] {
   for (let i = 0; i < right; i++) {
     const stepX = (br.x - tr.x) / right
     const stepY = (br.y - tr.y - 2 * gapV) / right
-    const xMax = tr.x + stepX * (i + 1)
+    const xMax = clampUnit(tr.x + stepX * (i + 1))
     rects.push({
-      xMin: xMax - dv,
+      xMin: clampUnit(xMax - dv),
       xMax,
       yMin: grow(tr.y + stepY * i + gapV, -1),
       yMax: grow(tr.y + stepY * (i + 1) + gapV, 1)
@@ -231,11 +234,11 @@ export function classicLayout (spec: ClassicLayoutSpec): LedRect[] {
   for (let i = bottom - 1; i >= 0; i--) {
     const stepX = (br.x - bl.x - 2 * gapH) / bottom
     const stepY = (br.y - bl.y) / bottom
-    const yMax = bl.y + stepY * i
+    const yMax = clampUnit(bl.y + stepY * i)
     rects.push({
       xMin: grow(bl.x + stepX * i + gapH, -1),
       xMax: grow(bl.x + stepX * (i + 1) + gapH, 1),
-      yMin: yMax - dh,
+      yMin: clampUnit(yMax - dh),
       yMax
     })
   }
@@ -244,10 +247,10 @@ export function classicLayout (spec: ClassicLayoutSpec): LedRect[] {
   for (let i = left - 1; i >= 0; i--) {
     const stepX = (bl.x - tl.x) / left
     const stepY = (bl.y - tl.y - 2 * gapV) / left
-    const xMin = tl.x + stepX * i
+    const xMin = clampUnit(tl.x + stepX * i)
     rects.push({
       xMin,
-      xMax: xMin + dv,
+      xMax: clampUnit(xMin + dv),
       yMin: grow(tl.y + stepY * i + gapV, -1),
       yMax: grow(tl.y + stepY * (i + 1) + gapV, 1)
     })
@@ -279,7 +282,10 @@ function orient (geometric: LedRect[], spec: ClassicLayoutSpec): LedRect[] {
 
   // Walk from the corner in the direction of travel until a LED exists there:
   // a gap that swallowed the corner hands the anchor to its neighbour.
-  let at = clockwise ? cornerIndex(spec, spec.start) : mod(cornerIndex(spec, spec.start) - 1, total)
+  // Wrapped in both directions: with an empty edge before the start corner,
+  // the corner's index equals `total` and the anchor was undefined - the whole
+  // wire order came out rotated by one LED on a three-sided rig.
+  let at = mod(clockwise ? cornerIndex(spec, spec.start) : cornerIndex(spec, spec.start) - 1, total)
   while (!survives(at)) at = mod(at + (clockwise ? 1 : -1), total)
   const anchor = geometric[at] as LedRect
 
@@ -446,6 +452,16 @@ function requireFraction (name: string, v: number, max = 1): void {
   if (!(v >= 0 && v <= max)) throw new RangeError(`layout: ${name} must be in [0, ${max}], got ${v}`)
 }
 
+/**
+ * The generator's own bounds, exported so the editor's sliders end where the
+ * generator's acceptance does. The layout card used to offer an overlap up to
+ * 1 and an edge gap up to 0.3, and a depth of exactly 0 - values the generator
+ * refuses, reached by dragging a slider to its end.
+ */
+export const DEPTH_MAX = 0.5
+export const OVERLAP_MAX = 0.5
+export const EDGE_GAP_MAX = 0.25
+
 function validateClassic (spec: ClassicLayoutSpec): void {
   for (const edge of ['top', 'right', 'bottom', 'left'] as const) requireCount(edge, spec[edge])
   const total = ledCount(spec)
@@ -453,7 +469,7 @@ function validateClassic (spec: ClassicLayoutSpec): void {
 
   for (const depth of ['depthTopBottom', 'depthLeftRight'] as const) {
     const d = spec[depth]
-    if (!(d > 0 && d <= 0.5)) throw new RangeError(`layout: ${depth} must be in (0, 0.5], got ${d}`)
+    if (!(d > 0 && d <= DEPTH_MAX)) throw new RangeError(`layout: ${depth} must be in (0, ${DEPTH_MAX}], got ${d}`)
   }
   if (!CORNERS.includes(spec.start)) throw new RangeError(`layout: unknown start corner ${String(spec.start)}`)
   if (typeof spec.clockwise !== 'boolean') throw new TypeError(`layout: clockwise must be a boolean, got ${String(spec.clockwise)}`)
@@ -461,8 +477,8 @@ function validateClassic (spec: ClassicLayoutSpec): void {
   if (spec.offset !== undefined && !Number.isInteger(spec.offset)) {
     throw new RangeError(`layout: offset must be an integer, got ${spec.offset}`)
   }
-  if (spec.overlap !== undefined) requireFraction('overlap', spec.overlap, 0.5)
-  if (spec.edgeGap !== undefined) requireFraction('edgeGap', spec.edgeGap, 0.25)
+  if (spec.overlap !== undefined) requireFraction('overlap', spec.overlap, OVERLAP_MAX)
+  if (spec.edgeGap !== undefined) requireFraction('edgeGap', spec.edgeGap, EDGE_GAP_MAX)
   if (spec.aspectRatio !== undefined && !(spec.aspectRatio > 0 && Number.isFinite(spec.aspectRatio))) {
     throw new RangeError(`layout: aspectRatio must be a positive finite number, got ${spec.aspectRatio}`)
   }

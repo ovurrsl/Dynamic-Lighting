@@ -12,6 +12,7 @@ import { SamplingCard } from '#components/SamplingCard'
 import { ColourAdjustCard } from '#components/ColourAdjustCard'
 import { ColourCard } from '#components/ColourCard'
 import { BoardNetworkCard } from '#components/BoardNetworkCard'
+import { BoardSettingsCard } from '#components/BoardSettingsCard'
 import { BorderCard } from '#components/BorderCard'
 import { DeviceCard } from '#components/DeviceCard'
 import { EffectsCard } from '#components/EffectsCard'
@@ -94,6 +95,7 @@ function DeviceSection () {
       <HostCard />
       <DeviceCard />
       <TelemetryCard />
+      <BoardSettingsCard />
       <BoardNetworkCard />
       <CapabilitiesCard />
     </div>

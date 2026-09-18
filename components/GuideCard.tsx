@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { Card, Surface } from '@heroui/react'
 
 import { useTranslate } from '#components/Preferences'
-import { currentEnvironment, detectCapabilities, outputRoutes } from '#lib/capabilities'
+import { currentEnvironment, detectCapabilities, hasLocalDeviceRoute } from '#lib/capabilities'
 import { hashForSection } from '#lib/sections'
 import type { MessageKey } from '#lib/i18n/strings'
 
@@ -70,13 +70,7 @@ export function GuideCard () {
    */
   const [hasLocalDevice, setHasLocalDevice] = useState<boolean | null>(null)
   useEffect(() => {
-    // Specifically serial/HID/USB - the routes an EXTENSION reaches. `network`
-    // is deliberately excluded: WebSocket exists in every browser, extension or
-    // not, so checking outputRoutes() as a whole would say "yes" everywhere and
-    // never show this box at all.
-    const local: ReadonlySet<string> = new Set(['serial', 'hid', 'usb'])
-    const routes = outputRoutes(detectCapabilities(currentEnvironment()))
-    setHasLocalDevice(routes.some((id) => local.has(id)))
+    setHasLocalDevice(hasLocalDeviceRoute(detectCapabilities(currentEnvironment())))
   }, [])
 
   return (

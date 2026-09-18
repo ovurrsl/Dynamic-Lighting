@@ -3389,6 +3389,9 @@ var TLV = Object.freeze({
 var MAX_SSID_BYTES = 32;
 var MIN_PASSPHRASE_BYTES = 8;
 var MAX_PASSPHRASE_BYTES = 63;
+var MAX_LED_COUNT = 512;
+var MIN_BUDGET_MA = 100;
+var MAX_BUDGET_MA = 2e4;
 var encoder = new TextEncoder();
 function tlvAction(type) {
   return { type, value: new Uint8Array(0) };
@@ -3398,6 +3401,12 @@ function tlvU8(type, value) {
     throw new RangeError(`control: ${type} takes 0..255, got ${String(value)}`);
   }
   return { type, value: Uint8Array.of(value) };
+}
+function tlvU16(type, value) {
+  if (!Number.isInteger(value) || value < 0 || value > 65535) {
+    throw new RangeError(`control: ${type} takes 0..65535, got ${String(value)}`);
+  }
+  return { type, value: Uint8Array.of(value >> 8, value & 255) };
 }
 function tlvText(type, text, maxBytes) {
   const value = encoder.encode(text);
@@ -3450,6 +3459,38 @@ function wifiControl(credentials, save = true) {
 }
 function queryControl() {
   return encodeControl([tlvAction(TLV.queryConfig), tlvAction(TLV.queryNet)]);
+}
+function deviceControl(settings, save = true) {
+  const items = [];
+  if (settings.ledCount !== void 0) {
+    if (!Number.isInteger(settings.ledCount) || settings.ledCount < 1 || settings.ledCount > MAX_LED_COUNT) {
+      throw new RangeError(`control: the LED count is 1..${MAX_LED_COUNT}, got ${String(settings.ledCount)}`);
+    }
+    items.push(tlvU16(TLV.ledCount, settings.ledCount));
+  }
+  if (settings.budgetMa !== void 0) {
+    if (!Number.isInteger(settings.budgetMa) || settings.budgetMa < MIN_BUDGET_MA || settings.budgetMa > MAX_BUDGET_MA) {
+      throw new RangeError(`control: the power budget is ${MIN_BUDGET_MA}..${MAX_BUDGET_MA} mA, got ${String(settings.budgetMa)}`);
+    }
+    items.push(tlvU16(TLV.budgetMa, settings.budgetMa));
+  }
+  if (settings.idleBrightness !== void 0) {
+    if (!Number.isInteger(settings.idleBrightness) || settings.idleBrightness < 0 || settings.idleBrightness > 255) {
+      throw new RangeError(`control: the idle brightness is 0..255, got ${String(settings.idleBrightness)}`);
+    }
+    items.push(tlvU8(TLV.idleBrightness, settings.idleBrightness));
+  }
+  if (settings.benchOnBoot !== void 0) items.push(tlvU8(TLV.benchOnBoot, settings.benchOnBoot ? 1 : 0));
+  if (items.length === 0) throw new RangeError("control: no setting to send");
+  if (save) items.push(tlvAction(TLV.save));
+  items.push(tlvAction(TLV.queryConfig));
+  return encodeControl(items);
+}
+function benchControl() {
+  return encodeControl([tlvAction(TLV.runBench)]);
+}
+function resetControl() {
+  return encodeControl([tlvAction(TLV.resetDefaults), tlvAction(TLV.save), tlvAction(TLV.queryConfig)]);
 }
 
 // lib/engine/decode.ts
@@ -4574,6 +4615,25 @@ var PRIORITY = Object.freeze({
   /** The thing you leave running, so everything else is "instead of this". */
   capture: 240
 });
+function controlFrame(request) {
+  switch (request.kind) {
+    case "wifi":
+      return wifiControl({ ssid: request.ssid, passphrase: request.passphrase, enabled: request.enabled });
+    case "device":
+      return deviceControl({
+        ...request.ledCount !== void 0 ? { ledCount: request.ledCount } : {},
+        ...request.budgetMa !== void 0 ? { budgetMa: request.budgetMa } : {},
+        ...request.idleBrightness !== void 0 ? { idleBrightness: request.idleBrightness } : {},
+        ...request.benchOnBoot !== void 0 ? { benchOnBoot: request.benchOnBoot } : {}
+      });
+    case "bench":
+      return benchControl();
+    case "reset":
+      return resetControl();
+    case "query":
+      return queryControl();
+  }
+}
 var OUTPUT_HZ = 120;
 var TICK_MS = 4;
 var REPORT_MS = 1e3;
@@ -4882,8 +4942,7 @@ function createEngine(host) {
   async function sendControl(request) {
     const send = sink.sendBytes;
     if (send === void 0) throw new Error(TEXT.noControlChannel(linkMode));
-    const frame = request.kind === "wifi" ? wifiControl({ ssid: request.ssid, passphrase: request.passphrase, enabled: request.enabled }) : queryControl();
-    await send(frame);
+    await send(controlFrame(request));
   }
   async function processFrame(frame, arrivedAt) {
     let bitmap = null;

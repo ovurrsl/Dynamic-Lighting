@@ -152,3 +152,63 @@ export function wifiControl (credentials: WifiCredentials, save = true): Uint8Ar
 export function queryControl (): Uint8Array {
   return encodeControl([tlvAction(TLV.queryConfig), tlvAction(TLV.queryNet)])
 }
+
+export interface DeviceSettings {
+  /** 1..512: the strip length the board drives and the frame size it accepts. */
+  ledCount?: number
+  /** 100..20000 mA: what the power limiter holds the strip under. */
+  budgetMa?: number
+  /** 0..255: how bright the idle animation runs when no host is sending. */
+  idleBrightness?: number
+  /** Whether the board runs its LED bench once at boot. */
+  benchOnBoot?: boolean
+}
+
+/**
+ * The TLVs that reconfigure the board itself.
+ *
+ * Only the fields given are sent - the firmware applies each TLV on its own,
+ * so a message carrying one changed value leaves the others exactly as they
+ * were. The bounds are the firmware's (afx_config.h `applyTlv`), checked here
+ * so the panel's field can say "512 at most" instead of the board answering
+ * `refused` with nothing to point at. Saved by default for the same reason the
+ * WiFi message is: a LED count that does not survive a power cut is not a
+ * setting. Ends with a config query so the board's reply carries the values
+ * it actually holds.
+ */
+export function deviceControl (settings: DeviceSettings, save = true): Uint8Array {
+  const items: Tlv[] = []
+  if (settings.ledCount !== undefined) {
+    if (!Number.isInteger(settings.ledCount) || settings.ledCount < 1 || settings.ledCount > MAX_LED_COUNT) {
+      throw new RangeError(`control: the LED count is 1..${MAX_LED_COUNT}, got ${String(settings.ledCount)}`)
+    }
+    items.push(tlvU16(TLV.ledCount, settings.ledCount))
+  }
+  if (settings.budgetMa !== undefined) {
+    if (!Number.isInteger(settings.budgetMa) || settings.budgetMa < MIN_BUDGET_MA || settings.budgetMa > MAX_BUDGET_MA) {
+      throw new RangeError(`control: the power budget is ${MIN_BUDGET_MA}..${MAX_BUDGET_MA} mA, got ${String(settings.budgetMa)}`)
+    }
+    items.push(tlvU16(TLV.budgetMa, settings.budgetMa))
+  }
+  if (settings.idleBrightness !== undefined) {
+    if (!Number.isInteger(settings.idleBrightness) || settings.idleBrightness < 0 || settings.idleBrightness > 255) {
+      throw new RangeError(`control: the idle brightness is 0..255, got ${String(settings.idleBrightness)}`)
+    }
+    items.push(tlvU8(TLV.idleBrightness, settings.idleBrightness))
+  }
+  if (settings.benchOnBoot !== undefined) items.push(tlvU8(TLV.benchOnBoot, settings.benchOnBoot ? 1 : 0))
+  if (items.length === 0) throw new RangeError('control: no setting to send')
+  if (save) items.push(tlvAction(TLV.save))
+  items.push(tlvAction(TLV.queryConfig))
+  return encodeControl(items)
+}
+
+/** Runs the board's LED bench now: the walk, the ramps and the white the plan's stage 0 asks for. */
+export function benchControl (): Uint8Array {
+  return encodeControl([tlvAction(TLV.runBench)])
+}
+
+/** Puts the board back to its compiled-in defaults, saved, and asks what they are. */
+export function resetControl (): Uint8Array {
+  return encodeControl([tlvAction(TLV.resetDefaults), tlvAction(TLV.save), tlvAction(TLV.queryConfig)])
+}

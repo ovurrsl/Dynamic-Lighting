@@ -247,3 +247,50 @@ test('a blacklisted LED is sent black whatever a colour or an effect painted on 
     w.restore()
   }
 })
+
+/** The first LED's red byte of every 8-bit (Awa/Ada) frame the parser accepts. */
+function firstRedBytes (frames: readonly Uint8Array[]): number[] {
+  const parser = new FrameParser()
+  const out: number[] = []
+  for (const bytes of frames) for (const frame of parser.push(bytes)) out.push(frame.payload[0] as number)
+  return out
+}
+
+test('with the host dither on, an 8-bit Awa frame carries a sub-LSB colour as a 0/1 alternation', async () => {
+  // sRGB 1 is linear 0.0003, which is 0.077 of an 8-bit step: rounding gives
+  // a black LED for ever, diffusion gives a 1 about one frame in thirteen and
+  // the eye integrates it. This is the whole reason the option exists and no
+  // test read the bytes to see it happen.
+  const w = wire()
+  try {
+    w.engine.applyConfig({
+      ...DEFAULT_ENGINE_CONFIG,
+      output: { ...DEFAULT_ENGINE_CONFIG.output, format: 'Awa', dither: true }
+    })
+    w.engine.setColor({ r: 1, g: 0, b: 0 })
+    await run(w, 120)
+    const reds = firstRedBytes(w.frames())
+    assert.ok(reds.length >= 60, `enough frames to see the pattern: ${reds.length}`)
+    const distinct = new Set(reds)
+    assert.ok(distinct.has(0) && distinct.has(1), `expected 0 and 1, saw ${[...distinct].join(',')}`)
+    assert.ok(distinct.size === 2, 'and nothing else: the value never overshoots a step')
+  } finally {
+    w.engine.stop()
+    w.restore()
+  }
+})
+
+test('with the host dither off, the same colour is rounded to black on every frame', async () => {
+  const w = wire()
+  try {
+    w.engine.applyConfig({ ...DEFAULT_ENGINE_CONFIG, output: { ...DEFAULT_ENGINE_CONFIG.output, format: 'Awa' } })
+    w.engine.setColor({ r: 1, g: 0, b: 0 })
+    await run(w, 60)
+    const reds = firstRedBytes(w.frames())
+    assert.ok(reds.length >= 30)
+    assert.deepEqual([...new Set(reds)], [0])
+  } finally {
+    w.engine.stop()
+    w.restore()
+  }
+})

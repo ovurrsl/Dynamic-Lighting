@@ -160,6 +160,21 @@ export function outputRoutes (capabilities: readonly Capability[]): CapabilityId
   return order.filter((id) => capabilities.find((entry) => entry.id === id)?.present === true)
 }
 
+/**
+ * Whether THIS browser has any local-device route at all: serial, HID or USB.
+ *
+ * Specifically the routes an EXTENSION reaches. `network` is deliberately
+ * excluded: a WebSocket exists in every browser, extension or not, so asking
+ * `outputRoutes` as a whole would say "yes" everywhere - which is how the
+ * guide's "your browser cannot pair a port" box would never have shown at all.
+ * Safari and Firefox declined Web Serial on every platform, and iOS has no
+ * extension host to load one into; for them lib/page-host.ts is the answer,
+ * and the guide has to be able to say so.
+ */
+export function hasLocalDeviceRoute (capabilities: readonly Capability[]): boolean {
+  return outputRoutes(capabilities).some((id) => id === 'serial' || id === 'hid' || id === 'usb')
+}
+
 /** Reads the real globals. Browser only; `detectCapabilities` is the testable half. */
 export function currentEnvironment (): Environment {
   return globalThis as unknown as Environment

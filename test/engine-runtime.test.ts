@@ -622,3 +622,46 @@ test('changing the visualiser on an open input retunes it without reopening the 
     fake.restore()
   }
 })
+
+test('a still screen keeps the capture layer: no frame for six seconds and it is still winning', async () => {
+  // Hyperion stands a grabber down after a few silent seconds; here silence is
+  // a still desktop, because a frame arrives per change. With a background
+  // configured, an inactivity timeout would hand the strip to the background
+  // whenever the mouse stopped moving. The decision is a comment in the
+  // runtime; this is the test that keeps it one.
+  type Deliver = (frame: { image: unknown, width: number, height: number, release: () => void }, at: number) => void
+  const handlers: Deliver[] = []
+  const once: FrameSource = {
+    kind: 'stream',
+    settings: () => ({ width: 1280, height: 720 }),
+    start (onFrame) { handlers.push((frame, at) => onFrame(frame, at)) },
+    async stop () { handlers.length = 0 }
+  }
+  let at = 0
+  const host: EngineHost = { clock: () => at, createCanvas: fakeCanvas, openSource: async () => once }
+  // Node has no createImageBitmap; the fake canvas draws nothing anyway.
+  const scope = globalThis as { createImageBitmap?: unknown }
+  const original = scope.createImageBitmap
+  scope.createImageBitmap = async () => ({ close () {} })
+  const engine = createEngine(host)
+  try {
+    await engine.start()
+    const deliver = handlers[0]
+    assert.ok(deliver !== undefined, 'the source was started')
+    deliver({ image: {}, width: 1280, height: 720, release () {} }, at)
+    await delay(30)
+    assert.equal(winner(engine), 'capture', 'one frame is enough to be chosen')
+
+    at += 6000
+    await delay(40)
+    assert.equal(winner(engine), 'capture', 'six silent seconds later the capture still holds the strip')
+    assert.equal(engine.state(), 'running')
+    // The audio layer, by contrast, IS timed: silence there is a source that
+    // went away, not a still picture.
+    const capture = engine.stats().layers?.find((l) => l.component === 'capture')
+    assert.ok(capture !== undefined)
+  } finally {
+    engine.stop()
+    scope.createImageBitmap = original
+  }
+})

@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   captureRoute,
   detectCapabilities,
+  hasLocalDeviceRoute,
   outputRoutes,
   type Capability,
   type CapabilityId,
@@ -112,4 +113,16 @@ test('the capability list is stable in order and has no duplicates', () => {
   const ids = detectCapabilities({}).map((entry) => entry.id)
   assert.equal(new Set(ids).size, ids.length)
   assert.equal(ids[0], 'screenCapture')
+})
+
+test('a local-device route means serial, HID or USB - never the network alone', () => {
+  // The guide's "your browser cannot pair a port" box hangs on this. A
+  // WebSocket exists everywhere, so counting it would hide the box from the
+  // exact browsers it was written for.
+  assert.equal(hasLocalDeviceRoute(detectCapabilities(CHROME_DESKTOP)), true)
+  assert.equal(hasLocalDeviceRoute(detectCapabilities(IOS_SAFARI)), false)
+  assert.equal(hasLocalDeviceRoute(detectCapabilities({ navigator: { hid: {} }, WebSocket: class {} })), true)
+  assert.equal(hasLocalDeviceRoute(detectCapabilities({ navigator: { usb: {} } })), true)
+  assert.equal(hasLocalDeviceRoute(detectCapabilities({ WebSocket: class {} })), false)
+  assert.equal(hasLocalDeviceRoute([]), false)
 })

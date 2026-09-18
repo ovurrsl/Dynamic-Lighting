@@ -218,7 +218,7 @@ eklerken buraya da satır ekle.
 | `ambiflux/audio` | panel → sw → offscreen | ses görselleştirici; `spec`, `input?` (mikrofon / ekran sesi), `instance?` |
 | `ambiflux/color` | panel → sw → offscreen | düz renk katmanı; `color`, `durationMs?` (flaş), `instance?` |
 | `ambiflux/clear-layer` | panel → sw → offscreen | bir öncelik katmanını kaldır; `priority`, `instance?` |
-| `ambiflux/control` → `control-reply` | panel → sw → offscreen | karta `AxC` kontrol isteği (LED sayısı, ağ, sorgu); `control`, `instance?` |
+| `ambiflux/control` → `control-reply` | panel → sw → offscreen | karta `AxC` kontrol isteği (`query`, `wifi`, `device` = LED sayısı / güç bütçesi / boşta parlaklık / açılış testi, `bench`, `reset`); `control`, `instance?` |
 | `ambiflux/config` → `config-reply` | panel → sw → offscreen | yapılandırmayı değiştir; `instance?` |
 | `ambiflux/config-get` → `config-reply` | → sw | yürürlükteki yapılandırma; `instance?` |
 | `ambiflux/instances` → `instances-reply` | panel → sw → offscreen | şerit listesini değiştir |
@@ -713,7 +713,7 @@ tüm zinciri** ölçen tek yöntem bu.
 | (r) | Çıkış katmanı (`FrameSink`) | **yapıldı** — `lib/engine/sink.ts`, renk alıyor, bayt değil |
 | (s) | Ağ sürücüleri | **yapıldı** — `lib/engine/net.ts` (bizim firmware + WLED), panelde taşıma seçici |
 | (t) | Firmware WebSocket sunucusu | **yapıldı** — `nano_esp32_net`, `ws://<adres>/afx`, aynı baytlar aynı ayrıştırıcıya |
-| (u) | `AxC` kontrol kanalı, host tarafı | **yapıldı** — `lib/engine/control.ts`; WiFi kimlik bilgileri Cihaz sayfasından |
+| (u) | `AxC` kontrol kanalı, host tarafı | **yapıldı** — `lib/engine/control.ts`; WiFi kimlik bilgileri ve kart ayarları (LED sayısı, güç bütçesi, boşta parlaklık, açılış testi, test çalıştır, varsayılanlar) Cihaz sayfasından. Kartın `axc` JSON cevabı panelde henüz okunmuyor |
 | (v) | Motoru host'tan ayır | **yapıldı** — `lib/engine/runtime.ts`; offscreen 875 → 199 satır |
 | (w) | Sayfa host'u | **yapıldı** — `lib/page-host.ts`; üç kare rotası gerçek tarayıcıda ölçüldü |
 | (x) | Efekt motoru | **yapıldı** — `lib/engine/effects.ts`, on iki efekt, kendi paneli, CPython yok |

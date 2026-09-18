@@ -3,8 +3,7 @@
 import { Card, Surface } from '@heroui/react'
 
 import { useTranslate } from '#components/Preferences'
-import { EFFECT_KINDS } from '#lib/engine/effects'
-import type { MessageKey } from '#lib/i18n/strings'
+import { ROADMAP_ITEMS, ROADMAP_STATE_KEY } from '#lib/roadmap'
 
 /**
  * What is missing, in the order it is being built - and what is not coming.
@@ -21,42 +20,6 @@ import type { MessageKey } from '#lib/i18n/strings'
  * finding out.
  */
 
-/**
- * Two states, not four. 'next' and 'planned' existed while the list still had
- * things ahead of it; every item is now built or ruled out, and a state no
- * item can have is a promise the page cannot keep.
- */
-type State = 'done' | 'never'
-
-const ITEMS: Array<{ title: MessageKey, body: MessageKey, state: State, values?: Record<string, number> }> = [
-  // Reordered 2026-09-14. An iPhone was shown capturing its own screen and
-  // feeding our sampler - and iOS Safari has no Web Serial, WebUSB, WebHID or
-  // Web Bluetooth, so a captured frame there has nowhere to go. The output
-  // abstraction and the network driver stopped being "later".
-  //
-  // The 'done' entries stay on the page rather than being deleted. This list is
-  // the answer to "what can this thing do compared with Hyperion", and a list
-  // that only ever shows what is missing answers half of it.
-  { title: 'roadmap.sink.title', body: 'roadmap.sink.body', state: 'done' },
-  { title: 'roadmap.wled.title', body: 'roadmap.wled.body', state: 'done' },
-  { title: 'roadmap.host.title', body: 'roadmap.host.body', state: 'done' },
-  // Counted from the engine's own list, so the sentence cannot fall behind it
-  // again: it said "seven" while twelve were shipping.
-  { title: 'roadmap.effects.title', body: 'roadmap.effects.body', state: 'done', values: { count: EFFECT_KINDS.length } },
-  { title: 'roadmap.audio.title', body: 'roadmap.audio.body', state: 'done' },
-  { title: 'roadmap.capture.title', body: 'roadmap.capture.body', state: 'done' },
-  { title: 'roadmap.priority.title', body: 'roadmap.priority.body', state: 'done' },
-  { title: 'roadmap.events.title', body: 'roadmap.events.body', state: 'done' },
-  { title: 'roadmap.instances.title', body: 'roadmap.instances.body', state: 'done' },
-  { title: 'roadmap.udp.title', body: 'roadmap.udp.body', state: 'never' },
-  { title: 'roadmap.spi.title', body: 'roadmap.spi.body', state: 'never' }
-]
-
-const STATE_KEY: Record<State, MessageKey> = {
-  done: 'roadmap.state.done',
-  never: 'roadmap.state.never'
-}
-
 export function RoadmapCard () {
   const t = useTranslate()
 
@@ -68,7 +31,7 @@ export function RoadmapCard () {
       </Card.Header>
       <Card.Content className="flex flex-col gap-4">
         <ol className="flex flex-col gap-4">
-          {ITEMS.map((item) => (
+          {ROADMAP_ITEMS.map((item) => (
             <li key={item.title} className="flex flex-col gap-1">
               <div className="flex flex-wrap items-baseline gap-2">
                 <span className="font-mono text-xs text-muted">{item.state === 'never' ? '—' : '✓'}</span>
@@ -78,7 +41,7 @@ export function RoadmapCard () {
                     item.state === 'done' ? 'border-success/50 text-success' : 'border-default/25 text-muted'
                   }`}
                 >
-                  {t(STATE_KEY[item.state])}
+                  {t(ROADMAP_STATE_KEY[item.state])}
                 </span>
               </div>
               <p className="text-sm text-muted">{t(item.body, item.values)}</p>

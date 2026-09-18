@@ -4,7 +4,7 @@ import { openDisplayAudio, openMicrophone, type AudioInputKind, type AudioSource
 import { createBorderDetector, type BorderDetector } from '#lib/engine/border'
 import { srgbToLinear } from '#lib/light'
 import { DEFAULT_ENGINE_CONFIG, parseEngineConfig, resolveLayout, type EngineConfig } from '#lib/engine/config'
-import { queryControl, wifiControl } from '#lib/engine/control'
+import { benchControl, deviceControl, queryControl, resetControl, wifiControl } from '#lib/engine/control'
 import { allocLinearGrid, createRgbaDecoder, type RgbaDecoder } from '#lib/engine/decode'
 import { createFrameEncoder, type FrameEncoder } from '#lib/engine/encode'
 import { afxUrl, createSocketSink, createWledSink } from '#lib/engine/net'
@@ -125,6 +125,30 @@ export const PRIORITY = Object.freeze({
 })
 
 /** The output rate: a property of the strip and the firmware, not of the capture. */
+/**
+ * The bytes a control request becomes. Pure and exported so a test can check
+ * every request kind reaches the firmware's parser without starting an engine.
+ */
+export function controlFrame (request: ControlRequest): Uint8Array {
+  switch (request.kind) {
+    case 'wifi':
+      return wifiControl({ ssid: request.ssid, passphrase: request.passphrase, enabled: request.enabled })
+    case 'device':
+      return deviceControl({
+        ...(request.ledCount !== undefined ? { ledCount: request.ledCount } : {}),
+        ...(request.budgetMa !== undefined ? { budgetMa: request.budgetMa } : {}),
+        ...(request.idleBrightness !== undefined ? { idleBrightness: request.idleBrightness } : {}),
+        ...(request.benchOnBoot !== undefined ? { benchOnBoot: request.benchOnBoot } : {})
+      })
+    case 'bench':
+      return benchControl()
+    case 'reset':
+      return resetControl()
+    case 'query':
+      return queryControl()
+  }
+}
+
 export const OUTPUT_HZ = 120
 /** Output timer period. Chrome clamps nested timers to 4 ms; the smoother paces itself. */
 const TICK_MS = 4
@@ -699,10 +723,7 @@ export function createEngine (host: EngineHost): Engine {
   async function sendControl (request: ControlRequest): Promise<void> {
     const send = sink.sendBytes
     if (send === undefined) throw new Error(TEXT.noControlChannel(linkMode))
-    const frame = request.kind === 'wifi'
-      ? wifiControl({ ssid: request.ssid, passphrase: request.passphrase, enabled: request.enabled })
-      : queryControl()
-    await send(frame)
+    await send(controlFrame(request))
   }
 
   // -------------------------------------------------------------------------

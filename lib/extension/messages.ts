@@ -137,6 +137,10 @@ export type Message =
 export type ControlRequest =
   | { kind: 'query' }
   | { kind: 'wifi'; ssid: string; passphrase: string; enabled: boolean }
+  /** The board's own settings; only the fields present are sent. */
+  | { kind: 'device'; ledCount?: number; budgetMa?: number; idleBrightness?: number; benchOnBoot?: boolean }
+  | { kind: 'bench' }
+  | { kind: 'reset' }
 
 export type EngineState = 'idle' | 'starting' | 'running' | 'error'
 

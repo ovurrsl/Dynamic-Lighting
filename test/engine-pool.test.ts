@@ -336,3 +336,18 @@ test('a save that leaves a strip unchanged does not re-apply its configuration',
   assert.deepEqual(pool.engine('instance-1')?.config().blacklist, [{ start: 0, length: 1 }], 'and strip A took the edit')
   await pool.dispose()
 })
+
+test('disposing the pool leaves no timer behind', async () => {
+  // A leaked interval is how the page host kept a stopped engine's tick alive
+  // for the rest of the tab, and how these tests needed --test-force-exit. The
+  // count is taken before and after, so whatever the harness itself holds is
+  // not blamed on the pool.
+  const timers = (): number => process.getActiveResourcesInfo().filter((kind) => kind === 'Timeout').length
+  const before = timers()
+  const { host } = fakeHost()
+  const pool = createEnginePool(host, addInstance(defaultInstances()))
+  await pool.start()
+  pool.instances().length && assert.ok(timers() >= before, 'a running pool ticks')
+  await pool.dispose()
+  assert.equal(timers(), before, 'every interval and timeout the pool armed is cleared')
+})

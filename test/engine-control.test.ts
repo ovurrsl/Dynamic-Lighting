@@ -2,10 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  MAX_BUDGET_MA,
+  MAX_LED_COUNT,
   MAX_SSID_BYTES,
+  MIN_BUDGET_MA,
   TLV,
+  benchControl,
+  deviceControl,
   encodeControl,
   queryControl,
+  resetControl,
   tlvAction,
   tlvText,
   tlvU16,
@@ -13,6 +19,7 @@ import {
   wifiControl
 } from '#lib/engine/control'
 import { fletcherAwa } from '#lib/engine/protocol'
+import { controlFrame } from '#lib/engine/runtime'
 
 /**
  * The firmware's own walk, rewritten here from afx_config.h.
@@ -119,4 +126,67 @@ test('the query asks for both halves, because they are reported separately', () 
 
 test('an empty message is refused rather than framed', () => {
   assert.throws(() => encodeControl([]), /nothing to send/)
+})
+
+test('a board setting carries ONLY the fields given, then a save and a query', () => {
+  // The firmware applies each TLV on its own, so a message with one value
+  // leaves the other three as the board has them - which is what lets the
+  // panel send what the user touched without knowing what the board holds.
+  const parsed = parseFrame(deviceControl({ ledCount: 300 }))
+  assert.deepEqual(parsed.tlvs, [
+    { type: TLV.ledCount, value: [0x01, 0x2c] },
+    { type: TLV.save, value: [] },
+    { type: TLV.queryConfig, value: [] }
+  ])
+  const all = parseFrame(deviceControl({ ledCount: 1, budgetMa: 2500, idleBrightness: 0, benchOnBoot: false }, false))
+  assert.deepEqual(all.tlvs.map((t) => t.type), [
+    TLV.ledCount, TLV.budgetMa, TLV.idleBrightness, TLV.benchOnBoot, TLV.queryConfig
+  ])
+  assert.deepEqual(all.tlvs[1]?.value, [0x09, 0xc4])
+  assert.deepEqual(all.tlvs[3]?.value, [0])
+})
+
+test('a board setting outside the firmware\'s bounds is refused here, with the bound in the message', () => {
+  // afx_config.h: 1..512 LEDs, 100..20000 mA, a byte of brightness. Sending
+  // 513 would come back as `refused` with nothing to point at.
+  assert.throws(() => deviceControl({ ledCount: 0 }), /1\.\.512/)
+  assert.throws(() => deviceControl({ ledCount: MAX_LED_COUNT + 1 }), /1\.\.512/)
+  assert.throws(() => deviceControl({ ledCount: 10.5 }), /1\.\.512/)
+  assert.throws(() => deviceControl({ budgetMa: MIN_BUDGET_MA - 1 }), /100\.\.20000/)
+  assert.throws(() => deviceControl({ budgetMa: MAX_BUDGET_MA + 1 }), /100\.\.20000/)
+  assert.throws(() => deviceControl({ idleBrightness: 256 }), /0\.\.255/)
+  assert.throws(() => deviceControl({ idleBrightness: -1 }), /0\.\.255/)
+  // Nothing to send is refused rather than framed as a bare save.
+  assert.throws(() => deviceControl({}), /no setting/)
+  assert.ok(deviceControl({ ledCount: MAX_LED_COUNT, budgetMa: MAX_BUDGET_MA, idleBrightness: 255 }))
+})
+
+test('the bench and the reset are single actions the firmware recognises', () => {
+  assert.deepEqual(parseFrame(benchControl()).tlvs, [{ type: TLV.runBench, value: [] }])
+  // A reset is saved - a board that comes back from a power cut with the old
+  // values did not reset - and asks what the defaults now are.
+  assert.deepEqual(parseFrame(resetControl()).tlvs.map((t) => t.type), [TLV.resetDefaults, TLV.save, TLV.queryConfig])
+})
+
+test('every control request the panel can send becomes a frame the firmware parses', () => {
+  // The runtime's mapping, request by request. A kind added to the message
+  // type and forgotten here used to fall through to a plain query, and the
+  // panel would have reported "sent" for a setting that never left.
+  const kinds = [
+    controlFrame({ kind: 'query' }),
+    controlFrame({ kind: 'wifi', ssid: 'studio', passphrase: 'hunter22', enabled: true }),
+    controlFrame({ kind: 'device', ledCount: 60, benchOnBoot: true }),
+    controlFrame({ kind: 'bench' }),
+    controlFrame({ kind: 'reset' })
+  ].map((frame) => parseFrame(frame).tlvs.map((t) => t.type))
+  assert.deepEqual(kinds, [
+    [TLV.queryConfig, TLV.queryNet],
+    [TLV.wifiSsid, TLV.wifiPassphrase, TLV.wifiEnabled, TLV.save, TLV.queryNet],
+    [TLV.ledCount, TLV.benchOnBoot, TLV.save, TLV.queryConfig],
+    [TLV.runBench],
+    [TLV.resetDefaults, TLV.save, TLV.queryConfig]
+  ])
+  // An undefined field is not sent as zero.
+  assert.deepEqual(parseFrame(controlFrame({ kind: 'device', idleBrightness: 0 })).tlvs.map((t) => t.type),
+    [TLV.idleBrightness, TLV.save, TLV.queryConfig])
 })

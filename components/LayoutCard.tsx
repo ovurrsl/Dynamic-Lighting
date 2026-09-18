@@ -32,6 +32,7 @@ import {
   type WireFormat
 } from '#lib/engine/config'
 import { CORNERS, DEPTH_MAX, EDGE_GAP_MAX, LAYOUT_DEFAULTS, NO_KEYSTONE, OVERLAP_MAX, type Corner, type Keystone } from '#lib/engine/layout'
+import { MAX_LED_COUNT } from '#lib/engine/control'
 import { COLOR_ORDERS, type ColorOrder } from '#lib/engine/order'
 import { formatOverrideList, formatRangeList, parseOverrideList, parseRangeList } from '#lib/engine/ranges'
 import { WLED_DEFAULT_GAMMA, WLED_GAMMA_MAX, WLED_GAMMA_MIN } from '#lib/engine/wled'
@@ -487,6 +488,9 @@ export function LayoutCard ({
             {shown === null ? '—' : t('layout.leds', { count: shown.rects.length })}
             {layout.kind === 'classic' && ` · ${t('layout.led0')}`}
           </span>
+          {shown !== null && shown.rects.length > MAX_LED_COUNT && draft.output.transport !== 'wled' && (
+            <span className="text-warning">{t('layout.tooManyForBoard', { max: MAX_LED_COUNT })}</span>
+          )}
           <Select
             className="w-44"
             value={layout.kind}

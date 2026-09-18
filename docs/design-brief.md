@@ -85,13 +85,15 @@ bileşen. Tasarım bunu varsaymalı: **bölüm sayısı büyüyecek.**
 | **Yardım** | Kılavuz | `#/guide` | kurulum, kablolama, sorun giderme |
 | | Yol haritası | `#/roadmap` | ne eksik, ne gelmeyecek |
 
-**Gelecek bölümler** (yol haritasından, tasarımın yer ayırması gerekenler):
-Efektler, Ses, Görüntü işleme (renk düzeltme + yumuşatma + kenar modu),
-Ağ cihazları, Öncelik katmanları, Olaylar, Çoklu örnek.
+**Sonradan gelen bölümler** (brief yazıldığında yol haritasındaydı, artık
+hepsi kenar çubuğunda — güncel liste `lib/sections.ts`): Efektler, Ses,
+Görüntü işleme (renk düzeltme + yumuşatma + kenar modu), Olaylar, Şeritler
+(çoklu örnek). Ağ cihazları LED donanımı sayfasındaki taşıma seçimine,
+öncelik katmanları Genel bakış'taki katman listesine girdi.
 
-Bu **dokuzdan on altıya** demek. Kenar çubuğu buna dayanmalı: gruplar
-katlanabilir mi, ikincil bölümler bir "Gelişmiş" altına mı giriyor — tasarımın
-cevaplaması gereken ilk soru bu.
+Yani kenar çubuğu bugün on dört bölüm taşıyor. Tasarımın cevaplaması gereken
+ilk soru hâlâ aynı: gruplar katlanabilir mi, ikincil bölümler bir "Gelişmiş"
+altına mı giriyor.
 
 ### Başlık çubuğu
 

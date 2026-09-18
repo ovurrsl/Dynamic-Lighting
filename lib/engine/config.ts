@@ -35,10 +35,10 @@ import { WLED_DEFAULT_GAMMA, WLED_GAMMA_MAX, WLED_GAMMA_MIN } from '#lib/engine/
  * second source of truth to disagree with the first (the plan's section 11
  * lists two Hyperion defects that are exactly that).
  *
- * Only what is wired is here. Smoothing constants, the border detector's mode
- * and the calibration profiles are configurable in their own modules and get
- * their own config once the panel drives them; a field nobody reads would be a
- * promise the product does not keep.
+ * Only what is wired is here: every section below is read by the runtime and
+ * driven by a panel card. The two smoothing modes the panel does not offer
+ * (`linear`, `decay` in smooth.ts) have no field for the same reason - a
+ * field nobody reads would be a promise the product does not keep.
  */
 
 export type LayoutConfig =

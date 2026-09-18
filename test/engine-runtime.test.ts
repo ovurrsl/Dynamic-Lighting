@@ -248,7 +248,9 @@ test('a background EFFECT renders continuously, not once', () => {
 
 test('the startup layer runs ABOVE everything and lets go on its own', async () => {
   // A boot animation that had to be dismissed would not be a boot animation.
-  // The duration is the muxer's timeout, so there is one expiry mechanism.
+  // The layer carries its own expiry (`startupUntil`), not the muxer's
+  // inactivity timeout: an animated layer feeds every tick and would reset
+  // that timeout for ever - the test further down covers exactly that.
   const h = harness()
   h.engine.applyConfig(withLayers({
     startup: { enabled: true, kind: 'color', color: { r: 255, g: 0, b: 0 }, effect: 'rainbow', durationMs: 3000 }

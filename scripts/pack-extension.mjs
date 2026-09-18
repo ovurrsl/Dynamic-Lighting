@@ -5,11 +5,12 @@ import { cpSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
  * Produces extension/ambiflux-extension.zip: the extension as something you can
  * hand to someone.
  *
- * This exists because `extension/dist` is a build output and therefore not in
- * the repository, which makes "load it unpacked" a step that silently fails for
- * anyone who cloned and did not build first - Chrome's error for pointing at
- * `extension/` instead is "Could not load background script", which names
- * neither cause nor cure.
+ * `extension/dist` IS committed (deliberately, so a clone loads unpacked
+ * without a build), but a directory is not something you can hand to someone
+ * or upload to a store: this is the one-file form, with the manifest and the
+ * locales in the right places. Chrome's error for pointing it at `extension/`
+ * instead is "Could not load background script", which names neither cause
+ * nor cure.
  *
  * The zip carries no source maps: they are four times the size of the code,
  * they are useless without the sources, and a Web Store package should not

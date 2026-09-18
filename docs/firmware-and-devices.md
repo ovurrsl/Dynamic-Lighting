@@ -89,6 +89,9 @@ harcıyor ve çevre birimi geneline kısıt getirmiyor. **Hangisinin daha iyi
 olduğu ölçüm**, ve firmware zaten onu sayıyor: telemetrideki `shortFrames`,
 zamanlayıcı ateşlediğinde şeridin hazır olmadığı kare sayısı. Birini yak, bir
 saat soak et, sayacı oku, diğerini yak. Sağlıklı olan **tam olarak 0**.
+(Aynı satırdaki `oversize`, ayrıştırıcının kabul edip şeridin taşıyamadığı
+kareler — derlemenin `kMaxLeds`'inden uzun bir yerleşim. O da sağlıklı bir
+kurulumda 0; panel yerleşim sayfasında 512'yi aşınca uyarıyor.)
 
 ### 2.4 Bu turda yapılan iki somut iyileştirme
 

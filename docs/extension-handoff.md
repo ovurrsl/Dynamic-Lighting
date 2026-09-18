@@ -219,7 +219,7 @@ eklerken buraya da satır ekle.
 | `ambiflux/color` | panel → sw → offscreen | düz renk katmanı; `color`, `durationMs?` (flaş), `instance?` |
 | `ambiflux/clear-layer` | panel → sw → offscreen | bir öncelik katmanını kaldır; `priority`, `instance?` |
 | `ambiflux/control` → `control-reply` | panel → sw → offscreen | karta `AxC` kontrol isteği (`query`, `wifi`, `device` = LED sayısı / güç bütçesi / boşta parlaklık / açılış testi, `bench`, `reset`); `control`, `instance?` |
-| `ambiflux/config` → `config-reply` | panel → sw → offscreen | yapılandırmayı değiştir; `instance?` |
+| `ambiflux/config` → `config-reply` | panel → sw | yapılandırmayı değiştir; `instance?`. sw bunu şerit listesine işleyip offscreen'e **`ambiflux/instances`** olarak iletir — offscreen `config`'i bilerek ele almaz, saklanan ve çalışan kopya ayrışmasın diye |
 | `ambiflux/config-get` → `config-reply` | → sw | yürürlükteki yapılandırma; `instance?` |
 | `ambiflux/instances` → `instances-reply` | panel → sw → offscreen | şerit listesini değiştir |
 | `ambiflux/instances-get` → `instances-reply` | panel/offscreen → sw | saklanan şeritler |

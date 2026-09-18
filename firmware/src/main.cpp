@@ -208,6 +208,8 @@ uint32_t benchStartMs = 0;
 
 struct Telemetry {
   uint32_t framesRx = 0;
+  /** Frames the parser accepted but the strip cannot hold: more LEDs than the build's kMaxLeds. */
+  uint32_t oversize = 0;
   uint32_t framesShown = 0;
   uint32_t shortFrames = 0;     // CanShow() said no when the timer fired
 };
@@ -383,7 +385,13 @@ void publish (const Parser::Frame &frame) {
     handleControl(frame.payload, frame.length);
     return;                                   // not a picture; nothing to show
   }
-  if (frame.count == 0 || frame.count > kMaxLeds) return;
+  if (frame.count == 0 || frame.count > kMaxLeds) {
+    // Counted, not silently dropped: an Awa/Ada frame of 513..1024 LEDs fits
+    // the parser's buffer and used to vanish here, leaving a black strip and
+    // a telemetry line that said every frame had arrived.
+    telemetry.oversize++;
+    return;
+  }
   AFX_PUBLISH_GUARD;
   Keyframe &slot = frames.writable();
   slot.count = frame.count;
@@ -731,12 +739,13 @@ void reportTelemetry (uint32_t nowMs) {
   // format for a while, so "up" printed the bench flag and the uptime fell
   // off the end. -Werror=format in platformio.ini is what now refuses that.
   Serial.printf(
-      "{\"t\":%lu,\"v\":\"%s\",\"leds\":%u,\"rx\":%lu,\"shown\":%lu,\"short\":%lu,"
+      "{\"t\":%lu,\"v\":\"%s\",\"leds\":%u,\"rx\":%lu,\"shown\":%lu,\"short\":%lu,\"oversize\":%lu,"
       "\"resyncs\":%lu,\"badChk\":%lu,\"countMismatch\":%lu,\"scale\":%.3f,\"host\":%d,\"bench\":%d,\"up\":%lu}\n",
       static_cast<unsigned long>(nowMs), AMBIFLUX_VERSION, static_cast<unsigned>(ledCount),
       static_cast<unsigned long>(telemetry.framesRx),
       static_cast<unsigned long>(telemetry.framesShown),
       static_cast<unsigned long>(telemetry.shortFrames),
+      static_cast<unsigned long>(telemetry.oversize),
       static_cast<unsigned long>(stats.resyncs),
       static_cast<unsigned long>(stats.badChecksum),
       static_cast<unsigned long>(stats.countMismatch),
